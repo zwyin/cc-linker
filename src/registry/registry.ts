@@ -141,7 +141,7 @@ export class RegistryManager {
 
     const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
     const backupPath = join(this.backupDir, `registry.${timestamp}.json`);
-    writeFileSync(backupPath, JSON.stringify(this.data, null, 2));
+    writeFileSync(backupPath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
 
     const bakPath = this.registryPath + '.bak';
     if (existsSync(bakPath)) unlinkSync(bakPath);

@@ -84,7 +84,9 @@ export class JSONLScanner {
         if (!cwd && entry.cwd) cwd = entry.cwd;
         if (entry.type === 'ai-title' && !aiTitle) aiTitle = entry.aiTitle;
         if (entry.type === 'last-prompt' && !lastPrompt) lastPrompt = entry.lastPrompt;
-      } catch {}
+      } catch {
+        // Silently skip malformed JSON lines
+      }
     }
 
     let lastActive: string | null = null;
@@ -99,7 +101,9 @@ export class JSONLScanner {
           const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
           if (textBlock) preview = textBlock.text.slice(0, 100);
         }
-      } catch {}
+      } catch {
+        // Silently skip malformed JSON lines
+      }
     }
 
     const origin: Origin = this.ccConnectUuids.has(sessionId)
@@ -148,13 +152,16 @@ export class JSONLScanner {
             const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
             if (textBlock) preview = textBlock.text.slice(0, 100);
           }
-        } catch {}
+        } catch {
+          // Silently skip malformed JSON lines
+        }
       }
 
+      // message_count is intentionally omitted — it's set correctly in parseFull
+      // and doesn't need to be recalculated on every incremental scan
       return {
         last_active: lastActive ?? undefined,
         last_message_preview: preview || undefined,
-        message_count: readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length,
       };
     } finally {
       closeSync(fd);
