@@ -59,10 +59,19 @@ export function formatJson(sessions: Array<[string, SessionEntry]>): string {
   );
 }
 
+function sanitizeCsvField(value: string): string {
+  // Prevent CSV injection by prefixing formula characters with single quote
+  if (/^[=+\-@\t\r]/.test(value)) {
+    return "'" + value;
+  }
+  // Escape double quotes and wrap in quotes
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 export function formatCsv(sessions: Array<[string, SessionEntry]>): string {
   const header = 'ref,uuid,title,origin,platform,project_name,cwd,message_count,last_active';
   const rows = sessions.map(([uuid, s]) =>
-    `${uuid.slice(0, 8)},${uuid},"${(s.title ?? '').replace(/"/g, '""')}",${s.origin},${s.platform ?? ''},${s.project_name ?? ''},${s.cwd},${s.message_count},${s.last_active}`
+    [uuid.slice(0, 8), uuid, sanitizeCsvField(s.title ?? ''), s.origin, s.platform ?? '', sanitizeCsvField(s.project_name ?? ''), sanitizeCsvField(s.cwd), s.message_count, s.last_active].join(',')
   );
   return [header, ...rows].join('\n');
 }

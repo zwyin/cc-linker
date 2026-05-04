@@ -128,34 +128,37 @@ export class JSONLScanner {
     const stat = statSync(filePath);
     const readSize = Math.min(4096, stat.size);
     const fd = openSync(filePath, 'r');
-    const buffer = Buffer.alloc(readSize);
-    readSync(fd, buffer, 0, readSize, stat.size - readSize);
-    closeSync(fd);
+    try {
+      const buffer = Buffer.alloc(readSize);
+      readSync(fd, buffer, 0, readSize, stat.size - readSize);
 
-    const tail = buffer.toString('utf8');
-    const lines = tail.split('\n').filter(Boolean).slice(-10);
+      const tail = buffer.toString('utf8');
+      const lines = tail.split('\n').filter(Boolean).slice(-10);
 
-    let lastActive: string | null = null;
-    let preview = '';
+      let lastActive: string | null = null;
+      let preview = '';
 
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === 'assistant' || entry.type === 'user') {
-          if (!lastActive) lastActive = entry.timestamp;
-        }
-        if (entry.type === 'assistant' && !preview) {
-          const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
-          if (textBlock) preview = textBlock.text.slice(0, 100);
-        }
-      } catch {}
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === 'assistant' || entry.type === 'user') {
+            if (!lastActive) lastActive = entry.timestamp;
+          }
+          if (entry.type === 'assistant' && !preview) {
+            const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
+            if (textBlock) preview = textBlock.text.slice(0, 100);
+          }
+        } catch {}
+      }
+
+      return {
+        last_active: lastActive ?? undefined,
+        last_message_preview: preview || undefined,
+        message_count: readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length,
+      };
+    } finally {
+      closeSync(fd);
     }
-
-    return {
-      last_active: lastActive ?? undefined,
-      last_message_preview: preview || undefined,
-      message_count: readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length,
-    };
   }
 
   private inferProjectName(cwd: string): string | null {
