@@ -42,8 +42,17 @@ export function hookUninstall(): void {
 
   const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
   if (settings.hooks?.SessionStart?.includes('cc-bridge')) {
-    delete settings.hooks.SessionStart;
-    writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+    if (Array.isArray(settings.hooks.SessionStart)) {
+      settings.hooks.SessionStart = settings.hooks.SessionStart.filter(
+        (h: string) => !h.includes('cc-bridge')
+      );
+      if (settings.hooks.SessionStart.length === 0) {
+        delete settings.hooks.SessionStart;
+      }
+    } else {
+      delete settings.hooks.SessionStart;
+    }
+    writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
     console.log(chalk.green('Hook 已卸载'));
   } else {
     console.log(chalk.yellow('Hook 未安装'));

@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { chdir } from 'process';
 import { RegistryManager } from '../../registry';
 import { CCBridgeError } from '../../utils/errors';
@@ -60,15 +60,14 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
   }
 
   // Execute
-  const cmd = `claude --resume ${uuid}`;
   if (opts.dryRun) {
-    console.log(chalk.blue(`将执行: cd ${entry.cwd} && ${cmd}`));
+    console.log(chalk.blue(`将执行: cd ${entry.cwd} && claude --resume ${uuid}`));
     return;
   }
 
   console.log(chalk.green(`恢复会话: ${entry.title ?? uuid}`));
   chdir(entry.cwd);
-  execSync(cmd, { stdio: 'inherit' });
+  execFileSync('claude', ['--resume', uuid], { stdio: 'inherit' });
 }
 
 function findLatestSession(registry: RegistryManager, project?: string, platform?: string): string {
