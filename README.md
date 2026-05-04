@@ -2299,3 +2299,65 @@ cc-connect 捕获 stdout 输出，作为机器人回复发送给飞书用户
 ```
 /commands addexec bridge cc-bridge feishu-cmd --caller {{user}} {{args}}
 ```
+
+---
+
+## 快速开始
+
+### 安装
+
+```bash
+# 从 npm 安装（发布后）
+npm install -g cc-bridge
+
+# 从源码安装
+git clone https://github.com/xxx/cc-bridge.git
+cd cc-bridge
+bun install
+bun run build
+```
+
+### 初始化
+
+```bash
+cc-bridge init
+```
+
+### 常用命令
+
+```bash
+# 列出所有会话
+cc-bridge list
+
+# 恢复指定会话
+cc-bridge resume <UUID前缀>
+
+# 查看会话详情
+cc-bridge show <UUID前缀>
+
+# 手动同步
+cc-bridge sync
+
+# 查看状态
+cc-bridge status
+
+# 安装 Hook（自动注册新会话）
+cc-bridge hook install
+```
+
+### 飞书集成
+
+在 cc-connect 的 `config.toml` 中添加：
+
+```toml
+[[commands]]
+name = "bridge"
+description = "跨平台会话管理（CLI + 飞书）"
+exec = "cc-bridge feishu-cmd --caller {{user}} {{args}}"
+```
+
+然后在飞书中使用：
+- `/bridge list` — 列出所有会话
+- `/bridge switch <Ref>` — 切换到指定会话
+- `/bridge resume <Ref>` — 获取终端恢复命令
+- `/bridge status` — 查看桥接状态
