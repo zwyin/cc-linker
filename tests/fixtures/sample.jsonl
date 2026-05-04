@@ -1,0 +1,5 @@
+{"type":"attachment","entrypoint":"sdk-cli","cwd":"/Users/test/project","sessionId":"test-session-1234","timestamp":"2026-05-03T09:00:00Z"}
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"hi"},"uuid":"uuid-1","timestamp":"2026-05-03T09:01:00Z","entrypoint":"sdk-cli","cwd":"/Users/test/project","sessionId":"test-session-1234"}
+{"parentUuid":"uuid-1","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Hello! How can I help?"}]},"type":"assistant","uuid":"uuid-2","timestamp":"2026-05-03T09:01:05Z","sessionId":"test-session-1234"}
+{"type":"ai-title","aiTitle":"Test Project Setup","sessionId":"test-session-1234"}
+{"type":"last-prompt","lastPrompt":"Help me set up the project","leafUuid":"uuid-2","sessionId":"test-session-1234"}
