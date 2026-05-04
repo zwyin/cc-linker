@@ -48,13 +48,13 @@ export const CCConnectSessionSchema = z.object({
   sessions: z.record(z.string(), z.object({
     id: z.string(),
     name: z.string(),
-    agent_session_id: z.string(),
-    agent_type: z.string(),
+    agent_session_id: z.string().optional(),
+    agent_type: z.string().optional(),
     history: z.array(z.object({
       role: z.string(),
       content: z.string(),
       timestamp: z.string(),
-    })).nullable(),
+    })).nullable().optional(),
     created_at: z.string(),
     updated_at: z.string(),
   })),
