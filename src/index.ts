@@ -46,13 +46,14 @@ program
   .option('-P, --platform <name>', '按平台过滤')
   .option('-o, --origin <type>', '按来源过滤')
   .option('-a, --active', '只显示最近 2 小时活跃的会话')
+  .option('--archived', '显示 archived/corrupted 会话（默认仅显示 active）')
   .option('-f, --format <type>', '输出格式: table/json/csv', 'table')
   .option('-l, --limit <n>', '最多显示 n 条', '20')
   .option('-s, --sort <field>', '排序字段', 'last_active')
   .option('--no-sync', '跳过自动同步')
   .action((opts) => withSync(async (registry) => {
     await list(registry, opts);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('resume [target]')
@@ -60,12 +61,15 @@ program
   .option('-s, --search <query>', '按标题搜索')
   .option('-L, --latest', '恢复最近活跃的会话')
   .option('-p, --project <name>', '指定项目')
+  .option('-P, --platform <name>', '指定平台')
+  .option('-u, --user <id>', '指定飞书用户的会话')
   .option('-n, --dry-run', '只显示命令，不执行')
   .option('--no-confirm', '跳过 CWD 变更提示')
+  .option('--cwd <path>', '手动指定工作目录')
   .option('--no-sync', '跳过自动同步')
   .action((target, opts) => withSync(async (registry) => {
     await resume(registry, target, opts);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('show <target>')
@@ -73,12 +77,12 @@ program
   .option('--no-sync', '跳过自动同步')
   .action((target, opts) => withSync(async (registry) => {
     await show(registry, target);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('sync')
   .description('手动同步会话')
-  .option('--scan', '只扫描不更新')
+  .option('--scan', '只扫描，不写入 registry（dry run）')
   .option('--force', '强制刷新')
   .option('--clean', '清理无效记录')
   .action((opts) => withSync(async (registry) => {
@@ -91,7 +95,7 @@ program
   .option('--no-sync', '跳过自动同步')
   .action((opts) => withSync(async (registry) => {
     await status(registry);
-  }, opts.noSync));
+  }, !opts.sync));
 
 const hookCmd = program.command('hook').description('管理 Claude Code 钩子');
 hookCmd.command('install').action(() => hookInstall());
@@ -105,6 +109,7 @@ program
   .option('-o, --origin <type>', '来源', 'cli')
   .option('-c, --cwd <path>', '工作目录')
   .option('--source <id>', '来源标识', 'terminal')
+  .option('-n, --dry-run', '只显示将要注册的条目，不实际写入')
   .action((uuid, opts) => withSync(async (registry) => {
     await registerSession(registry, uuid, opts);
   }, true));
@@ -112,22 +117,26 @@ program
 program
   .command('export <target>')
   .description('导出会话为 markdown/text/json')
-  .option('-f, --format <type>', '输出格式', 'markdown')
+  .option('-f, --format <type>', '输出格式: markdown/text/json', 'markdown')
   .option('-o, --output <path>', '输出文件')
+  .option('--include-thinking', '包含 thinking block')
+  .option('--include-tools', '包含工具调用详情')
   .option('--max-messages <n>', '最大消息数')
   .option('--no-sync', '跳过自动同步')
   .action((target, opts) => withSync(async (registry) => {
     await exportSession(registry, target, opts);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('search <query>')
   .description('搜索会话')
   .option('--in-title', '只搜索标题')
+  .option('--in-content', '搜索 JSONL 内容（较慢）')
+  .option('-l, --limit <n>', '最多显示 n 条', '20')
   .option('--no-sync', '跳过自动同步')
   .action((query, opts) => withSync(async (registry) => {
     await search(registry, query, opts);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('clean')
@@ -137,14 +146,15 @@ program
   .option('--no-sync', '跳过自动同步')
   .action((opts) => withSync(async (registry) => {
     await clean(registry, opts);
-  }, opts.noSync));
+  }, !opts.sync));
 
 program
   .command('feishu-cmd <subcommand> [args...]')
   .description('飞书侧 /bridge 命令入口')
   .option('--caller <user>', '调用者标识')
+  .option('--confirm', '确认执行需要重启 cc-connect 的破坏性操作（如 /bridge switch 首次映射）')
   .action((subcommand, args, opts) => withSync(async (registry) => {
-    feishuCmd(registry, subcommand, args, opts);
+    await feishuCmd(registry, subcommand, args, opts);
   }));
 
 // Parse and handle errors

@@ -7,14 +7,21 @@ interface ListOptions {
   platform?: string;
   origin?: string;
   active?: boolean;
+  archived?: boolean;
   format?: string;
   limit?: string;
   sort?: string;
 }
 
 export async function list(registry: RegistryManager, opts: ListOptions): Promise<void> {
-  let sessions = Object.entries(registry.sessions)
-    .filter(([_, s]) => s.status === 'active');
+  let sessions = Object.entries(registry.sessions);
+
+  // 默认仅显示 active 会话；--archived 显示 archived/corrupted；不存在 status 字段视为 active（向后兼容）
+  if (!opts.archived) {
+    sessions = sessions.filter(([_, s]) => !s.status || s.status === 'active');
+  } else {
+    sessions = sessions.filter(([_, s]) => s.status === 'archived' || s.status === 'corrupted');
+  }
 
   // Apply filters
   if (opts.project) {

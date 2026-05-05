@@ -2,13 +2,14 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { parse } from '@iarna/toml';
-import { CONFIG_PATH } from './paths';
+import { CONFIG_PATH, REGISTRY_PATH } from './paths';
 
 interface ConfigData {
   general: {
     registry_path: string;
     log_level: string;
     log_path: string | null;
+    claude_bin: string;
   };
   scanner: {
     max_file_size: number;
@@ -28,9 +29,10 @@ interface ConfigData {
 
 const DEFAULTS: ConfigData = {
   general: {
-    registry_path: '~/.cc-bridge/registry.json',
+    registry_path: REGISTRY_PATH,
     log_level: 'info',
     log_path: null,
+    claude_bin: 'claude',
   },
   scanner: {
     max_file_size: 100 * 1024 * 1024,
@@ -48,13 +50,22 @@ const DEFAULTS: ConfigData = {
   },
 };
 
+function cloneDefaults(): ConfigData {
+  return {
+    general: { ...DEFAULTS.general },
+    scanner: { ...DEFAULTS.scanner },
+    bridge: { ...DEFAULTS.bridge },
+    hook: { ...DEFAULTS.hook },
+  };
+}
+
 export class ConfigManager {
   private data: ConfigData;
   private configPath: string;
 
   constructor(configPath?: string) {
     this.configPath = configPath ?? CONFIG_PATH;
-    this.data = { ...DEFAULTS };
+    this.data = cloneDefaults();
 
     if (existsSync(this.configPath)) {
       try {
@@ -80,6 +91,7 @@ export class ConfigManager {
     const mappings: [string, keyof ConfigData, string][] = [
       ['CC_BRIDGE_REGISTRY_PATH', 'general', 'registry_path'],
       ['CC_BRIDGE_LOG_LEVEL', 'general', 'log_level'],
+      ['CC_BRIDGE_LOG_PATH', 'general', 'log_path'],
       ['CC_BRIDGE_TOKEN', 'bridge', 'token'],
       ['CC_BRIDGE_API_URL', 'bridge', 'api_url'],
     ];

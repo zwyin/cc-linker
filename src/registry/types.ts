@@ -30,7 +30,7 @@ export const SessionEntrySchema = z.object({
   title: z.string().nullable(),
   message_count: z.number(),
   last_message_preview: z.string(),
-  status: StatusSchema,
+  status: StatusSchema.optional(),
 
   visibility: VisibilitySchema.optional(),
   shared_with: z.array(z.string()).optional(),

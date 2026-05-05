@@ -2,6 +2,25 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import chalk from 'chalk';
 import { CLAUDE_SETTINGS_PATH, HOOK_LOG_PATH } from '../../utils/paths';
 
+// Claude Code hook 格式：SessionStart 是 matcher 数组，每个 matcher 包含 hooks 数组
+interface HookMatcher {
+  matcher: string;
+  hooks: Array<{
+    type: string;
+    command: string;
+    timeout?: number;
+    statusMessage?: string;
+  }>;
+}
+
+function isHookInstalled(sessionStart: unknown): boolean {
+  if (!Array.isArray(sessionStart)) return false;
+  return sessionStart.some((matcher: any) => {
+    if (!matcher?.hooks) return false;
+    return matcher.hooks.some((h: any) => h?.command?.includes('cc-bridge'));
+  });
+}
+
 export function hookInstall(): void {
   let settings: any = {};
   if (existsSync(CLAUDE_SETTINGS_PATH)) {
@@ -17,27 +36,43 @@ export function hookInstall(): void {
     }
   }
 
-  if (settings.hooks?.SessionStart?.includes('cc-bridge')) {
+  if (isHookInstalled(settings.hooks?.SessionStart)) {
     console.log(chalk.green('Hook 已安装'));
     return;
   }
 
   settings.hooks = settings.hooks ?? {};
 
-  // Handle SessionStart as array (Claude Code format)
-  if (Array.isArray(settings.hooks.SessionStart)) {
-    settings.hooks.SessionStart.push('cc-bridge hook session-start');
-  } else if (typeof settings.hooks.SessionStart === 'string' && settings.hooks.SessionStart) {
-    settings.hooks.SessionStart = [settings.hooks.SessionStart, 'cc-bridge hook session-start'];
-  } else {
-    settings.hooks.SessionStart = 'cc-bridge hook session-start';
+  // Claude Code 要求的格式：SessionStart 是 matcher 数组
+  const ccBridgeMatcher: HookMatcher = {
+    matcher: 'startup|resume|clear|compact',
+    hooks: [
+      {
+        type: 'command',
+        command: 'cc-bridge hook session-start',
+        timeout: 10,
+      },
+    ],
+  };
+
+  if (!Array.isArray(settings.hooks.SessionStart)) {
+    settings.hooks.SessionStart = [];
+  }
+
+  // 检查是否已有 cc-bridge hook
+  const existingIndex = settings.hooks.SessionStart.findIndex((m: any) =>
+    m?.hooks?.some((h: any) => h?.command?.includes('cc-bridge'))
+  );
+
+  if (existingIndex === -1) {
+    settings.hooks.SessionStart.push(ccBridgeMatcher);
   }
 
   writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
 
   console.log(chalk.green('Hook 安装成功'));
   console.log(`已添加到 ${CLAUDE_SETTINGS_PATH}:`);
-  console.log('  "hooks": { "SessionStart": "cc-bridge hook session-start" }');
+  console.log(JSON.stringify({ hooks: { SessionStart: [ccBridgeMatcher] } }, null, 2));
 }
 
 export function hookUninstall(): void {
@@ -54,11 +89,14 @@ export function hookUninstall(): void {
     console.error('请检查 ~/.claude/settings.json 格式是否正确');
     process.exit(1);
   }
-  if (settings.hooks?.SessionStart?.includes('cc-bridge')) {
+
+  if (isHookInstalled(settings.hooks?.SessionStart)) {
     if (Array.isArray(settings.hooks.SessionStart)) {
-      settings.hooks.SessionStart = settings.hooks.SessionStart.filter(
-        (h: string) => !h.includes('cc-bridge')
-      );
+      settings.hooks.SessionStart = settings.hooks.SessionStart.filter((m: any) => {
+        if (!m?.hooks) return true;
+        // 移除包含 cc-bridge 的 matcher
+        return !m.hooks.some((h: any) => h?.command?.includes('cc-bridge'));
+      });
       if (settings.hooks.SessionStart.length === 0) {
         delete settings.hooks.SessionStart;
       }
@@ -86,7 +124,7 @@ export function hookStatus(): void {
     console.error('请检查 ~/.claude/settings.json 格式是否正确');
     process.exit(1);
   }
-  const installed = settings.hooks?.SessionStart?.includes('cc-bridge');
+  const installed = isHookInstalled(settings.hooks?.SessionStart);
 
   console.log(`Hook 状态: ${installed ? chalk.green('已安装') : chalk.red('未安装')}`);
 

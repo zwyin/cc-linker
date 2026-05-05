@@ -19,10 +19,18 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
     : null;
 
   const toClean: string[] = [];
+  const skipped: string[] = [];
 
   for (const [uuid, entry] of Object.entries(registry.sessions)) {
-    // Clean if JSONL doesn't exist
-    if (!existsSync(entry.jsonl_path)) {
+    const jsonlMissing = !existsSync(entry.jsonl_path);
+    const hasCCConnectMapping = !!entry.cc_connect_session_id;
+
+    // JSONL 不存在时：有 cc-connect 映射则保留（sync 会重新注册），无映射则清理
+    if (jsonlMissing) {
+      if (hasCCConnectMapping) {
+        skipped.push(uuid);
+        continue;
+      }
       toClean.push(uuid);
       continue;
     }
@@ -35,6 +43,9 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
 
   if (toClean.length === 0) {
     console.log(chalk.green('没有需要清理的会话'));
+    if (skipped.length > 0) {
+      console.log(chalk.cyan(`（跳过 ${skipped.length} 个有 cc-connect 映射但 JSONL 缺失的会话）`));
+    }
     return;
   }
 
@@ -43,15 +54,16 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
     const entry = registry.get(uuid);
     console.log(`  - ${uuid.slice(0, 8)}  ${entry?.title ?? 'Untitled'}`);
   }
+  if (skipped.length > 0) {
+    console.log(chalk.cyan(`\n跳过 ${skipped.length} 个有 cc-connect 映射但 JSONL 缺失的会话（sync 时会重新注册）`));
+  }
 
   if (opts.dryRun) {
     console.log(chalk.yellow('\n（dry run，未实际删除）'));
     return;
   }
 
-  for (const uuid of toClean) {
-    await registry.remove(uuid);
-  }
+  await registry.removeBatch(toClean);
 
   console.log(chalk.green(`\n已清理 ${toClean.length} 个会话`));
 }

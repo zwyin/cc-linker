@@ -4,19 +4,21 @@ import { homedir } from 'os';
 import { CCConnectSessionSchema, type CCConnectSession } from '../registry/types';
 import type { RegistryManager } from '../registry/registry';
 import { logger } from '../utils/logger';
+import { normalizeOwner } from '../utils/owner';
 
 export class CCConnectScanner {
   private registry: RegistryManager;
   private sessionsDir: string;
 
-  constructor(registry: RegistryManager, ccConnectDir?: string) {
+  constructor(registry: RegistryManager, homeDir?: string) {
     this.registry = registry;
-    // ccConnectDir is the base directory containing .cc-connect/ (e.g. /home/user or /tmp/test)
-    // When not provided, defaults to homedir()
-    this.sessionsDir = join(ccConnectDir ?? homedir(), '.cc-connect', 'sessions');
+    // 使用 process.env.HOME 而非 homedir()，以支持测试中的 HOME 环境变量覆盖
+    // 注意：homeDir 参数是用户主目录路径（含 .cc-connect 子目录），不是 sessions 目录
+    const actualHomeDir = homeDir ?? (process.env.HOME ?? homedir());
+    this.sessionsDir = join(actualHomeDir, '.cc-connect', 'sessions');
   }
 
-  async scan(): Promise<{ uuids: Set<string>; sids: Set<string> }> {
+  scan(): { uuids: Set<string>; sids: Set<string> } {
     if (!existsSync(this.sessionsDir)) {
       return { uuids: new Set(), sids: new Set() };
     }
@@ -52,11 +54,11 @@ export class CCConnectScanner {
 
           const userKey = sidToUser.get(sid) ?? null;
 
-          await this.registry.upsert(agentId, {
+          this.registry.upsert(agentId, {
             origin: 'cc-connect',
             source: userKey ?? sid,
             platform,
-            owner: this.publicOwner(userKey),
+            owner: userKey ? normalizeOwner(userKey) : null,
             owner_user_key: userKey,
             cc_connect_session_id: sid,
             cc_connect_session_file: filePath,
@@ -73,14 +75,15 @@ export class CCConnectScanner {
   }
 
   private cleanStaleMappings(activeSids: Set<string>): void {
-    for (const entry of Object.values(this.registry.sessions)) {
+    for (const [uuid, entry] of Object.entries(this.registry.sessions)) {
       if (entry.cc_connect_session_id && !activeSids.has(entry.cc_connect_session_id)) {
-        entry.cc_connect_session_id = null;
-        entry.cc_connect_session_file = null;
+        // 映射已失效，清除 cc-connect 相关字段
+        this.registry.upsert(uuid, {
+          cc_connect_session_id: null,
+          cc_connect_session_file: null,
+        });
       }
     }
-    // Note: no explicit save needed here — the caller (syncBeforeCommand) will
-    // save the registry after all scanners complete
   }
 
   private detectPlatform(filename: string): string | null {
@@ -88,11 +91,5 @@ export class CCConnectScanner {
       if (filename.toLowerCase().includes(p)) return p;
     }
     return null;
-  }
-
-  private publicOwner(userKey: string | null): string | null {
-    if (!userKey) return null;
-    const parts = userKey.split(':');
-    return parts.length >= 3 ? `${parts[0]}:${parts[parts.length - 1]}` : userKey;
   }
 }
