@@ -2,11 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 cc-bridge 从 cc-connect 方案迁移到自建飞书 Bot 方案，6 轮递进实现，每轮可独立验证。
+> **Version:** v1.1
+> **Goal:** 将 cc-bridge 从 cc-connect 方案迁移到自建飞书 Bot 方案，6 轮递进实现，每轮可独立验证。
 
 **Architecture:** 单进程架构，内部通过 import 直接调用模块。Feishu Bot（WSClient）+ Session Manager（Claude 进程管理）+ Spool Queue（可靠消息队列）+ Runtime Coordinator（运行态单写者）。
 
 **Tech Stack:** Bun runtime, Commander CLI, @larksuiteoapi/node-sdk, Zod v4, TOML config, proper-lockfile
+
+**执行说明：**
+- 文中的文件删除和提交步骤表达的是操作意图，不要求必须使用文中的 shell 命令逐字执行
+- `git commit` 为建议性的阶段性提交点；若工作区不干净或当前改动不适合独立提交，应按实际情况调整
 
 ---
 
@@ -63,28 +68,24 @@
 - Delete: `tests/unit/scanner/cc-connect.test.ts`
 - Delete: `tests/unit/bridge/client.test.ts`
 - Delete: `tests/fixtures/cc-connect-session.json`
+- Delete: `tests/unit/scanner/source-override.test.ts`（测试 cc-connect origin 覆盖逻辑，已无意义）
 
 - [ ] **Step 1: 删除文件**
 
-```bash
-rm src/scanner/cc-connect.ts
-rm src/bridge/client.ts
-rm src/cli/commands/feishu-cmd.ts
-rm tests/unit/scanner/cc-connect.test.ts
-rm tests/unit/bridge/client.test.ts
-rm tests/fixtures/cc-connect-session.json
-```
+通过 IDE / 安全文件工具删除以下文件：
+- `src/scanner/cc-connect.ts`
+- `src/bridge/client.ts`
+- `src/cli/commands/feishu-cmd.ts`
+- `tests/unit/scanner/cc-connect.test.ts`
+- `tests/unit/bridge/client.test.ts`
+- `tests/fixtures/cc-connect-session.json`
+- `tests/unit/scanner/source-override.test.ts`
 
 - [ ] **Step 2: 清理引用（暂不编译，后续 task 处理）**
 
 先删除，然后在后续 task 中逐个修复 import 报错。
 
-- [ ] **Step 3: 提交**
-
-```bash
-git add -u
-git commit -m "refactor: remove cc-connect modules (scanner, bridge client, feishu-cmd)"
-```
+- [ ] **Step 3: 阶段性提交（如当前工作区干净且适合提交）**
 
 ---
 
@@ -171,7 +172,7 @@ git commit -m "refactor: update registry types for self-hosted Feishu bot scheme
 **Files:**
 - Modify: `src/registry/registry.ts`
 
-当前 `buildSessionEntry()` 返回包含 `source`、`platform`、`owner`、`cc_connect_session_id` 等字段的对象。需要更新为匹配新类型。
+当前 `buildSessionEntry()` 返回包含 `source`、`platform`、`owner`、`cc_connect_session_id` 等字段的对象。除此之外，还需要同步更新 `merge()` / scanner 集成调用链，移除对 cc-connect scanner 及旧字段的依赖。
 
 - [ ] **Step 1: 更新 buildSessionEntry 方法**
 
@@ -200,7 +201,14 @@ git commit -m "refactor: update registry types for self-hosted Feishu bot scheme
   }
 ```
 
-- [ ] **Step 2: 提交**
+- [ ] **Step 2: 更新 `merge()` / scanner 集成调用链**
+
+检查 `src/registry/registry.ts` 中所有与 scanner 合并结果相关的方法，确保：
+- 不再引用 cc-connect scanner 或 `ccConnectUuids`
+- 不再读写 `source`、`platform`、`owner`、`cc_connect_session_id`
+- 合并时优先保留增强元数据：`origin='feishu'`、`status`、`jsonl_path`、`last_error`
+- JSONL 扫描只提供基础会话发现，不单独覆盖飞书来源判定
+- [ ] **Step 3: 提交**
 
 ```bash
 git add src/registry/registry.ts
@@ -552,7 +560,7 @@ git commit -m "refactor: remove cc-connect scanner from sync pipeline"
 **Files:**
 - Modify: `src/scanner/jsonl.ts`
 
-移除 `ccConnectUuids` 参数和相关逻辑。Origin 检测改为仅基于 JSONL 中的 `entrypoint` 字段。
+移除 `ccConnectUuids` 参数和相关逻辑。**注意**：JSONL 扫描只负责基础会话发现，`origin='feishu'` 属于增强元数据，不能仅基于 `entrypoint` 直接可靠恢复。
 
 - [ ] **Step 1: 更新构造函数**
 
@@ -603,7 +611,9 @@ git commit -m "refactor: remove cc-connect scanner from sync pipeline"
 改为：
 
 ```typescript
-    const origin: Origin = entrypoint === 'sdk-cli' ? 'feishu' : 'cli';
+    // Phase 1: JSONL 扫描只提供基础发现能力，不单独推断历史飞书来源
+    // 若已有 registry 中存在更强的来源信息（如 origin='feishu'），在 merge 阶段保留
+    const origin: Origin = 'cli';
 ```
 
 - [ ] **Step 4: 更新 detectOriginFromJsonl**
@@ -617,7 +627,7 @@ git commit -m "refactor: remove cc-connect scanner from sync pipeline"
 改为：
 
 ```typescript
-            const origin = entry.entrypoint === 'sdk-cli' ? 'feishu' : 'cli';
+            const origin = 'cli';
 ```
 
 - [ ] **Step 5: 更新 parseFull 中的 source 设置**
@@ -771,14 +781,13 @@ git commit -m "refactor: hook writes session-events instead of calling register 
 - [ ] **Step 1: 覆盖写入 `src/cli/commands/resume.ts`**
 
 ```typescript
-import { existsSync, readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync } from 'fs';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
 import { CCBridgeError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
-import { CLAUDE_PROJECTS_DIR } from '../../utils/paths';
+import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 import { config } from '../../utils/config';
 
 interface ResumeOptions {
@@ -824,24 +833,22 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
       break;
   }
 
-  // Verify JSONL exists
+  // Execute dry-run（先于 JSONL 检查，dry-run 只显示命令不验证文件）
+  const targetCwd = opts.cwd ?? entry.cwd;
+  const claudeBin = config.get<string>('general.claude_bin', 'claude');
+  if (opts.dryRun) {
+    console.log(chalk.blue(`将执行: cd ${targetCwd} && ${claudeBin} --resume ${uuid}`));
+    return;
+  }
+
+  // 第 1 轮不做 repair / 状态回写。只基于当前 registry 状态做提示。
   if (entry.jsonl_path && !existsSync(entry.jsonl_path)) {
-    const found = findJsonlFile(uuid);
-    if (found) {
-      registry.upsert(uuid, { jsonl_path: found, status: 'active' });
-      await registry.flush();
-      entry.jsonl_path = found;
-    } else {
-      registry.upsert(uuid, { status: 'corrupted' });
-      await registry.flush();
-      throw new CCBridgeError('E002', 'JSONL 文件不存在，会话可能已被清理（已标记 status=corrupted）');
-    }
+    throw new CCBridgeError('E002', 'JSONL 文件不存在，会话可能已被清理。请稍后执行 sync，或等待第 5 轮 repair/reconciler 能力接入。');
   }
 
   // CWD check
-  const targetCwd = opts.cwd ?? entry.cwd;
   const currentDir = process.cwd();
-  if (targetCwd !== currentDir && opts.confirm !== false && !opts.dryRun) {
+  if (targetCwd !== currentDir && opts.confirm !== false) {
     const { confirmed } = await inquirer.prompt([{
       type: 'confirm',
       name: 'confirmed',
@@ -849,13 +856,6 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
       default: true,
     }]);
     if (!confirmed) return;
-  }
-
-  // Execute
-  const claudeBin = config.get<string>('general.claude_bin', 'claude');
-  if (opts.dryRun) {
-    console.log(chalk.blue(`将执行: cd ${targetCwd} && ${claudeBin} --resume ${uuid}`));
-    return;
   }
 
   if (!existsSync(targetCwd)) {
@@ -934,25 +934,9 @@ async function interactiveSelect(registry: RegistryManager): Promise<string> {
 
   return selected;
 }
-
-function findJsonlFile(uuid: string): string | null {
-  try {
-    const projects = readdirSync(CLAUDE_PROJECTS_DIR);
-    for (const project of projects) {
-      const jsonlPath = join(CLAUDE_PROJECTS_DIR, project, `${uuid}.jsonl`);
-      if (existsSync(jsonlPath)) return jsonlPath;
-    }
-  } catch {}
-  return null;
-}
 ```
 
-- [ ] **Step 2: 提交**
-
-```bash
-git add src/cli/commands/resume.ts
-git commit -m "refactor: update resume command for new status semantics, remove cc-connect logic"
-```
+- [ ] **Step 2: 阶段性提交（如适合）**
 
 ---
 
@@ -967,8 +951,11 @@ git commit -m "refactor: update resume command for new status semantics, remove 
 
 ```typescript
 import chalk from 'chalk';
+import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
 import { syncBeforeCommand } from '../../scanner';
+import { CCBridgeError } from '../../utils/errors';
+import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 export async function init(registry: RegistryManager): Promise<void> {
   const isFresh = Object.keys(registry.sessions).length === 0;
@@ -976,6 +963,10 @@ export async function init(registry: RegistryManager): Promise<void> {
     console.log(chalk.green(`✅ Created ${registry.path}`));
   } else {
     console.log(chalk.cyan(`📁 Registry exists at ${registry.path}, will refresh`));
+  }
+
+  if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
+    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，init 会写 registry，请停止服务后重试');
   }
 
   console.log(chalk.blue('🔍 Scanning for existing sessions...'));
@@ -996,12 +987,7 @@ export async function init(registry: RegistryManager): Promise<void> {
 }
 ```
 
-- [ ] **Step 2: 提交**
-
-```bash
-git add src/cli/commands/init.ts
-git commit -m "refactor: update init command output for self-hosted scheme"
-```
+- [ ] **Step 2: 阶段性提交（如适合）**
 
 ---
 
@@ -1019,6 +1005,8 @@ import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
 import { syncBeforeCommand } from '../../scanner';
 import { existsSync } from 'fs';
+import { CCBridgeError } from '../../utils/errors';
+import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 interface SyncOptions {
   scan?: boolean;
@@ -1027,6 +1015,10 @@ interface SyncOptions {
 }
 
 export async function sync(registry: RegistryManager, opts: SyncOptions): Promise<void> {
+  if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
+    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，sync 会写 registry，请停止服务后重试');
+  }
+
   console.log(chalk.blue('🔄 Syncing sessions...'));
 
   const beforeKeys = new Set(Object.keys(registry.sessions));
@@ -1071,12 +1063,7 @@ export async function sync(registry: RegistryManager, opts: SyncOptions): Promis
 }
 ```
 
-- [ ] **Step 2: 提交**
-
-```bash
-git add src/cli/commands/sync.ts
-git commit -m "refactor: update sync command for self-hosted scheme"
-```
+- [ ] **Step 2: 阶段性提交（如适合）**
 
 ---
 
@@ -1094,6 +1081,7 @@ import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
 import { CCBridgeError } from '../../utils/errors';
+import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 interface CleanOptions {
   dryRun?: boolean;
@@ -1101,6 +1089,10 @@ interface CleanOptions {
 }
 
 export async function clean(registry: RegistryManager, opts: CleanOptions = {}): Promise<void> {
+  if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
+    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，clean 会写 registry，请停止服务后重试');
+  }
+
   const olderThanDays = opts.olderThan ? (() => {
     const n = parseInt(opts.olderThan, 10);
     if (isNaN(n)) throw new CCBridgeError('E005', `无效的天数: ${opts.olderThan}`);
@@ -1147,12 +1139,7 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
 }
 ```
 
-- [ ] **Step 2: 提交**
-
-```bash
-git add src/cli/commands/clean.ts
-git commit -m "refactor: update clean command for self-hosted scheme"
-```
+- [ ] **Step 2: 阶段性提交（如适合）**
 
 ---
 
@@ -1572,9 +1559,11 @@ interface ListOptions {
 export async function list(registry: RegistryManager, opts: ListOptions): Promise<void> {
   let sessions = Object.entries(registry.sessions);
 
-  // 默认仅显示 active 会话；--archived 显示 archived/corrupted
+  // 默认显示 active/provisioning/degraded；--archived 显示 archived/corrupted
   if (!opts.archived) {
-    sessions = sessions.filter(([_, s]) => !s.status || s.status === 'active');
+    sessions = sessions.filter(([_, s]) =>
+      !s.status || s.status === 'active' || s.status === 'provisioning' || s.status === 'degraded'
+    );
   } else {
     sessions = sessions.filter(([_, s]) => s.status === 'archived' || s.status === 'corrupted');
   }
@@ -1672,7 +1661,7 @@ git commit -m "refactor: update list/show/output for new types (remove platform/
 - Modify: `tests/unit/utils/config.test.ts`
 - Modify: `tests/unit/utils/errors.test.ts`
 - Modify: `tests/unit/hook/session-start.test.ts`
-- Modify: `tests/unit/scanner/source-override.test.ts` (删除 — 测试 cc-connect origin 覆盖逻辑，已无意义)
+- Delete: `tests/unit/scanner/source-override.test.ts`（已在 Task 1.1 中删除）
 - Modify: `tests/integration/cli-commands.test.ts`
 - Modify: `tests/integration/acceptance.test.ts`
 - Modify: `tests/fixtures/sample.jsonl`
