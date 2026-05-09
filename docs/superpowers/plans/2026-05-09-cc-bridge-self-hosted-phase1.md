@@ -1467,27 +1467,199 @@ git commit -m "refactor: remove feishu-cmd from CLI, update program description"
 - Modify: `src/cli/commands/show.ts`
 - Modify: `src/cli/output.ts`
 
-- [ ] **Step 1: 读取当前文件内容**
+- [ ] **Step 1: 覆盖写入 `src/cli/output.ts`**
 
-先读取 list.ts、show.ts、output.ts 的当前内容，确认具体需要修改的地方。
+更新 `formatOrigin` 和 CSV/JSON 输出以匹配新类型（移除 `platform`）：
 
-- [ ] **Step 2: 更新 list.ts**
+```typescript
+import Table from 'cli-table3';
+import chalk from 'chalk';
+import type { SessionEntry } from '../registry';
 
-移除 `-P --platform` 选项处理，移除 `owner` 过滤。更新格式化输出适配新类型。
+export function formatTimeAgo(isoDate: string): string {
+  const now = new Date();
+  const date = new Date(isoDate);
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
 
-- [ ] **Step 3: 更新 show.ts**
+  if (diffMins < 1) return '刚刚';
+  if (diffMins < 60) return `${diffMins} 分钟前`;
+  if (diffHours < 24) return `${diffHours} 小时前`;
+  if (diffDays < 30) return `${diffDays} 天前`;
+  return date.toLocaleDateString('zh-CN');
+}
 
-移除旧字段显示，新增 `jsonl_path`、`status`、`feishu_session_id`、`feishu_user_id` 等字段显示。
+export function formatOrigin(origin: string): string {
+  return origin === 'feishu' ? chalk.green('飞书') : chalk.blue('终端');
+}
 
-- [ ] **Step 4: 更新 output.ts**
+export function formatTable(sessions: Array<[string, SessionEntry]>): string {
+  const table = new Table({
+    head: ['Ref', '标题', '来源', '项目', '消息', '最后活跃'],
+    colWidths: [10, 30, 10, 15, 8, 15],
+  });
 
-`formatOrigin` 中 `'cc-connect'` → `'feishu'`，移除对 `platform` 的依赖。
+  for (const [uuid, s] of sessions) {
+    table.push([
+      uuid.slice(0, 8),
+      s.title?.slice(0, 28) ?? 'Untitled',
+      formatOrigin(s.origin),
+      s.project_name?.slice(0, 13) ?? '?',
+      s.message_count.toString(),
+      formatTimeAgo(s.last_active),
+    ]);
+  }
 
-- [ ] **Step 5: 提交**
+  return table.toString();
+}
+
+export function formatJson(sessions: Array<[string, SessionEntry]>): string {
+  return JSON.stringify(
+    sessions.map(([uuid, s]) => ({
+      ref: uuid.slice(0, 8),
+      uuid,
+      title: s.title,
+      origin: s.origin,
+      status: s.status ?? 'active',
+      project_name: s.project_name,
+      cwd: s.cwd,
+      jsonl_path: s.jsonl_path,
+      message_count: s.message_count,
+      last_active: s.last_active,
+    })),
+    null,
+    2
+  );
+}
+
+function sanitizeCsvField(value: string): string {
+  if (/^[=+\-@\t\r]/.test(value)) {
+    return "'" + value;
+  }
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function formatCsv(sessions: Array<[string, SessionEntry]>): string {
+  const header = 'ref,uuid,title,origin,status,project_name,cwd,jsonl_path,message_count,last_active';
+  const rows = sessions.map(([uuid, s]) =>
+    [uuid.slice(0, 8), uuid, sanitizeCsvField(s.title ?? ''), s.origin, s.status ?? 'active', sanitizeCsvField(s.project_name ?? ''), sanitizeCsvField(s.cwd), sanitizeCsvField(s.jsonl_path ?? ''), s.message_count, s.last_active].join(',')
+  );
+  return [header, ...rows].join('\n');
+}
+```
+
+- [ ] **Step 2: 覆盖写入 `src/cli/commands/list.ts`**
+
+移除 `platform` 过滤选项：
+
+```typescript
+import chalk from 'chalk';
+import { RegistryManager } from '../../registry';
+import { formatTable, formatJson, formatCsv, formatTimeAgo, formatOrigin } from '../output';
+
+interface ListOptions {
+  project?: string;
+  origin?: string;
+  active?: boolean;
+  archived?: boolean;
+  format?: string;
+  limit?: string;
+  sort?: string;
+}
+
+export async function list(registry: RegistryManager, opts: ListOptions): Promise<void> {
+  let sessions = Object.entries(registry.sessions);
+
+  // 默认仅显示 active 会话；--archived 显示 archived/corrupted
+  if (!opts.archived) {
+    sessions = sessions.filter(([_, s]) => !s.status || s.status === 'active');
+  } else {
+    sessions = sessions.filter(([_, s]) => s.status === 'archived' || s.status === 'corrupted');
+  }
+
+  if (opts.project) {
+    sessions = sessions.filter(([_, s]) => s.project_name?.includes(opts.project!));
+  }
+  if (opts.origin) {
+    sessions = sessions.filter(([_, s]) => s.origin === opts.origin);
+  }
+  if (opts.active) {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    sessions = sessions.filter(([_, s]) => s.last_active > twoHoursAgo);
+  }
+
+  const sortField = opts.sort ?? 'last_active';
+  sessions.sort((a, b) => {
+    if (sortField === 'created_at') return b[1].created_at.localeCompare(a[1].created_at);
+    if (sortField === 'message_count') return b[1].message_count - a[1].message_count;
+    return b[1].last_active.localeCompare(a[1].last_active);
+  });
+
+  const limit = parseInt(opts.limit ?? '20', 10);
+  sessions = sessions.slice(0, limit);
+
+  const format = opts.format ?? 'table';
+  if (format === 'json') {
+    console.log(formatJson(sessions));
+  } else if (format === 'csv') {
+    console.log(formatCsv(sessions));
+  } else {
+    if (sessions.length === 0) {
+      console.log(chalk.yellow('没有找到会话'));
+      return;
+    }
+
+    console.log(formatTable(sessions));
+    console.log(`\n共 ${sessions.length} 个会话。使用 cc-bridge resume <Ref> 或完整 UUID 恢复会话。`);
+  }
+}
+```
+
+- [ ] **Step 3: 覆盖写入 `src/cli/commands/show.ts`**
+
+移除 `source` 字段显示，新增新字段：
+
+```typescript
+import chalk from 'chalk';
+import { RegistryManager } from '../../registry';
+import { CCBridgeError } from '../../utils/errors';
+import { formatOrigin, formatTimeAgo } from '../output';
+
+export async function show(registry: RegistryManager, target: string): Promise<void> {
+  const match = registry.findByPrefix(target);
+  if (!match) {
+    throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+  }
+
+  const [uuid, s] = match;
+
+  console.log(chalk.bold('会话详情'));
+  console.log('─'.repeat(40));
+  console.log(`UUID:        ${uuid}`);
+  console.log(`标题:        ${s.title ?? 'Untitled'}`);
+  console.log(`来源:        ${formatOrigin(s.origin)}`);
+  console.log(`项目:        ${s.project_name ?? '?'}`);
+  console.log(`工作目录:    ${s.cwd}`);
+  console.log(`状态:        ${s.status ?? 'active'}`);
+  console.log(`创建时间:    ${new Date(s.created_at).toLocaleString('zh-CN')}`);
+  console.log(`最后活跃:    ${formatTimeAgo(s.last_active)}`);
+  console.log(`消息数:      ${s.message_count}`);
+  console.log(`\nJSONL 文件: ${s.jsonl_path ?? '未补齐'}`);
+  if (s.last_error) {
+    console.log(`最后错误:    ${s.last_error}`);
+  }
+  console.log(`\n操作:`);
+  console.log(`  cc-bridge resume ${uuid.slice(0, 8)}   恢复此会话`);
+}
+```
+
+- [ ] **Step 4: 提交**
 
 ```bash
-git add src/cli/commands/list.ts src/cli/commands/show.ts src/cli/output.ts
-git commit -m "refactor: update list/show/output for new types"
+git add src/cli/output.ts src/cli/commands/list.ts src/cli/commands/show.ts
+git commit -m "refactor: update list/show/output for new types (remove platform/source, add status/jsonl_path)"
 ```
 
 ---
@@ -1500,7 +1672,7 @@ git commit -m "refactor: update list/show/output for new types"
 - Modify: `tests/unit/utils/config.test.ts`
 - Modify: `tests/unit/utils/errors.test.ts`
 - Modify: `tests/unit/hook/session-start.test.ts`
-- Modify: `tests/unit/scanner/source-override.test.ts` (删除或更新)
+- Modify: `tests/unit/scanner/source-override.test.ts` (删除 — 测试 cc-connect origin 覆盖逻辑，已无意义)
 - Modify: `tests/integration/cli-commands.test.ts`
 - Modify: `tests/integration/acceptance.test.ts`
 - Modify: `tests/fixtures/sample.jsonl`
