@@ -1,4 +1,4 @@
-import { readdirSync, existsSync, statSync } from 'fs';
+import { readdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { CLAUDE_PROJECTS_DIR } from '../utils/paths';
 import { config } from '../utils/config';
@@ -49,14 +49,13 @@ function sleep(ms: number): Promise<void> {
  */
 export function terminateProcessTree(pid: number): void {
   try {
-    // SIGTERM first
     process.kill(pid, 'SIGTERM');
   } catch {
     return; // already dead
   }
 
-  // After 3s, SIGKILL if still alive
-  setTimeout(() => {
+  // After 3s, SIGKILL if still alive. unref() so it doesn't keep the event loop alive.
+  const timer = setTimeout(() => {
     try {
       process.kill(pid, 0); // check if alive
       process.kill(pid, 'SIGKILL');
@@ -64,6 +63,7 @@ export function terminateProcessTree(pid: number): void {
       // already dead
     }
   }, 3000);
+  timer.unref();
 }
 
 /**
@@ -94,15 +94,39 @@ function expandPath(p: string): string {
   return p;
 }
 
+/** Parse a single JSONL line, returning null if not valid JSON */
+function parseJsonlLine(line: string): Record<string, unknown> | null {
+  if (!line.trim()) return null;
+  try {
+    return JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract assistant text from a parsed JSONL entry */
+function extractAssistantText(entry: Record<string, unknown>): string | null {
+  if (entry.type !== 'assistant') return null;
+  const content = entry.message as Record<string, unknown> | undefined;
+  if (!content || !Array.isArray(content.content)) return null;
+  const textBlock = (content.content as Array<Record<string, unknown>>).find(b => b.type === 'text');
+  return textBlock?.text as string | null;
+}
+
+interface SessionLock {
+  promise: Promise<void>;
+  release: () => void;
+}
+
 export class ClaudeSessionManager {
   private activeProcesses = new Map<string, ClaudeSession>();
-  private sessionLocks = new Map<string, Promise<void>>();
+  private sessionLocks = new Map<string, SessionLock>();
   private runningProcesses = 0;
   private processWaiters: Array<() => void> = [];
   private readonly maxConcurrent: number;
 
   constructor() {
-    this.maxConcurrent = config.get<number>('runtime.max_concurrent_sessions', 2);
+    this.maxConcurrent = Math.max(1, config.get<number>('runtime.max_concurrent_sessions', 2));
   }
 
   /**
@@ -115,12 +139,10 @@ export class ClaudeSessionManager {
     cwd: string,
     isNew?: boolean
   ): Promise<SendMessageResult> {
-    // Acquire per-session lock
     const lockKey = sessionId ?? '__new__';
     await this.acquireSessionLock(lockKey);
 
     try {
-      // Acquire global concurrency slot
       await this.acquireSlot();
 
       try {
@@ -148,6 +170,17 @@ export class ClaudeSessionManager {
     }
 
     const expandedCwd = expandPath(cwd);
+    if (!expandedCwd) {
+      return {
+        response: 'Error: cwd is empty',
+        costUsd: 0,
+        durationMs: 0,
+        sessionId: sessionId ?? '',
+        jsonlPath: null,
+        sessionStatus: 'degraded',
+      };
+    }
+
     const startTime = Date.now();
     let lastOutputAt = startTime;
     let responseLines: string[] = [];
@@ -163,7 +196,7 @@ export class ClaudeSessionManager {
         cwd: expandedCwd,
         stdin: 'ignore',
         stdout: 'pipe',
-        stderr: 'pipe',
+        stderr: 'ignore', // I4: ignore stderr to prevent backpressure hang
       });
     } catch (err: any) {
       return {
@@ -177,6 +210,9 @@ export class ClaudeSessionManager {
     }
 
     const procPid = proc.pid;
+
+    // C2: Track new sessions with PID as key, update key once session_id is resolved
+    const trackKey = sessionId ?? `pid:${procPid}`;
     const session: ClaudeSession = {
       sessionId: sessionId ?? '',
       pid: procPid,
@@ -185,17 +221,14 @@ export class ClaudeSessionManager {
       lastOutputAt: startTime,
       isNew,
     };
-
-    // Track active process
-    if (sessionId) {
-      this.activeProcesses.set(sessionId, session);
-    }
+    this.activeProcesses.set(trackKey, session);
 
     // Read stdout line by line
     const reader = proc.stdout.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
+    // I9: readPromise is awaited after exit to ensure stream is fully consumed
     const readPromise = (async () => {
       try {
         while (true) {
@@ -212,16 +245,20 @@ export class ClaudeSessionManager {
             lastOutputAt = Date.now();
             session.lastOutputAt = lastOutputAt;
 
-            try {
-              const parsed = JSON.parse(line);
-              if (parsed.type === 'session_update' && parsed.session_id) {
-                currentSessionId = parsed.session_id;
+            const parsed = parseJsonlLine(line);
+            if (!parsed) continue;
+
+            if (parsed.type === 'session_update' && parsed.session_id) {
+              currentSessionId = parsed.session_id as string;
+              // C2: Update tracking key once session_id is resolved
+              if (trackKey.startsWith('pid:')) {
+                this.activeProcesses.delete(trackKey);
+                session.sessionId = currentSessionId;
+                this.activeProcesses.set(currentSessionId, session);
               }
-              if (parsed.type === 'result' && parsed.cost_usd !== undefined) {
-                costUsd = parsed.cost_usd;
-              }
-            } catch {
-              // not JSON, keep as text
+            }
+            if (parsed.type === 'result' && parsed.cost_usd !== undefined) {
+              costUsd = parsed.cost_usd as number;
             }
           }
         }
@@ -257,50 +294,33 @@ export class ClaudeSessionManager {
     await Promise.race([exitPromise, sleep(hardTimeout + 5000)]);
     clearInterval(timeoutCheck);
 
-    // Ensure process is dead
-    try {
-      process.kill(procPid, 0);
-      process.kill(procPid, 'SIGKILL');
-    } catch {
-      // already dead
+    // I9: Ensure read stream is fully consumed before extracting response
+    await readPromise;
+
+    // C3: Only SIGKILL if process is still alive (exitCode is still null)
+    if (exitCode === null) {
+      try {
+        process.kill(procPid, 0);
+        process.kill(procPid, 'SIGKILL');
+      } catch {
+        // already dead
+      }
     }
 
     // Remove from active processes
-    if (sessionId) {
-      this.activeProcesses.delete(sessionId);
+    this.activeProcesses.delete(trackKey);
+    if (currentSessionId && trackKey !== currentSessionId) {
+      this.activeProcesses.delete(currentSessionId);
     }
 
-    // Build response text
+    // I8: Extract response text in a single pass
     const finalResponse = responseLines
-      .filter(line => {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.type === 'assistant' && parsed.message?.content) {
-            const textBlock = parsed.message.content.find(
-              (b: any) => b.type === 'text'
-            );
-            return textBlock ? textBlock.text : false;
-          }
-          return false;
-        } catch {
-          return true;
-        }
+      .flatMap(line => {
+        const parsed = parseJsonlLine(line);
+        if (!parsed) return [line]; // non-JSON line, keep as-is
+        const text = extractAssistantText(parsed);
+        return text ? [text] : [];
       })
-      .map(line => {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.type === 'assistant' && parsed.message?.content) {
-            const textBlock = parsed.message.content.find(
-              (b: any) => b.type === 'text'
-            );
-            return textBlock?.text ?? '';
-          }
-          return '';
-        } catch {
-          return line;
-        }
-      })
-      .filter(Boolean)
       .join('\n');
 
     const durationMs = Date.now() - startTime;
@@ -331,22 +351,24 @@ export class ClaudeSessionManager {
     while (true) {
       const existing = this.sessionLocks.get(key);
       if (!existing) break;
-      await existing;
+      await existing.promise;
     }
 
     let release: (() => void) | null = null;
-    const lock = new Promise<void>(resolve => {
-      release = resolve;
-    });
+    const lock: SessionLock = {
+      promise: new Promise<void>(resolve => {
+        release = resolve;
+      }),
+      release: release!,
+    };
     this.sessionLocks.set(key, lock);
-    // Attach release to the lock so next waiter can proceed
-    (lock as any).release = release!;
   }
 
+  // S1: Type-safe release
   private releaseSessionLock(key: string): void {
     const lock = this.sessionLocks.get(key);
     if (lock) {
-      (lock as any).release?.();
+      lock.release();
     }
     this.sessionLocks.delete(key);
   }
@@ -384,9 +406,9 @@ export class ClaudeSessionManager {
     }
 
     for (const session of toKill) {
-      logger.info(`清理空闲会话: ${session.sessionId} (PID: ${session.pid})`);
+      logger.info(`清理空闲会话: ${session.sessionId || session.pid} (PID: ${session.pid})`);
       terminateProcessTree(session.pid);
-      this.activeProcesses.delete(session.sessionId);
+      this.activeProcesses.delete(session.sessionId || `pid:${session.pid}`);
     }
   }
 }
