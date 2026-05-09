@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
 import { CCBridgeError } from '../../utils/errors';
+import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 interface CleanOptions {
   dryRun?: boolean;
@@ -9,6 +10,11 @@ interface CleanOptions {
 }
 
 export async function clean(registry: RegistryManager, opts: CleanOptions = {}): Promise<void> {
+  // 运行时拒绝写入
+  if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
+    throw new CCBridgeError('E013', 'Bot 进程正在运行，无法执行 clean');
+  }
+
   const olderThanDays = opts.olderThan ? (() => {
     const n = parseInt(opts.olderThan, 10);
     if (isNaN(n)) throw new CCBridgeError('E005', `无效的天数: ${opts.olderThan}`);
@@ -19,23 +25,15 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
     : null;
 
   const toClean: string[] = [];
-  const skipped: string[] = [];
 
   for (const [uuid, entry] of Object.entries(registry.sessions)) {
-    const jsonlMissing = !existsSync(entry.jsonl_path);
-    const hasCCConnectMapping = !!entry.cc_connect_session_id;
-
-    // JSONL 不存在时：有 cc-connect 映射则保留（sync 会重新注册），无映射则清理
-    if (jsonlMissing) {
-      if (hasCCConnectMapping) {
-        skipped.push(uuid);
-        continue;
-      }
+    // JSONL 不存在时清理
+    if (entry.jsonl_path && !existsSync(entry.jsonl_path)) {
       toClean.push(uuid);
       continue;
     }
 
-    // Clean if older than threshold
+    // 清理超过指定天数的会话
     if (cutoff && entry.last_active < cutoff) {
       toClean.push(uuid);
     }
@@ -43,9 +41,6 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
 
   if (toClean.length === 0) {
     console.log(chalk.green('没有需要清理的会话'));
-    if (skipped.length > 0) {
-      console.log(chalk.cyan(`（跳过 ${skipped.length} 个有 cc-connect 映射但 JSONL 缺失的会话）`));
-    }
     return;
   }
 
@@ -53,9 +48,6 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
   for (const uuid of toClean) {
     const entry = registry.get(uuid);
     console.log(`  - ${uuid.slice(0, 8)}  ${entry?.title ?? 'Untitled'}`);
-  }
-  if (skipped.length > 0) {
-    console.log(chalk.cyan(`\n跳过 ${skipped.length} 个有 cc-connect 映射但 JSONL 缺失的会话（sync 时会重新注册）`));
   }
 
   if (opts.dryRun) {

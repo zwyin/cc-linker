@@ -48,7 +48,29 @@ export class RegistryManager {
 
     try {
       const raw = readFileSync(this.registryPath, 'utf8');
-      const parsed = JSON.parse(raw);
+      let parsed = JSON.parse(raw);
+
+      // Migrate v1 → v2: strip old cc-connect fields, bump version
+      if (parsed.version === 1) {
+        for (const entry of Object.values(parsed.sessions ?? {})) {
+          const e = entry as Record<string, unknown>;
+          delete e.source;
+          delete e.platform;
+          delete e.owner;
+          delete e.owner_user_key;
+          delete e.cc_connect_session_id;
+          delete e.cc_connect_session_file;
+          delete e.visibility;
+          delete e.shared_with;
+          e.jsonl_path = null;
+          e.pending_jsonl_resolve = undefined;
+          e.last_error = null;
+          e.feishu_session_id = null;
+          e.feishu_user_id = null;
+        }
+        parsed.version = 2;
+      }
+
       return RegistrySchema.parse(parsed);
     } catch (err) {
       logger.warn('Registry 损坏，尝试从备份恢复...');
@@ -86,7 +108,7 @@ export class RegistryManager {
 
   private emptyRegistry(): Registry {
     return {
-      version: 1,
+      version: 2,
       updated_at: new Date().toISOString(),
       sessions: {},
     };
@@ -264,7 +286,30 @@ export class RegistryManager {
     }
 
     try {
-      return RegistrySchema.parse(JSON.parse(readFileSync(this.registryPath, 'utf8')));
+      let parsed = JSON.parse(readFileSync(this.registryPath, 'utf8'));
+
+      // Migrate v1 → v2
+      if (parsed.version === 1) {
+        for (const entry of Object.values(parsed.sessions ?? {})) {
+          const e = entry as Record<string, unknown>;
+          delete e.source;
+          delete e.platform;
+          delete e.owner;
+          delete e.owner_user_key;
+          delete e.cc_connect_session_id;
+          delete e.cc_connect_session_file;
+          delete e.visibility;
+          delete e.shared_with;
+          e.jsonl_path = null;
+          e.pending_jsonl_resolve = undefined;
+          e.last_error = null;
+          e.feishu_session_id = null;
+          e.feishu_user_id = null;
+        }
+        parsed.version = 2;
+      }
+
+      return RegistrySchema.parse(parsed);
     } catch {
       return this.restoreFromBackup() ?? this.emptyRegistry();
     }
@@ -273,16 +318,10 @@ export class RegistryManager {
   private buildSessionEntry(entry: Partial<SessionEntry>): SessionEntry {
     return {
       origin: 'cli',
-      source: 'terminal',
-      platform: null,
-      owner: null,
-      owner_user_key: null,
       cwd: '',
       project_name: null,
-      jsonl_path: '',
+      jsonl_path: null,
       project_dir: null,
-      cc_connect_session_id: null,
-      cc_connect_session_file: null,
       created_at: new Date().toISOString(),
       last_active: new Date().toISOString(),
       title: null,

@@ -12,18 +12,15 @@ const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 export class JSONLScanner {
   private registry: RegistryManager;
-  private ccConnectUuids: Set<string>;
   private fileCache: FileCache;
   private claudeDir: string;
 
   constructor(
     registry: RegistryManager,
-    ccConnectUuids: Set<string>,
     fileCache: FileCache,
     claudeDir?: string
   ) {
     this.registry = registry;
-    this.ccConnectUuids = ccConnectUuids;
     this.fileCache = fileCache;
     // 使用 process.env.HOME 而非 homedir()，以支持测试中的 HOME 环境变量覆盖
     this.claudeDir = claudeDir ?? join(process.env.HOME ?? homedir(), '.claude');
@@ -61,14 +58,6 @@ export class JSONLScanner {
 
           const cachedMtime = this.fileCache.get(filePath);
           if (cachedMtime && mtime <= cachedMtime) {
-            // 即使文件被缓存，也需要检查并修正 origin
-            const existing = this.registry.get(sessionId);
-            if (existing) {
-              const correctedOrigin = this.detectOriginFromJsonl(filePath);
-              if (correctedOrigin && existing.origin !== correctedOrigin) {
-                this.registry.upsert(sessionId, { origin: correctedOrigin });
-              }
-            }
             continue;
           }
 
@@ -77,9 +66,6 @@ export class JSONLScanner {
             this.registry.upsert(sessionId, {
               ...meta,
               jsonl_path: filePath,
-              // 只为 CLI 会话设置 source: 'terminal'
-              // cc-connect 会话的 source 由 CCConnectScanner 负责设置
-              ...(meta.origin === 'cli' ? { source: 'terminal' } : {}),
             });
           } else {
             // 已注册会话：检查是否已有 JSONL 元数据（如标题）
@@ -92,8 +78,6 @@ export class JSONLScanner {
               this.registry.upsert(sessionId, {
                 ...meta,
                 jsonl_path: filePath,
-                // 不覆盖已有的 source（cc-connect scanner 设置的值更准确）
-                ...(meta.origin === 'cli' && !existing?.source ? { source: 'terminal' } : {}),
               });
             } else {
               // 已有元数据，只更新活跃信息
@@ -101,11 +85,6 @@ export class JSONLScanner {
               // 若此前因 JSONL 缺失被标记为 corrupted，现在文件恢复则自动重置
               if (existing?.status === 'corrupted') {
                 (meta as any).status = 'active';
-              }
-              // 检查并修正 origin：如果 JSONL 中有 entrypoint，使用 entrypoint 判断
-              const correctedOrigin = this.detectOriginFromJsonl(filePath);
-              if (correctedOrigin && existing?.origin !== correctedOrigin) {
-                (meta as any).origin = correctedOrigin;
               }
               this.registry.upsert(sessionId, meta);
             }
@@ -119,34 +98,10 @@ export class JSONLScanner {
     }
   }
 
-  /**
-   * 从 JSONL 文件中快速检测 origin（只读取前几行找 entrypoint）
-   * 返回 null 表示无法确定，保持原有 origin
-   */
-  private detectOriginFromJsonl(filePath: string): Origin | null {
-    try {
-      const content = readFileSync(filePath, 'utf8');
-      const lines = content.split('\n').filter(Boolean);
-
-      // 只检查前 10 行
-      for (const line of lines.slice(0, 10)) {
-        try {
-          const entry = JSON.parse(line);
-          if (entry.entrypoint) {
-            const origin = entry.entrypoint === 'sdk-cli' ? 'cc-connect' : 'cli';
-            return origin;
-          }
-        } catch {}
-      }
-    } catch {}
-    return null;
-  }
-
   private parseFull(filePath: string, sessionId: string): Partial<SessionEntry> {
     const content = readFileSync(filePath, 'utf8');
     const lines = content.split('\n').filter(Boolean);
 
-    let entrypoint: string | null = null;
     let cwd: string | null = null;
     let aiTitle: string | null = null;
     let lastPrompt: string | null = null;
@@ -156,7 +111,6 @@ export class JSONLScanner {
     for (let i = 0; i < lines.length; i++) {
       try {
         const entry = JSON.parse(lines[i]);
-        if (!entrypoint && entry.entrypoint) entrypoint = entry.entrypoint;
         if (!cwd && entry.cwd) cwd = entry.cwd;
         if (entry.type === 'ai-title' && !aiTitle) aiTitle = entry.aiTitle;
         if (entry.type === 'last-prompt' && !lastPrompt) lastPrompt = entry.lastPrompt;
@@ -173,7 +127,7 @@ export class JSONLScanner {
         // 提取创建时间：取最早的时间戳（首条有 timestamp 的记录）
         if (!createdAt && entry.timestamp) createdAt = entry.timestamp;
         // Early exit: once we have all metadata, no need to keep scanning
-        if (entrypoint && cwd && aiTitle && lastPrompt && firstUserMessage && createdAt) break;
+        if (cwd && aiTitle && lastPrompt && firstUserMessage && createdAt) break;
       } catch {
         // Silently skip malformed JSON lines
       }
@@ -196,12 +150,8 @@ export class JSONLScanner {
       }
     }
 
-    // origin 判断逻辑：
-    // 1. 如果 JSONL 中有 entrypoint 字段，使用 entrypoint 判断（准确）
-    // 2. 如果没有 entrypoint，检查 ccConnectUuids（兼容旧会话）
-    const origin: Origin = entrypoint
-      ? (entrypoint === 'sdk-cli' ? 'cc-connect' : 'cli')
-      : (this.ccConnectUuids.has(sessionId) ? 'cc-connect' : 'cli');
+    // 自建方案下，JSONLScanner 扫描的均为 CLI 会话
+    const origin: Origin = 'cli';
 
     // 标题优先级：ai-title > last-prompt > 第一条用户消息 > Untitled
     const title = aiTitle

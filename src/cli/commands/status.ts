@@ -2,15 +2,14 @@ import chalk from 'chalk';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { RegistryManager } from '../../registry';
 import { formatTimeAgo } from '../output';
-import { CLAUDE_SETTINGS_PATH, CC_CONNECT_SESSIONS_DIR } from '../../utils/paths';
+import { CLAUDE_SETTINGS_PATH, RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 export async function status(registry: RegistryManager): Promise<void> {
   const sessions = Object.values(registry.sessions);
   const active = sessions.filter(s => !s.status || s.status === 'active').length;
-  const archived = sessions.filter(s => s.status === 'archived').length;
   const fromCli = sessions.filter(s => s.origin === 'cli').length;
-  const fromCcConnect = sessions.filter(s => s.origin === 'cc-connect').length;
-  const archivedOrCorrupted = sessions.filter(s => s.status === 'archived' || s.status === 'corrupted').length;
+  const fromFeishu = sessions.filter(s => s.origin === 'feishu').length;
+  const archivedOrCorrupted = sessions.filter(s => s.status === 'archived' || s.status === 'corrupted' || s.status === 'degraded' || s.status === 'provisioning').length;
 
   console.log(chalk.bold('cc-bridge Status'));
   console.log('─'.repeat(40));
@@ -23,22 +22,20 @@ export async function status(registry: RegistryManager): Promise<void> {
 
   console.log(`Total sessions: ${sessions.length}`);
   console.log(`  From CLI:       ${fromCli}`);
-  console.log(`  From cc-connect: ${fromCcConnect}`);
+  console.log(`  From Feishu:    ${fromFeishu}`);
   console.log(`  Active:         ${active}`);
-  console.log(`  Archived:       ${archived}`);
-  console.log(`  Corrupted:      ${archivedOrCorrupted - archived}`);
+  console.log(`  Other states:   ${archivedOrCorrupted}`);
 
-  // Scanners 状态
-  console.log('\nScanners:');
-  const ccConnectEnabled = existsSync(CC_CONNECT_SESSIONS_DIR);
-  console.log(`  cc-connect scanner: ${ccConnectEnabled ? chalk.green('enabled') : chalk.red('disabled')}`);
+  // Runtime 状态
+  console.log('\nRuntime:');
+  const hasLock = existsSync(RUNTIME_OWNER_LOCK_PATH);
+  console.log(`  Owner lock:     ${hasLock ? chalk.green('active') : 'none'}`);
 
   let hookInstalled = false;
   if (existsSync(CLAUDE_SETTINGS_PATH)) {
     try {
       const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
       const sessionStart = settings.hooks?.SessionStart;
-      // 新格式：SessionStart 是 matcher 数组，检查嵌套的 hooks 中是否包含 cc-bridge
       if (Array.isArray(sessionStart)) {
         hookInstalled = sessionStart.some((matcher: any) =>
           matcher?.hooks?.some((h: any) => h?.command?.includes('cc-bridge'))
@@ -50,8 +47,8 @@ export async function status(registry: RegistryManager): Promise<void> {
 
   // Commands 列表
   console.log('\nCommands:');
+  console.log('  cc-bridge start      Launch Feishu bot');
   console.log('  cc-bridge list       List all sessions');
   console.log('  cc-bridge resume     Resume a session');
   console.log('  cc-bridge sync       Sync sessions');
-  console.log('  cc-bridge hook       Manage hooks');
 }

@@ -29,7 +29,6 @@ describe('JSONLScanner', () => {
   it('scans JSONL files and registers sessions', async () => {
     const scanner = new JSONLScanner(
       registry,
-      new Set(),
       new Map(),
       join(tmpDir, '.claude')
     );
@@ -37,30 +36,17 @@ describe('JSONLScanner', () => {
 
     expect(registry.has('test-session-1234')).toBe(true);
     const entry = registry.get('test-session-1234');
-    expect(entry?.origin).toBe('cc-connect');
+    // 自建方案下，JSONLScanner 扫描的均为 CLI 会话
+    expect(entry?.origin).toBe('cli');
     expect(entry?.title).toBe('Test Project Setup');
     expect(entry?.cwd).toBe('/Users/test/project');
     expect(entry?.message_count).toBeGreaterThan(0);
-  });
-
-  it('detects cc-connect origin from ccConnectUuids set', async () => {
-    const scanner = new JSONLScanner(
-      registry,
-      new Set(['test-session-1234']),
-      new Map(),
-      join(tmpDir, '.claude')
-    );
-    await scanner.scan();
-
-    const entry = registry.get('test-session-1234');
-    expect(entry?.origin).toBe('cc-connect');
   });
 
   it('skips unchanged files on incremental scan', async () => {
     const cache = new Map<string, number>();
     const scanner = new JSONLScanner(
       registry,
-      new Set(),
       cache,
       join(tmpDir, '.claude')
     );
@@ -72,7 +58,6 @@ describe('JSONLScanner', () => {
     // Second scan with cache - should skip unchanged files
     const scanner2 = new JSONLScanner(
       registry,
-      new Set(),
       cache,
       join(tmpDir, '.claude')
     );
@@ -85,7 +70,6 @@ describe('JSONLScanner', () => {
   it('returns empty when directory does not exist', async () => {
     const scanner = new JSONLScanner(
       registry,
-      new Set(),
       new Map(),
       '/nonexistent'
     );
@@ -106,7 +90,6 @@ describe('JSONLScanner', () => {
 
     const scanner = new JSONLScanner(
       registry,
-      new Set(),
       new Map(),
       join(tmpDir, '.claude')
     );
@@ -153,7 +136,6 @@ describe('JSONLScanner', () => {
 
     const scanner = new JSONLScanner(
       registry,
-      new Set(),
       new Map(),
       join(tmpDir, '.claude')
     );

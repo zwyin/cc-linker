@@ -15,7 +15,7 @@ export async function show(registry: RegistryManager, target: string): Promise<v
   console.log('─'.repeat(40));
   console.log(`UUID:        ${uuid}`);
   console.log(`标题:        ${s.title ?? 'Untitled'}`);
-  console.log(`来源:        ${formatOrigin(s.origin)} (${s.source})`);
+  console.log(`来源:        ${formatOrigin(s.origin)}`);
   console.log(`项目:        ${s.project_name ?? '?'}`);
   console.log(`工作目录:    ${s.cwd}`);
   console.log(`状态:        ${s.status ?? 'active'}`);

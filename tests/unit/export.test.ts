@@ -23,9 +23,7 @@ describe('export', () => {
     copyFileSync(join(__dirname, '../fixtures/sample.jsonl'), jsonlPath);
 
     registry.upsert('test-session-1234', {
-      origin: 'cc-connect',
-      source: 'feishu:ou_xxx',
-      platform: 'feishu',
+      origin: 'feishu',
       cwd: '/Users/test/project',
       project_name: 'test-project',
       jsonl_path: jsonlPath,
@@ -51,7 +49,7 @@ describe('export', () => {
     const content = readFileSync(outputFile, 'utf8');
     expect(content).toContain('# Test Project Setup');
     expect(content).toContain('Session: test-session-1234');
-    expect(content).toContain('Source: cc-connect (feishu)');
+    expect(content).toContain('Source: feishu');
     expect(content).toContain('Created:');
     expect(content).toContain('Messages: 5');
   });
@@ -67,8 +65,7 @@ describe('export', () => {
     const data = JSON.parse(content);
     expect(data.session).toBe('test-session-1234');
     expect(data.title).toBe('Test Project Setup');
-    expect(data.origin).toBe('cc-connect');
-    expect(data.platform).toBe('feishu');
+    expect(data.origin).toBe('feishu');
     expect(data.message_count).toBeGreaterThan(0);
     expect(Array.isArray(data.messages)).toBe(true);
   });

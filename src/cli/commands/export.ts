@@ -36,8 +36,8 @@ export async function exportSession(
   })() : undefined;
 
   // 安全防护：检查 JSONL 文件存在
-  if (!existsSync(entry.jsonl_path)) {
-    throw new CCBridgeError('E002', `JSONL 文件不存在: ${entry.jsonl_path}`);
+  if (!entry.jsonl_path || !existsSync(entry.jsonl_path)) {
+    throw new CCBridgeError('E002', `JSONL 文件不存在: ${entry.jsonl_path ?? uuid}`);
   }
 
   // 检查文件大小
@@ -69,10 +69,10 @@ export async function exportSession(
   // Write header for markdown format
   if (format === 'markdown') {
     const created = entry.created_at ? new Date(entry.created_at).toLocaleString('zh-CN') : 'Unknown';
-    const platform = entry.platform ? ` (${entry.platform})` : '';
+    const feishuInfo = entry.feishu_session_id ? ` (feishu session: ${entry.feishu_session_id.slice(0, 8)})` : '';
     writeStream.write(`# ${entry.title ?? 'Untitled'}\n\n`);
     writeStream.write(`> Session: ${uuid}\n`);
-    writeStream.write(`> Source: ${entry.origin}${platform}\n`);
+    writeStream.write(`> Source: ${entry.origin}${feishuInfo}\n`);
     writeStream.write(`> Created: ${created}\n`);
     writeStream.write(`> Messages: ${entry.message_count}\n\n`);
     writeStream.write(`---\n\n`);
@@ -146,7 +146,7 @@ export async function exportSession(
       session: uuid,
       title: entry.title,
       origin: entry.origin,
-      platform: entry.platform,
+      feishu_user_id: entry.feishu_user_id,
       created_at: entry.created_at,
       message_count: count,
       messages: jsonEntries,

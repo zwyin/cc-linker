@@ -1,31 +1,44 @@
-import { execFileSync } from 'child_process';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
+import { RUNTIME_SESSION_EVENTS_DIR } from '../utils/paths';
 import { logger } from '../utils/logger';
 import { isValidUUID } from '../utils/validation';
 
+/**
+ * 会话启动 Hook：将 session 发现事件写入 runtime/session-events/ 目录，
+ * 供 Round 5 Reconciler 在启动时归并。不再调用 `cc-bridge register`。
+ */
 export function hookSessionStart(): void {
   try {
     const sessionId = detectSessionId();
     if (!sessionId) {
-      logger.hook('warn', '无法获取 session ID，跳过注册');
+      logger.hook('warn', '无法获取 session ID，跳过事件写入');
       return;
     }
 
     const cwd = process.env.PWD || process.cwd();
-    const origin = detectOrigin();
 
-    execFileSync('cc-bridge', ['register', sessionId, '--origin', origin, '--cwd', cwd, '--source', origin === 'cc-connect' ? 'cc-connect' : 'terminal'], {
-      stdio: 'pipe',
-      timeout: 5000,
-    });
+    // 写入事件文件
+    const eventFile = `${sessionId}.json`;
+    const eventPath = join(RUNTIME_SESSION_EVENTS_DIR, eventFile);
 
-    logger.hook('info', `已注册会话 ${sessionId} (origin: ${origin}, cwd: ${cwd})`);
+    mkdirSync(RUNTIME_SESSION_EVENTS_DIR, { recursive: true, mode: 0o700 });
+
+    const event = {
+      sessionId,
+      cwd,
+      discoveredAt: new Date().toISOString(),
+    };
+
+    writeFileSync(eventPath, JSON.stringify(event, null, 2), { mode: 0o600 });
+
+    logger.hook('info', `已写入 session 事件: ${eventPath}`);
   } catch (err: any) {
     logger.hook('error', `Hook 执行失败: ${err.message}`);
   }
 }
 
 export function detectSessionId(): string | null {
-  // 仅接受带明确 Claude 前缀的环境变量名，避免与 tmux/screen/iTerm 等工具的 SESSION_ID 冲突
   const candidates = [
     'CLAUDE_CODE_SESSION_ID',
     'SESSION_ID',
@@ -40,19 +53,4 @@ export function detectSessionId(): string | null {
   }
 
   return null;
-}
-
-/** 通过环境变量判别来源，优先于 Scanner 的主判别（cc-connect 权威集） */
-export function detectOrigin(): string {
-  // 主判别：entrypoint 环境变量
-  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
-    ?? process.env.ENTRYPOINT
-    ?? process.env.CLAUDE_ENTRYPOINT;
-  if (entrypoint === 'sdk-cli') return 'cc-connect';
-
-  // 辅助判别：cc-connect 特有环境变量
-  if (process.env.CC_CONNECT_SESSION_ID) return 'cc-connect';
-
-  // 兜底：cli
-  return 'cli';
 }

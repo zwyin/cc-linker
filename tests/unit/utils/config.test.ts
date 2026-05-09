@@ -18,15 +18,15 @@ describe('ConfigManager', () => {
 
   it('loads default config when no file exists', () => {
     const config = new ConfigManager(join(tmpDir, 'nonexistent.toml'));
-    expect(config.get('bridge.api_url', '')).toBe('http://localhost:9810');
+    expect(config.get('feishu_bot.app_id', '')).toBe('');
   });
 
   it('loads config from TOML file', () => {
     const configPath = join(tmpDir, 'config.toml');
-    writeFileSync(configPath, '[bridge]\napi_url = "http://custom:9999"');
+    writeFileSync(configPath, '[feishu_bot]\napp_id = "test_app_id"');
 
     const config = new ConfigManager(configPath);
-    expect(config.get('bridge.api_url', '')).toBe('http://custom:9999');
+    expect(config.get('feishu_bot.app_id', '')).toBe('test_app_id');
   });
 
   it('returns fallback for missing keys', () => {
@@ -44,12 +44,12 @@ describe('ConfigManager', () => {
 
   it('does not leak nested config mutations between instances', () => {
     const configPath = join(tmpDir, 'config.toml');
-    writeFileSync(configPath, '[bridge]\napi_url = "http://custom:9999"');
+    writeFileSync(configPath, '[feishu_bot]\napp_id = "test_app_id"');
 
     const customized = new ConfigManager(configPath);
-    expect(customized.get('bridge.api_url', '')).toBe('http://custom:9999');
+    expect(customized.get('feishu_bot.app_id', '')).toBe('test_app_id');
 
     const fresh = new ConfigManager(join(tmpDir, 'nonexistent.toml'));
-    expect(fresh.get('bridge.api_url', '')).toBe('http://localhost:9810');
+    expect(fresh.get('feishu_bot.app_id', '')).toBe('');
   });
 });

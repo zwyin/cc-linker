@@ -4,7 +4,6 @@ import { formatTable, formatJson, formatCsv, formatTimeAgo, formatOrigin } from 
 
 interface ListOptions {
   project?: string;
-  platform?: string;
   origin?: string;
   active?: boolean;
   archived?: boolean;
@@ -20,15 +19,12 @@ export async function list(registry: RegistryManager, opts: ListOptions): Promis
   if (!opts.archived) {
     sessions = sessions.filter(([_, s]) => !s.status || s.status === 'active');
   } else {
-    sessions = sessions.filter(([_, s]) => s.status === 'archived' || s.status === 'corrupted');
+    sessions = sessions.filter(([_, s]) => s.status === 'archived' || s.status === 'corrupted' || s.status === 'degraded' || s.status === 'provisioning');
   }
 
   // Apply filters
   if (opts.project) {
     sessions = sessions.filter(([_, s]) => s.project_name?.includes(opts.project!));
-  }
-  if (opts.platform) {
-    sessions = sessions.filter(([_, s]) => s.platform === opts.platform);
   }
   if (opts.origin) {
     sessions = sessions.filter(([_, s]) => s.origin === opts.origin);

@@ -11,7 +11,6 @@ import { sync } from './cli/commands/sync';
 import { status } from './cli/commands/status';
 import { hookInstall, hookUninstall, hookStatus, hookSessionStart } from './cli/commands/hook';
 import { registerSession } from './cli/commands/register';
-import { feishuCmd } from './cli/commands/feishu-cmd';
 import { exportSession } from './cli/commands/export';
 import { search } from './cli/commands/search';
 import { clean } from './cli/commands/clean';
@@ -20,8 +19,8 @@ const program = new Command();
 
 program
   .name('cc-bridge')
-  .description('cc-connect 与 Claude Code CLI 的会话桥接工具')
-  .version('0.1.0');
+  .description('飞书 ↔ Claude Code CLI 桥接工具')
+  .version('0.2.0');
 
 // Helper to run sync before command
 async function withSync(fn: (registry: RegistryManager) => Promise<void>, skipSync = false) {
@@ -43,7 +42,6 @@ program
   .command('list')
   .description('列出所有可恢复的会话')
   .option('-p, --project <name>', '按项目名过滤')
-  .option('-P, --platform <name>', '按平台过滤')
   .option('-o, --origin <type>', '按来源过滤')
   .option('-a, --active', '只显示最近 2 小时活跃的会话')
   .option('--archived', '显示 archived/corrupted 会话（默认仅显示 active）')
@@ -59,10 +57,8 @@ program
   .command('resume [target]')
   .description('恢复指定会话到 Claude Code CLI')
   .option('-s, --search <query>', '按标题搜索')
-  .option('-L, --latest', '恢复最近活跃的会话')
+  .option('-L, --latest', '恢复最活跃的会话')
   .option('-p, --project <name>', '指定项目')
-  .option('-P, --platform <name>', '指定平台')
-  .option('-u, --user <id>', '指定飞书用户的会话')
   .option('-n, --dry-run', '只显示命令，不执行')
   .option('--no-confirm', '跳过 CWD 变更提示')
   .option('--cwd <path>', '手动指定工作目录')
@@ -108,7 +104,6 @@ program
   .description('注册会话到 registry（内部命令）')
   .option('-o, --origin <type>', '来源', 'cli')
   .option('-c, --cwd <path>', '工作目录')
-  .option('--source <id>', '来源标识', 'terminal')
   .option('-n, --dry-run', '只显示将要注册的条目，不实际写入')
   .action((uuid, opts) => withSync(async (registry) => {
     await registerSession(registry, uuid, opts);
@@ -147,15 +142,6 @@ program
   .action((opts) => withSync(async (registry) => {
     await clean(registry, opts);
   }, !opts.sync));
-
-program
-  .command('feishu-cmd <subcommand> [args...]')
-  .description('飞书侧 /bridge 命令入口')
-  .option('--caller <user>', '调用者标识')
-  .option('--confirm', '确认执行需要重启 cc-connect 的破坏性操作（如 /bridge switch 首次映射）')
-  .action((subcommand, args, opts) => withSync(async (registry) => {
-    await feishuCmd(registry, subcommand, args, opts);
-  }));
 
 // Parse and handle errors
 program.parseAsync(process.argv).catch(handleError);

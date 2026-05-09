@@ -18,7 +18,7 @@ export function formatTimeAgo(isoDate: string): string {
 }
 
 export function formatOrigin(origin: string): string {
-  return origin === 'cc-connect' ? chalk.green('飞书') : chalk.blue('终端');
+  return origin === 'feishu' ? chalk.green('飞书') : chalk.blue('终端');
 }
 
 export function formatTable(sessions: Array<[string, SessionEntry]>): string {
@@ -48,7 +48,6 @@ export function formatJson(sessions: Array<[string, SessionEntry]>): string {
       uuid,
       title: s.title,
       origin: s.origin,
-      platform: s.platform,
       project_name: s.project_name,
       cwd: s.cwd,
       message_count: s.message_count,
@@ -69,9 +68,9 @@ function sanitizeCsvField(value: string): string {
 }
 
 export function formatCsv(sessions: Array<[string, SessionEntry]>): string {
-  const header = 'ref,uuid,title,origin,platform,project_name,cwd,message_count,last_active';
+  const header = 'ref,uuid,title,origin,project_name,cwd,message_count,last_active';
   const rows = sessions.map(([uuid, s]) =>
-    [uuid.slice(0, 8), uuid, sanitizeCsvField(s.title ?? ''), s.origin, s.platform ?? '', sanitizeCsvField(s.project_name ?? ''), sanitizeCsvField(s.cwd), s.message_count, s.last_active].join(',')
+    [uuid.slice(0, 8), uuid, sanitizeCsvField(s.title ?? ''), s.origin, sanitizeCsvField(s.project_name ?? ''), sanitizeCsvField(s.cwd), s.message_count, s.last_active].join(',')
   );
   return [header, ...rows].join('\n');
 }

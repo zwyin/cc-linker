@@ -25,7 +25,6 @@ describe('RegistryManager', () => {
   it('upsert creates new session', async () => {
     registry.upsert('test-uuid-1', {
       origin: 'cli',
-      source: 'terminal',
       cwd: '/test',
       title: 'Test Session',
     });
@@ -113,8 +112,7 @@ describe('RegistryManager', () => {
 
   it('upsert does not overwrite existing values with undefined', () => {
     registry.upsert('test-uuid-1', {
-      origin: 'cc-connect',
-      source: 'feishu:ou_user1',
+      origin: 'feishu',
       title: 'Original Title',
       cwd: '/Users/test',
     });
@@ -127,34 +125,29 @@ describe('RegistryManager', () => {
 
     const entry = registry.get('test-uuid-1');
     expect(entry?.title).toBe('Original Title');
-    expect(entry?.source).toBe('feishu:ou_user1');
-    expect(entry?.origin).toBe('cc-connect');
+    expect(entry?.origin).toBe('feishu');
     expect(entry?.message_count).toBe(42);
     expect(entry?.last_active).toBe('2026-06-01T10:00:00Z');
   });
 
-  it('upsert allows intentional null values (e.g., clearing cc_connect_session_id)', () => {
+  it('upsert allows intentional null values (e.g., clearing jsonl_path)', () => {
     registry.upsert('test-uuid-1', {
-      origin: 'cc-connect',
-      cc_connect_session_id: 's1',
-      cc_connect_session_file: '/path/to/session.json',
+      origin: 'feishu',
+      jsonl_path: '/path/to/file.jsonl',
     });
 
     // Clear stale mapping by setting to null
     registry.upsert('test-uuid-1', {
-      cc_connect_session_id: null,
-      cc_connect_session_file: null,
+      jsonl_path: null,
     });
 
     const entry = registry.get('test-uuid-1');
-    expect(entry?.cc_connect_session_id).toBeNull();
-    expect(entry?.cc_connect_session_file).toBeNull();
+    expect(entry?.jsonl_path).toBeNull();
   });
 
   it('upsert preserves non-overwritten fields', () => {
     registry.upsert('test-uuid-1', {
       origin: 'cli',
-      source: 'terminal',
       cwd: '/Users/test/project',
       title: 'My Project',
       message_count: 10,
@@ -167,7 +160,7 @@ describe('RegistryManager', () => {
 
     const entry = registry.get('test-uuid-1');
     expect(entry?.title).toBe('My Project');
-    expect(entry?.source).toBe('terminal');
+    expect(entry?.origin).toBe('cli');
     expect(entry?.cwd).toBe('/Users/test/project');
     expect(entry?.message_count).toBe(15);
   });
@@ -176,8 +169,8 @@ describe('RegistryManager', () => {
     const registry1 = new RegistryManager(tmpDir);
     const registry2 = new RegistryManager(tmpDir);
 
-    registry1.upsert('uuid-a', { title: 'Session A', source: 'terminal' });
-    registry2.upsert('uuid-b', { title: 'Session B', source: 'terminal' });
+    registry1.upsert('uuid-a', { title: 'Session A' });
+    registry2.upsert('uuid-b', { title: 'Session B' });
 
     await Promise.all([registry1.flush(), registry2.flush()]);
 
@@ -189,7 +182,6 @@ describe('RegistryManager', () => {
   it('merges concurrent field updates on the same session', async () => {
     registry.upsert('shared-uuid', {
       title: 'Original',
-      source: 'terminal',
       cwd: '/Users/test/project',
     });
     await registry.flush();

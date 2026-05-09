@@ -26,7 +26,6 @@ export async function registerSession(
 
   const entry: Partial<SessionEntry> = {
     origin: originResult.data,
-    source: opts.source ?? 'terminal',
     cwd: opts.cwd ?? process.cwd(),
     last_active: new Date().toISOString(),
   };
@@ -35,7 +34,6 @@ export async function registerSession(
     console.log(`[dry-run] 将要注册会话:`);
     console.log(`  UUID:   ${uuid}`);
     console.log(`  Origin: ${entry.origin}`);
-    console.log(`  Source: ${entry.source}`);
     console.log(`  CWD:    ${entry.cwd}`);
     if (registry.has(uuid)) {
       console.log(`  注: 该 UUID 已存在，将更新 last_active 字段`);
