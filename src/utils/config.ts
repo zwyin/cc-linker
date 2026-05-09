@@ -36,6 +36,9 @@ interface ConfigData {
     archive_done_after_hours: number;
     archive_failed_after_days: number;
   };
+  cli_proxy: {
+    enabled: boolean;
+  };
   hook: {
     log_path: string;
     timeout: number;
@@ -74,6 +77,9 @@ const DEFAULTS: ConfigData = {
     archive_done_after_hours: 24,
     archive_failed_after_days: 7,
   },
+  cli_proxy: {
+    enabled: false,
+  },
   hook: {
     log_path: '~/.cc-bridge/hook.log',
     timeout: 10,
@@ -88,6 +94,7 @@ function cloneDefaults(): ConfigData {
     runtime: { ...DEFAULTS.runtime },
     security: { ...DEFAULTS.security },
     queue: { ...DEFAULTS.queue },
+    cli_proxy: { ...DEFAULTS.cli_proxy },
     hook: { ...DEFAULTS.hook },
   };
 }

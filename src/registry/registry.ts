@@ -52,8 +52,10 @@ export class RegistryManager {
 
       // Migrate v1 → v2: strip old cc-connect fields, bump version
       if (parsed.version === 1) {
+        const now = new Date().toISOString();
         for (const entry of Object.values(parsed.sessions ?? {})) {
           const e = entry as Record<string, unknown>;
+          // Remove v1-only fields
           delete e.source;
           delete e.platform;
           delete e.owner;
@@ -62,11 +64,22 @@ export class RegistryManager {
           delete e.cc_connect_session_file;
           delete e.visibility;
           delete e.shared_with;
-          e.jsonl_path = null;
+          // Add v2 fields with safe defaults
+          e.jsonl_path = e.jsonl_path ?? null;
+          e.project_dir = e.project_dir ?? null;
           e.pending_jsonl_resolve = undefined;
-          e.last_error = null;
-          e.feishu_session_id = null;
-          e.feishu_user_id = null;
+          e.last_error = e.last_error ?? null;
+          e.feishu_session_id = e.feishu_session_id ?? null;
+          e.feishu_user_id = e.feishu_user_id ?? null;
+          e.origin = e.origin ?? 'cli';
+          e.cwd = e.cwd ?? '';
+          e.project_name = e.project_name ?? null;
+          e.created_at = e.created_at ?? now;
+          e.last_active = e.last_active ?? now;
+          e.title = e.title ?? null;
+          e.message_count = e.message_count ?? 0;
+          e.last_message_preview = e.last_message_preview ?? '';
+          e.status = e.status ?? 'active';
         }
         parsed.version = 2;
       }
@@ -94,7 +107,40 @@ export class RegistryManager {
         return;
       }
       const raw = readFileSync(this.registryPath, 'utf8');
-      const parsed = JSON.parse(raw);
+      let parsed = JSON.parse(raw);
+
+      // Migrate v1 → v2 (same logic as load())
+      if (parsed.version === 1) {
+        const now = new Date().toISOString();
+        for (const entry of Object.values(parsed.sessions ?? {})) {
+          const e = entry as Record<string, unknown>;
+          delete e.source;
+          delete e.platform;
+          delete e.owner;
+          delete e.owner_user_key;
+          delete e.cc_connect_session_id;
+          delete e.cc_connect_session_file;
+          delete e.visibility;
+          delete e.shared_with;
+          e.jsonl_path = e.jsonl_path ?? null;
+          e.project_dir = e.project_dir ?? null;
+          e.pending_jsonl_resolve = undefined;
+          e.last_error = e.last_error ?? null;
+          e.feishu_session_id = e.feishu_session_id ?? null;
+          e.feishu_user_id = e.feishu_user_id ?? null;
+          e.origin = e.origin ?? 'cli';
+          e.cwd = e.cwd ?? '';
+          e.project_name = e.project_name ?? null;
+          e.created_at = e.created_at ?? now;
+          e.last_active = e.last_active ?? now;
+          e.title = e.title ?? null;
+          e.message_count = e.message_count ?? 0;
+          e.last_message_preview = e.last_message_preview ?? '';
+          e.status = e.status ?? 'active';
+        }
+        parsed.version = 2;
+      }
+
       this.data = RegistrySchema.parse(parsed);
     });
   }
@@ -196,7 +242,7 @@ export class RegistryManager {
 
     if (existing) {
       // 过滤掉 undefined 值，避免覆盖已有字段
-      // null 值是有意的（如 cc_connect_session_id: null 表示清除映射），保留
+      // null 值是有意的（如 jsonl_path: null 表示清除路径），保留
       const filtered: Record<string, any> = {};
       for (const [key, value] of Object.entries(entry)) {
         if (value !== undefined) {
@@ -290,6 +336,7 @@ export class RegistryManager {
 
       // Migrate v1 → v2
       if (parsed.version === 1) {
+        const now = new Date().toISOString();
         for (const entry of Object.values(parsed.sessions ?? {})) {
           const e = entry as Record<string, unknown>;
           delete e.source;
@@ -300,11 +347,21 @@ export class RegistryManager {
           delete e.cc_connect_session_file;
           delete e.visibility;
           delete e.shared_with;
-          e.jsonl_path = null;
+          e.jsonl_path = e.jsonl_path ?? null;
+          e.project_dir = e.project_dir ?? null;
           e.pending_jsonl_resolve = undefined;
-          e.last_error = null;
-          e.feishu_session_id = null;
-          e.feishu_user_id = null;
+          e.last_error = e.last_error ?? null;
+          e.feishu_session_id = e.feishu_session_id ?? null;
+          e.feishu_user_id = e.feishu_user_id ?? null;
+          e.origin = e.origin ?? 'cli';
+          e.cwd = e.cwd ?? '';
+          e.project_name = e.project_name ?? null;
+          e.created_at = e.created_at ?? now;
+          e.last_active = e.last_active ?? now;
+          e.title = e.title ?? null;
+          e.message_count = e.message_count ?? 0;
+          e.last_message_preview = e.last_message_preview ?? '';
+          e.status = e.status ?? 'active';
         }
         parsed.version = 2;
       }
