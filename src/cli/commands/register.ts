@@ -6,7 +6,6 @@ import { isValidUUID } from '../../utils/validation';
 interface RegisterOptions {
   origin?: string;
   cwd?: string;
-  source?: string;
   dryRun?: boolean;
 }
 

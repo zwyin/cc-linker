@@ -100,9 +100,23 @@ async function mergeSessionEvents(registry: RegistryManager): Promise<number> {
 
   let merged = 0;
 
+  // S8: Sort events by discoveredAt to ensure chronological processing
+  const files: Array<{ file: string; discoveredAt: string }> = [];
   for (const file of readdirSync(RUNTIME_SESSION_EVENTS_DIR)) {
     if (!file.endsWith('.json')) continue;
+    const path = join(RUNTIME_SESSION_EVENTS_DIR, file);
+    try {
+      const raw = readFileSync(path, 'utf8');
+      const event = JSON.parse(raw) as { sessionId: string; cwd: string; discoveredAt: string };
+      files.push({ file, discoveredAt: event.discoveredAt });
+    } catch {
+      logger.warn(`读取 session event 失败: ${file}`);
+    }
+  }
 
+  files.sort((a, b) => a.discoveredAt.localeCompare(b.discoveredAt));
+
+  for (const { file } of files) {
     const path = join(RUNTIME_SESSION_EVENTS_DIR, file);
     try {
       const raw = readFileSync(path, 'utf8');

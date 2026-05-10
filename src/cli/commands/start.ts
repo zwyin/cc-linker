@@ -59,7 +59,7 @@ export async function start(registry: RegistryManager): Promise<void> {
     console.log(chalk.cyan('请在 config.toml 中配置 [feishu_bot] app_id 和 app_secret'));
   } else {
     const larkSdk = await import('@larksuiteoapi/node-sdk');
-    const { WSClient, Domain, LoggerLevel, EventDispatcher, Client } = larkSdk;
+    const { WSClient, Domain, LoggerLevel, EventDispatcher } = larkSdk;
 
     // Create event handler for im.message.receive_v1
     const eventDispatcher = new EventDispatcher({});

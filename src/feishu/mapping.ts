@@ -175,8 +175,10 @@ function entriesMatch(
   if (a === null || b === null) return false;
   if (a.type !== b.type) return false;
   if (a.sessionUuid !== b.sessionUuid) return false;
-  // I3: Compare CAS token instead of createdAt to prevent ABA race
-  if (a.casToken !== b.casToken) return false;
+  // I3: Compare CAS token — treat both undefined/empty as matching (backward compat)
+  const tokenA = a.casToken || '';
+  const tokenB = b.casToken || '';
+  if (tokenA !== tokenB) return false;
   // For claimed entries, also verify claimedBy
   if (a.type === 'pending_new_session_claimed' && b.type === 'pending_new_session_claimed') {
     if (a.claimedByMessageId !== b.claimedByMessageId) return false;

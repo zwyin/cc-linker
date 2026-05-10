@@ -362,12 +362,17 @@ export class ClaudeSessionManager {
       const existing = this.sessionLocks.get(key);
       if (!existing) break;
       // I4: Add timeout to prevent infinite wait if lock holder crashes
-      await Promise.race([
-        existing.promise,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error(`session lock timeout for ${key}`)), hardTimeout)
-        ),
-      ]);
+      try {
+        await Promise.race([
+          existing.promise,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error(`session lock timeout for ${key}`)), hardTimeout)
+          ),
+        ]);
+      } catch {
+        // Timeout — clean up stale lock to prevent future waits
+        this.sessionLocks.delete(key);
+      }
     }
 
     let release: (() => void) | null = null;

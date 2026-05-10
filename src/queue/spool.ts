@@ -1,6 +1,6 @@
 import {
   readFileSync, writeFileSync, renameSync, existsSync, mkdirSync,
-  readdirSync, statSync, unlinkSync, rmSync
+  readdirSync, statSync, unlinkSync
 } from 'fs';
 import { join } from 'path';
 import {
@@ -176,8 +176,9 @@ export class SpoolQueue {
       try {
         renameSync(destPath, srcPath);
       } catch {
-        // If move-back fails, mark as failed
-        this.writeAtomic(join(this.failedDir, match.replace(/\.json$/, ':read_error.json')), {
+        // If move-back fails, mark as failed with a proper filename
+        const failedName = `${serialKey}:unknown:error.json`;
+        this.writeAtomic(join(this.failedDir, failedName), {
           messageId: 'unknown',
           openId: 'unknown',
           text: '',
@@ -310,13 +311,23 @@ export class SpoolQueue {
       }
     }
 
-    // Cleanup receipts
+    // Cleanup receipts (TTL + count limit for safety)
     const receiptCutoff = Date.now() - receiptTtlHours * 60 * 60 * 1000;
-    for (const file of readdirSync(this.receiptsDir)) {
+    const receiptMaxCount = 1000;
+    const receiptFiles = readdirSync(this.receiptsDir).sort();
+    for (const file of receiptFiles) {
       const path = join(this.receiptsDir, file);
       const stat = statSync(path);
       if (stat.mtimeMs < receiptCutoff) {
         unlinkSync(path);
+        receiptCleaned++;
+      }
+    }
+    // If still over count limit, delete oldest regardless of age
+    const remainingReceipts = readdirSync(this.receiptsDir).sort();
+    if (remainingReceipts.length > receiptMaxCount) {
+      for (const file of remainingReceipts.slice(0, remainingReceipts.length - receiptMaxCount)) {
+        unlinkSync(join(this.receiptsDir, file));
         receiptCleaned++;
       }
     }
