@@ -37,13 +37,13 @@ export class FeishuBot {
     listSnapshotManager: ListSnapshotManager;
     spoolQueue: SpoolQueue;
     sessionManager?: ClaudeSessionManager;
-    replyFn: FeishuReplyFn;
+    replyFn?: FeishuReplyFn;
   }) {
     this.userManager = opts.userManager;
     this.listSnapshotManager = opts.listSnapshotManager;
     this.spoolQueue = opts.spoolQueue;
     this.sessionManager = opts.sessionManager ?? defaultSessionManager;
-    this.replyFn = opts.replyFn;
+    this.replyFn = opts.replyFn ?? (async () => null);
   }
 
   /**
@@ -117,6 +117,7 @@ export class FeishuBot {
     try {
       const pending = this.spoolQueue.listPending();
       for (const msg of pending) {
+        if (this.stopRequested) break;
         await this.processMessage(msg);
       }
     } finally {
@@ -195,17 +196,25 @@ export class FeishuBot {
     // Check if mapping is pending_new_session_claimed
     const entry = this.userManager.getEntry(msg.openId);
     if (entry?.type === 'pending_new_session_claimed') {
-      // Return "creating new session" hint
       await this.replyTo(msg, '新会话正在创建中，请稍候...');
       this.spoolQueue.markDone(msg.messageId, msg.serialKey);
       return;
     }
 
-    // Send to Claude
+    // Check for no_target — no valid session to route to
+    if (msg.target.type === 'no_target') {
+      await this.replyTo(msg, '未找到可路由的会话。使用 /bridge new <路径> 创建新会话');
+      this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+      return;
+    }
+
+    // C4: Use HOME as default cwd for Feishu messages (not process.cwd())
+    const cwd = process.env.HOME ?? '/';
+
     const targetUuid = msg.target.sessionUuid ?? null;
     const isNew = !targetUuid;
 
-    const result = await this.sessionManager.sendMessage(targetUuid, msg.text, process.cwd(), isNew);
+    const result = await this.sessionManager.sendMessage(targetUuid, msg.text, cwd, isNew);
 
     // Reply with response
     const replyId = await this.replyTo(msg, result.response || '(空回复)');

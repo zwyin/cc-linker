@@ -170,7 +170,8 @@ export class SpoolQueue {
   /** Mark message as done (move to done dir) */
   markDone(messageId: string, serialKey: string, replyMessageId?: string): void {
     const files = readdirSync(this.processingDir);
-    const match = files.find(f => f.includes(messageId));
+    // Use precise match: filename format is `${serialKey}:${messageId}.json`
+    const match = files.find(f => f.endsWith(`:${messageId}.json`));
     if (!match) return;
 
     const srcPath = join(this.processingDir, match);
@@ -193,7 +194,7 @@ export class SpoolQueue {
   /** Mark message as failed (move to failed dir) */
   markFailed(messageId: string, error: string): void {
     const files = readdirSync(this.processingDir);
-    const match = files.find(f => f.includes(messageId));
+    const match = files.find(f => f.endsWith(`:${messageId}.json`));
     if (!match) return;
 
     const srcPath = join(this.processingDir, match);

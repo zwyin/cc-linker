@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { writeFileSync, readFileSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { RUNTIME_OWNER_LOCK_PATH } from '../utils/paths';
 import { CCBridgeError } from '../utils/errors';
@@ -66,7 +66,7 @@ export class StateCoordinator {
     writeFileSync(tmp, JSON.stringify(lockData, null, 2), { mode: 0o600 });
     // Atomic rename
     try {
-      require('fs').renameSync(tmp, this.lockPath);
+      renameSync(tmp, this.lockPath);
     } catch {
       // Another process won the race
       return false;

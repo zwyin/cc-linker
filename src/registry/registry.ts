@@ -10,6 +10,39 @@ import { config } from '../utils/config';
 
 const MAX_BACKUPS = 3;
 
+/** Migrate v1 registry to v2 schema */
+function migrateV1toV2(parsed: any): void {
+  if (parsed.version !== 1) return;
+  const now = new Date().toISOString();
+  for (const entry of Object.values(parsed.sessions ?? {})) {
+    const e = entry as Record<string, unknown>;
+    delete e.source;
+    delete e.platform;
+    delete e.owner;
+    delete e.owner_user_key;
+    delete e.cc_connect_session_id;
+    delete e.cc_connect_session_file;
+    delete e.visibility;
+    delete e.shared_with;
+    e.jsonl_path = e.jsonl_path ?? null;
+    e.project_dir = e.project_dir ?? null;
+    e.pending_jsonl_resolve = undefined;
+    e.last_error = e.last_error ?? null;
+    e.feishu_session_id = e.feishu_session_id ?? null;
+    e.feishu_user_id = e.feishu_user_id ?? null;
+    e.origin = e.origin ?? 'cli';
+    e.cwd = e.cwd ?? '';
+    e.project_name = e.project_name ?? null;
+    e.created_at = e.created_at ?? now;
+    e.last_active = e.last_active ?? now;
+    e.title = e.title ?? null;
+    e.message_count = e.message_count ?? 0;
+    e.last_message_preview = e.last_message_preview ?? '';
+    e.status = e.status ?? 'active';
+  }
+  parsed.version = 2;
+}
+
 export class RegistryManager {
   private data: Registry;
   private basePath: string;
@@ -50,40 +83,7 @@ export class RegistryManager {
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
 
-      // Migrate v1 → v2: strip old cc-connect fields, bump version
-      if (parsed.version === 1) {
-        const now = new Date().toISOString();
-        for (const entry of Object.values(parsed.sessions ?? {})) {
-          const e = entry as Record<string, unknown>;
-          // Remove v1-only fields
-          delete e.source;
-          delete e.platform;
-          delete e.owner;
-          delete e.owner_user_key;
-          delete e.cc_connect_session_id;
-          delete e.cc_connect_session_file;
-          delete e.visibility;
-          delete e.shared_with;
-          // Add v2 fields with safe defaults
-          e.jsonl_path = e.jsonl_path ?? null;
-          e.project_dir = e.project_dir ?? null;
-          e.pending_jsonl_resolve = undefined;
-          e.last_error = e.last_error ?? null;
-          e.feishu_session_id = e.feishu_session_id ?? null;
-          e.feishu_user_id = e.feishu_user_id ?? null;
-          e.origin = e.origin ?? 'cli';
-          e.cwd = e.cwd ?? '';
-          e.project_name = e.project_name ?? null;
-          e.created_at = e.created_at ?? now;
-          e.last_active = e.last_active ?? now;
-          e.title = e.title ?? null;
-          e.message_count = e.message_count ?? 0;
-          e.last_message_preview = e.last_message_preview ?? '';
-          e.status = e.status ?? 'active';
-        }
-        parsed.version = 2;
-      }
-
+      migrateV1toV2(parsed);
       return RegistrySchema.parse(parsed);
     } catch (err) {
       logger.warn('Registry 损坏，尝试从备份恢复...');
@@ -108,39 +108,7 @@ export class RegistryManager {
       }
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
-
-      // Migrate v1 → v2 (same logic as load())
-      if (parsed.version === 1) {
-        const now = new Date().toISOString();
-        for (const entry of Object.values(parsed.sessions ?? {})) {
-          const e = entry as Record<string, unknown>;
-          delete e.source;
-          delete e.platform;
-          delete e.owner;
-          delete e.owner_user_key;
-          delete e.cc_connect_session_id;
-          delete e.cc_connect_session_file;
-          delete e.visibility;
-          delete e.shared_with;
-          e.jsonl_path = e.jsonl_path ?? null;
-          e.project_dir = e.project_dir ?? null;
-          e.pending_jsonl_resolve = undefined;
-          e.last_error = e.last_error ?? null;
-          e.feishu_session_id = e.feishu_session_id ?? null;
-          e.feishu_user_id = e.feishu_user_id ?? null;
-          e.origin = e.origin ?? 'cli';
-          e.cwd = e.cwd ?? '';
-          e.project_name = e.project_name ?? null;
-          e.created_at = e.created_at ?? now;
-          e.last_active = e.last_active ?? now;
-          e.title = e.title ?? null;
-          e.message_count = e.message_count ?? 0;
-          e.last_message_preview = e.last_message_preview ?? '';
-          e.status = e.status ?? 'active';
-        }
-        parsed.version = 2;
-      }
-
+      migrateV1toV2(parsed);
       this.data = RegistrySchema.parse(parsed);
     });
   }
@@ -333,39 +301,7 @@ export class RegistryManager {
 
     try {
       let parsed = JSON.parse(readFileSync(this.registryPath, 'utf8'));
-
-      // Migrate v1 → v2
-      if (parsed.version === 1) {
-        const now = new Date().toISOString();
-        for (const entry of Object.values(parsed.sessions ?? {})) {
-          const e = entry as Record<string, unknown>;
-          delete e.source;
-          delete e.platform;
-          delete e.owner;
-          delete e.owner_user_key;
-          delete e.cc_connect_session_id;
-          delete e.cc_connect_session_file;
-          delete e.visibility;
-          delete e.shared_with;
-          e.jsonl_path = e.jsonl_path ?? null;
-          e.project_dir = e.project_dir ?? null;
-          e.pending_jsonl_resolve = undefined;
-          e.last_error = e.last_error ?? null;
-          e.feishu_session_id = e.feishu_session_id ?? null;
-          e.feishu_user_id = e.feishu_user_id ?? null;
-          e.origin = e.origin ?? 'cli';
-          e.cwd = e.cwd ?? '';
-          e.project_name = e.project_name ?? null;
-          e.created_at = e.created_at ?? now;
-          e.last_active = e.last_active ?? now;
-          e.title = e.title ?? null;
-          e.message_count = e.message_count ?? 0;
-          e.last_message_preview = e.last_message_preview ?? '';
-          e.status = e.status ?? 'active';
-        }
-        parsed.version = 2;
-      }
-
+      migrateV1toV2(parsed);
       return RegistrySchema.parse(parsed);
     } catch {
       return this.restoreFromBackup() ?? this.emptyRegistry();

@@ -6,6 +6,25 @@ import { existsSync, readdirSync, readFileSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path';
 import { logger } from '../utils/logger';
 
+/** Clean stray .tmp files from crashed atomic writes */
+function cleanupTmpFiles(dirs: string[]): number {
+  let cleaned = 0;
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir)) {
+      if (file.endsWith('.tmp')) {
+        try {
+          unlinkSync(join(dir, file));
+          cleaned++;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  return cleaned;
+}
+
 export interface ReconcileResult {
   recoveredProcessing: number;
   rolledBackClaims: number;
@@ -33,6 +52,17 @@ export async function startupReconcile(opts: {
   };
 
   logger.info('启动协调器开始...');
+
+  // 0. Clean stray .tmp files from crashed atomic writes
+  const spoolDirs = [
+    opts.spoolQueue['pendingDir'],
+    opts.spoolQueue['processingDir'],
+    opts.spoolQueue['doneDir'],
+    opts.spoolQueue['failedDir'],
+    opts.spoolQueue['receiptsDir'],
+    opts.spoolQueue['deliveriesDir'],
+  ];
+  result.expiredFiles += cleanupTmpFiles(spoolDirs);
 
   // 1. Recover processing → pending
   result.recoveredProcessing = opts.spoolQueue.recoverProcessing();

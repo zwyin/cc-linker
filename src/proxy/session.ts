@@ -46,21 +46,23 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Terminate a process tree: SIGTERM → wait → SIGKILL
+ * Uses negative PID on Unix to signal the entire process group.
  */
 export function terminateProcessTree(pid: number): void {
+  // Send to entire process group (negative PID on Unix)
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(-pid, 'SIGTERM');
   } catch {
-    return; // already dead
+    // Fallback: try single process kill
+    try { process.kill(pid, 'SIGTERM'); } catch { return; }
   }
 
   // After 3s, SIGKILL if still alive. unref() so it doesn't keep the event loop alive.
   const timer = setTimeout(() => {
     try {
-      process.kill(pid, 0); // check if alive
-      process.kill(pid, 'SIGKILL');
+      process.kill(-pid, 'SIGKILL');
     } catch {
-      // already dead
+      try { process.kill(pid, 'SIGKILL'); } catch {}
     }
   }, 3000);
   timer.unref();
@@ -71,12 +73,17 @@ export function terminateProcessTree(pid: number): void {
  */
 export function cleanupOrphanProcesses(): void {
   try {
-    const result = Bun.spawnSync(['pgrep', '-f', 'claude -p.*--output-format json'], {
+    // Filter to current user only and exclude our own process
+    const uid = process.getuid?.() ?? 0;
+    const result = Bun.spawnSync(['pgrep', '-u', String(uid), '-f', 'claude -p.*--output-format json'], {
       stdio: ['inherit', 'pipe', 'inherit'],
     });
     if (result.exitCode === 0) {
       const output = new TextDecoder().decode(result.stdout);
-      const pids = output.trim().split('\n').filter(Boolean).map(Number);
+      const pids = output.trim().split('\n')
+        .filter(Boolean)
+        .map(Number)
+        .filter(p => p !== process.pid); // exclude ourselves
       for (const pid of pids) {
         logger.info(`清理孤子进程: ${pid}`);
         terminateProcessTree(pid);
@@ -262,8 +269,8 @@ export class ClaudeSessionManager {
             }
           }
         }
-      } catch {
-        // stream closed
+      } catch (err) {
+        logger.warn(`会话 ${sessionId ?? 'new'} 读取流失败: ${err}`);
       }
     })();
 
