@@ -413,9 +413,12 @@ export class ClaudeSessionManager {
     }
 
     for (const session of toKill) {
-      logger.info(`清理空闲会话: ${session.sessionId || session.pid} (PID: ${session.pid})`);
+      const key = session.sessionId || `pid:${session.pid}`;
+      logger.info(`清理空闲会话: ${key} (PID: ${session.pid})`);
       terminateProcessTree(session.pid);
-      this.activeProcesses.delete(session.sessionId || `pid:${session.pid}`);
+      this.activeProcesses.delete(key);
+      // Also clean session lock to prevent deadlock on next message
+      this.sessionLocks.delete(key);
     }
   }
 }

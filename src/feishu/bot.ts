@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { resolve } from 'path';
 import { UserManager } from './mapping';
 import { MappingEntry } from './mapping';
 import { ListSnapshotManager, ListSnapshotEntry } from './list-snapshot';
@@ -148,7 +149,7 @@ export class FeishuBot {
         await this.handleChat(claimed);
       }
     } catch (err: any) {
-      this.spoolQueue.markFailed(claimed.messageId, err.message);
+      this.spoolQueue.markFailed(claimed.messageId, claimed.serialKey, err.message);
       try {
         await this.replyFn(`处理失败: ${err.message}`, claimed.messageId);
       } catch (replyErr) {
@@ -270,22 +271,32 @@ export class FeishuBot {
 
   private async handleNew(msg: SpoolMessage, cwd: string): Promise<void> {
     // Security: validate cwd against allowed/denied roots
+    // Use resolve() + trailing separator to prevent prefix bypass attacks
     const allowedRoots = config.get<string[]>('security.allowed_roots', []);
     const deniedRoots = config.get<string[]>('security.denied_roots', []);
 
-    if (allowedRoots.length > 0 && !allowedRoots.some(r => cwd.startsWith(r))) {
-      const confirmRisky = config.get<boolean>('security.confirm_risky_actions', true);
-      if (confirmRisky) {
-        await this.replyTo(msg, `⚠️ 目录 ${cwd} 不在允许列表中，需要管理员确认`);
-      } else {
-        await this.replyTo(msg, `❌ 目录 ${cwd} 不在允许列表中`);
-        this.spoolQueue.markDone(msg.messageId, msg.serialKey);
-        return;
+    const normalizedCwd = resolve(cwd);
+
+    if (allowedRoots.length > 0) {
+      const isAllowed = allowedRoots.some(r => {
+        const normalizedRoot = resolve(r);
+        return normalizedCwd === normalizedRoot || normalizedCwd.startsWith(normalizedRoot + '/');
+      });
+      if (!isAllowed) {
+        const confirmRisky = config.get<boolean>('security.confirm_risky_actions', true);
+        if (confirmRisky) {
+          await this.replyTo(msg, `⚠️ 目录 ${cwd} 不在允许列表中，需要管理员确认`);
+        } else {
+          await this.replyTo(msg, `❌ 目录 ${cwd} 不在允许列表中`);
+          this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+          return;
+        }
       }
     }
 
     for (const denied of deniedRoots) {
-      if (cwd.startsWith(denied)) {
+      const normalizedDenied = resolve(denied);
+      if (normalizedCwd === normalizedDenied || normalizedCwd.startsWith(normalizedDenied + '/')) {
         await this.replyTo(msg, `❌ 目录 ${cwd} 被禁止使用`);
         this.spoolQueue.markDone(msg.messageId, msg.serialKey);
         return;

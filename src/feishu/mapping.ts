@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { USER_MAPPING_PATH } from '../utils/paths';
 import { config } from '../utils/config';

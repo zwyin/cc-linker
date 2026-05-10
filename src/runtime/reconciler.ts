@@ -1,7 +1,7 @@
 import { RegistryManager } from '../registry';
 import { UserManager, ListSnapshotManager } from '../feishu';
 import { SpoolQueue } from '../queue/spool';
-import { RUNTIME_SESSION_EVENTS_DIR } from '../utils/paths';
+import { RUNTIME_SESSION_EVENTS_DIR, LIST_SNAPSHOT_PATH } from '../utils/paths';
 import { existsSync, readdirSync, readFileSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger';
@@ -146,12 +146,17 @@ async function mergeSessionEvents(registry: RegistryManager): Promise<number> {
  * Clean expired list snapshots.
  */
 function cleanExpiredSnapshots(listSnapshotManager: ListSnapshotManager): number {
-  // If the snapshot file exists but is expired, clearSnapshot removes it.
-  // If it doesn't exist, nothing to clean.
+  // Check if file exists first
+  const snapshotPath = (listSnapshotManager as any).snapshotPath ?? LIST_SNAPSHOT_PATH;
+  if (!existsSync(snapshotPath)) return 0;
+
+  // File exists — check if expired
   const snapshot = listSnapshotManager.loadSnapshot();
   if (!snapshot) {
-    return 0; // nothing to clean
+    // Expired — clear it
+    listSnapshotManager.clearSnapshot();
+    return 1;
   }
-  // Snapshot is valid (not expired) — leave it
+  // Valid (not expired) — leave it
   return 0;
 }

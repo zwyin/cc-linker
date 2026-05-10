@@ -105,7 +105,7 @@ describe('SpoolQueue', () => {
 
     spool.enqueue(msg);
     spool.claimNext('uuid-1');
-    spool.markFailed('msg-1', 'test error');
+    spool.markFailed('msg-1', 'uuid-1', 'test error');
 
     expect(spool.queueSize()).toBe(0);
   });

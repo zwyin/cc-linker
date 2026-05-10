@@ -26,7 +26,7 @@ function migrateV1toV2(parsed: any): void {
     delete e.shared_with;
     e.jsonl_path = e.jsonl_path ?? null;
     e.project_dir = e.project_dir ?? null;
-    e.pending_jsonl_resolve = undefined;
+    e.pending_jsonl_resolve = undefined;  // optional field — remove if absent
     e.last_error = e.last_error ?? null;
     e.feishu_session_id = e.feishu_session_id ?? null;
     e.feishu_user_id = e.feishu_user_id ?? null;
