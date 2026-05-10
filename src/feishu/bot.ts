@@ -28,6 +28,7 @@ export class FeishuBot {
   private sessionManager: ClaudeSessionManager;
   private replyFn: FeishuReplyFn;
   private running = false;
+  private stopRequested = false;
 
   constructor(opts: {
     userManager: UserManager;
@@ -121,7 +122,19 @@ export class FeishuBot {
     }
   }
 
+  /** Signal dispatcher to stop after current message */
+  requestStop(): void {
+    this.stopRequested = true;
+  }
+
+  /** Check if dispatcher is running */
+  isRunning(): boolean {
+    return this.running;
+  }
+
   private async processMessage(msg: SpoolMessage): Promise<void> {
+    if (this.stopRequested) return;
+
     const claimed = this.spoolQueue.claimNext(msg.serialKey);
     if (!claimed) return; // already claimed by another worker
 
@@ -133,7 +146,11 @@ export class FeishuBot {
       }
     } catch (err: any) {
       this.spoolQueue.markFailed(claimed.messageId, err.message);
-      await this.replyFn(`处理失败: ${err.message}`, claimed.messageId);
+      try {
+        await this.replyFn(`处理失败: ${err.message}`, claimed.messageId);
+      } catch (replyErr) {
+        logger.error(`错误回复也失败了: ${replyErr}`);
+      }
     }
   }
 
@@ -278,11 +295,12 @@ export class FeishuBot {
       );
 
       if (swapped) {
-        // Now the next chat message will create a new session
         await this.replyTo(msg, '✅ 已准备好创建新会话，请发送您的第一条消息');
       } else {
         await this.replyTo(msg, '⚠️ 会话状态冲突，请稍后重试');
       }
+    } else {
+      await this.replyTo(msg, '⚠️ 请先完成当前会话或切换到其他会话');
     }
 
     this.spoolQueue.markDone(msg.messageId, msg.serialKey);
@@ -405,7 +423,8 @@ export class FeishuBot {
 
   /** Send reply with chunking for long messages */
   private async replyTo(msg: SpoolMessage, text: string): Promise<string | null> {
-    const MAX_CHUNK = 2000; // Feishu message limit
+    // Conservative chunk limit. Feishu API limit is 150KB; 2000 chars is a safe conservative default.
+    const MAX_CHUNK = 2000;
 
     if (text.length <= MAX_CHUNK) {
       const uuid = stableUuid(msg.messageId);
@@ -413,6 +432,8 @@ export class FeishuBot {
       const replyId = await this.replyFn(text, msg.messageId);
       if (replyId) {
         this.spoolQueue.recordDelivery(msg.messageId, 'sent', uuid);
+      } else {
+        // replyFn failed — delivery stays "sending" for reconciler to handle (Round 5)
       }
       return replyId;
     }

@@ -12,7 +12,7 @@ import { logger } from '../utils/logger';
 import { MappingEntry } from '../feishu/mapping';
 
 // Message states
-export type SpoolStatus = 'pending' | 'processing' | 'replied' | 'done' | 'failed';
+export type SpoolStatus = 'pending' | 'processing' | 'done' | 'failed';
 
 // Target snapshot types
 export type TargetSnapshotType = 'session' | 'new_session_claim' | 'new_session_creating' | 'no_target';
@@ -42,7 +42,6 @@ export interface Receipt {
 }
 
 export interface Delivery {
-  messageId: string;
   spoolMessageId: string;
   status: 'sending' | 'sent';
   requestUuid: string;
@@ -60,7 +59,6 @@ export class SpoolQueue {
   private deliveriesDir: string;
 
   constructor(baseDir?: string) {
-    const dir = baseDir ?? SPOOL_DIR;
     this.pendingDir = baseDir ? join(baseDir, 'pending') : SPOOL_PENDING_DIR;
     this.processingDir = baseDir ? join(baseDir, 'processing') : SPOOL_PROCESSING_DIR;
     this.doneDir = baseDir ? join(baseDir, 'done') : SPOOL_DONE_DIR;
@@ -104,7 +102,6 @@ export class SpoolQueue {
     const path = join(this.deliveriesDir, `${spoolMessageId}.json`);
     const existing = this.getDelivery(spoolMessageId);
     const delivery: Delivery = {
-      messageId: requestUuid,
       spoolMessageId,
       status,
       requestUuid,
@@ -185,7 +182,11 @@ export class SpoolQueue {
     msg.updatedAt = new Date().toISOString();
 
     const destPath = join(this.doneDir, match);
-    renameSync(srcPath, destPath);
+    try {
+      renameSync(srcPath, destPath);
+    } catch {
+      return; // already moved by another worker
+    }
     this.writeAtomic(destPath, msg);
   }
 
@@ -204,7 +205,11 @@ export class SpoolQueue {
     msg.updatedAt = new Date().toISOString();
 
     const destPath = join(this.failedDir, match);
-    renameSync(srcPath, destPath);
+    try {
+      renameSync(srcPath, destPath);
+    } catch {
+      return; // already moved by another worker
+    }
     this.writeAtomic(destPath, msg);
   }
 
@@ -223,49 +228,86 @@ export class SpoolQueue {
     return readdirSync(this.pendingDir).length + readdirSync(this.processingDir).length;
   }
 
-  /** Archive cleanup: done 24h/1000, failed 7d/200 */
-  cleanup(): { cleaned: number; failed: number } {
+  /** Archive cleanup: done 24h, failed 7d, receipts/deliveries TTL */
+  cleanup(): { cleaned: number; failed: number; receipts: number; deliveries: number } {
     let cleaned = 0;
     let failed = 0;
+    let receiptCleaned = 0;
+    let deliveryCleaned = 0;
 
     const doneAfterHours = config.get<number>('queue.archive_done_after_hours', 24);
     const doneMaxCount = 1000;
     const failedAfterDays = config.get<number>('queue.archive_failed_after_days', 7);
     const failedMaxCount = 200;
+    const receiptTtlHours = 24;
+    const deliveryTtlDays = 7;
 
-    // Cleanup done
+    // Cleanup done: first by age, then by count if still over limit
     const doneFiles = readdirSync(this.doneDir).sort();
     const doneCutoff = Date.now() - doneAfterHours * 60 * 60 * 1000;
-    if (doneFiles.length > doneMaxCount) {
-      for (const file of doneFiles.slice(0, doneFiles.length - doneMaxCount)) {
-        const path = join(this.doneDir, file);
-        const stat = statSync(path);
-        if (stat.mtimeMs < doneCutoff) {
-          unlinkSync(path);
-          cleaned++;
-        }
+    for (const file of doneFiles) {
+      const path = join(this.doneDir, file);
+      const stat = statSync(path);
+      if (stat.mtimeMs < doneCutoff) {
+        unlinkSync(path);
+        cleaned++;
+      }
+    }
+    // If still over count limit, delete oldest regardless of age
+    const remainingDone = readdirSync(this.doneDir).sort();
+    if (remainingDone.length > doneMaxCount) {
+      for (const file of remainingDone.slice(0, remainingDone.length - doneMaxCount)) {
+        unlinkSync(join(this.doneDir, file));
+        cleaned++;
       }
     }
 
-    // Cleanup failed
+    // Cleanup failed: first by age, then by count
     const failedFiles = readdirSync(this.failedDir).sort();
     const failedCutoff = Date.now() - failedAfterDays * 24 * 60 * 60 * 1000;
-    if (failedFiles.length > failedMaxCount) {
-      for (const file of failedFiles.slice(0, failedFiles.length - failedMaxCount)) {
-        const path = join(this.failedDir, file);
-        const stat = statSync(path);
-        if (stat.mtimeMs < failedCutoff) {
-          unlinkSync(path);
-          failed++;
-        }
+    for (const file of failedFiles) {
+      const path = join(this.failedDir, file);
+      const stat = statSync(path);
+      if (stat.mtimeMs < failedCutoff) {
+        unlinkSync(path);
+        failed++;
+      }
+    }
+    const remainingFailed = readdirSync(this.failedDir).sort();
+    if (remainingFailed.length > failedMaxCount) {
+      for (const file of remainingFailed.slice(0, remainingFailed.length - failedMaxCount)) {
+        unlinkSync(join(this.failedDir, file));
+        failed++;
       }
     }
 
-    if (cleaned > 0 || failed > 0) {
-      logger.info(`Spool 清理: ${cleaned} done, ${failed} failed`);
+    // Cleanup receipts
+    const receiptCutoff = Date.now() - receiptTtlHours * 60 * 60 * 1000;
+    for (const file of readdirSync(this.receiptsDir)) {
+      const path = join(this.receiptsDir, file);
+      const stat = statSync(path);
+      if (stat.mtimeMs < receiptCutoff) {
+        unlinkSync(path);
+        receiptCleaned++;
+      }
     }
 
-    return { cleaned, failed };
+    // Cleanup deliveries
+    const deliveryCutoff = Date.now() - deliveryTtlDays * 24 * 60 * 60 * 1000;
+    for (const file of readdirSync(this.deliveriesDir)) {
+      const path = join(this.deliveriesDir, file);
+      const stat = statSync(path);
+      if (stat.mtimeMs < deliveryCutoff) {
+        unlinkSync(path);
+        deliveryCleaned++;
+      }
+    }
+
+    if (cleaned > 0 || failed > 0 || receiptCleaned > 0 || deliveryCleaned > 0) {
+      logger.info(`Spool 清理: ${cleaned} done, ${failed} failed, ${receiptCleaned} receipts, ${deliveryCleaned} deliveries`);
+    }
+
+    return { cleaned, failed, receipts: receiptCleaned, deliveries: deliveryCleaned };
   }
 
   /** Recover processing → pending on startup */
