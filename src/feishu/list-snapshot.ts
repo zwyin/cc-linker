@@ -27,6 +27,11 @@ export class ListSnapshotManager {
     this.snapshotPath = snapshotPath ?? LIST_SNAPSHOT_PATH;
   }
 
+  /** I5: Expose path for reconciler access */
+  get path(): string {
+    return this.snapshotPath;
+  }
+
   private ensureDir(): void {
     const dir = join(this.snapshotPath, '..');
     mkdirSync(dir, { recursive: true, mode: 0o700 });

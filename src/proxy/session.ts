@@ -204,6 +204,8 @@ export class ClaudeSessionManager {
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'ignore', // I4: ignore stderr to prevent backpressure hang
+        // C2: Create detached process group for proper process tree killing
+        detached: true,
       });
     } catch (err: any) {
       return {
@@ -355,10 +357,17 @@ export class ClaudeSessionManager {
 
   /** Acquire per-session lock to prevent concurrent messages to same session */
   private async acquireSessionLock(key: string): Promise<void> {
+    const hardTimeout = config.get<number>('runtime.hard_timeout_ms', 30 * 60 * 1000);
     while (true) {
       const existing = this.sessionLocks.get(key);
       if (!existing) break;
-      await existing.promise;
+      // I4: Add timeout to prevent infinite wait if lock holder crashes
+      await Promise.race([
+        existing.promise,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error(`session lock timeout for ${key}`)), hardTimeout)
+        ),
+      ]);
     }
 
     let release: (() => void) | null = null;

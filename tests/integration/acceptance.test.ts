@@ -54,7 +54,7 @@ describe('Acceptance Tests', () => {
   function run(args: string): { stdout: string; exitCode: number } {
     try {
       const stdout = execSync(`bun run src/index.ts ${args}`, {
-        cwd: '/Users/wuyujun/Git/cc-bridge/.claude/worktrees/round1-infra',
+        cwd: '/Users/wuyujun/Git/cc-bridge',
         env,
         encoding: 'utf8',
       });

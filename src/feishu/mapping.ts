@@ -11,6 +11,7 @@ export interface MappingEntry {
   type: MappingEntryType;
   sessionUuid: string | null;
   createdAt: string;
+  casToken?: string; // I3: Unique CAS token to prevent ABA race (auto-generated)
   claimedByMessageId?: string;
   claimedAt?: string;
 }
@@ -99,6 +100,10 @@ export class UserManager {
 
       // Apply the swap
       if (newValue) {
+        // I3: Auto-generate CAS token if not provided
+        if (!newValue.casToken) {
+          newValue.casToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        }
         mapping.entries[openId] = newValue;
       } else {
         delete mapping.entries[openId];
@@ -136,6 +141,8 @@ export class UserManager {
             entry.type = 'pending_new_session';
             delete entry.claimedByMessageId;
             delete entry.claimedAt;
+            // I3: Generate new CAS token on rollback
+            entry.casToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
             rolledBack++;
           }
         }
@@ -168,8 +175,8 @@ function entriesMatch(
   if (a === null || b === null) return false;
   if (a.type !== b.type) return false;
   if (a.sessionUuid !== b.sessionUuid) return false;
-  // C3: Also compare createdAt to prevent stale CAS
-  if (a.createdAt !== b.createdAt) return false;
+  // I3: Compare CAS token instead of createdAt to prevent ABA race
+  if (a.casToken !== b.casToken) return false;
   // For claimed entries, also verify claimedBy
   if (a.type === 'pending_new_session_claimed' && b.type === 'pending_new_session_claimed') {
     if (a.claimedByMessageId !== b.claimedByMessageId) return false;

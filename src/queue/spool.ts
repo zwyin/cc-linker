@@ -9,7 +9,6 @@ import {
 } from '../utils/paths';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
-import { MappingEntry } from '../feishu/mapping';
 
 // Message states
 export type SpoolStatus = 'pending' | 'processing' | 'done' | 'failed';
@@ -115,18 +114,27 @@ export class SpoolQueue {
    * Returns false if queue is full or already received.
    */
   enqueue(msg: SpoolMessage): boolean {
-    // Idempotency check
-    if (this.hasReceipt(msg.messageId)) {
-      logger.debug(`消息已接收，跳过: ${msg.messageId}`);
+    // I1: Atomic receipt write with exclusive flag to prevent race
+    const receiptPath = join(this.receiptsDir, `${msg.messageId}.json`);
+    const receipt: Receipt = { messageId: msg.messageId, receivedAt: new Date().toISOString() };
+
+    // Try to claim the receipt atomically via exclusive write
+    try {
+      writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600, flag: 'wx' });
+    } catch {
+      // File already exists — another request won the CAS
+      logger.debug(`消息已接收（CAS 失败），跳过: ${msg.messageId}`);
       return false;
     }
 
-    // Queue size check
+    // Queue size check (after claiming receipt to avoid TOCTOU)
     const pendingCount = readdirSync(this.pendingDir).length;
     const processingCount = readdirSync(this.processingDir).length;
     const maxSize = config.get<number>('queue.max_queue_size', MAX_QUEUE_SIZE);
     if (pendingCount + processingCount >= maxSize) {
       logger.warn(`队列已满 (${pendingCount + processingCount}/${maxSize})，拒绝: ${msg.messageId}`);
+      // Revert receipt
+      try { unlinkSync(receiptPath); } catch {}
       return false;
     }
 
@@ -136,7 +144,6 @@ export class SpoolQueue {
 
     const path = join(this.pendingDir, `${msg.serialKey}:${msg.messageId}.json`);
     this.writeAtomic(path, msg);
-    this.recordReceipt(msg.messageId);
 
     logger.debug(`消息入队: ${msg.messageId} (key=${msg.serialKey}, target=${msg.target.type})`);
     return true;
@@ -163,6 +170,25 @@ export class SpoolQueue {
       msg.status = 'processing';
       msg.updatedAt = new Date().toISOString();
       this.writeAtomic(destPath, msg);
+    } else {
+      // C1: If read fails, move back to pending to prevent stuck message
+      logger.warn(`claimNext 读取失败，将消息移回 pending: ${destPath}`);
+      try {
+        renameSync(destPath, srcPath);
+      } catch {
+        // If move-back fails, mark as failed
+        this.writeAtomic(join(this.failedDir, match.replace(/\.json$/, ':read_error.json')), {
+          messageId: 'unknown',
+          openId: 'unknown',
+          text: '',
+          target: { type: 'no_target' },
+          serialKey: serialKey,
+          status: 'failed',
+          error: 'read_spool_message_failed',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
     }
     return msg;
   }
@@ -327,8 +353,13 @@ export class SpoolQueue {
       msg.updatedAt = new Date().toISOString();
 
       const destPath = join(this.pendingDir, file);
-      renameSync(srcPath, destPath);
-      this.writeAtomic(destPath, msg);
+      try {
+        renameSync(srcPath, destPath);
+        this.writeAtomic(destPath, msg);
+      } catch (err) {
+        logger.warn(`recoverProcessing 失败: ${srcPath}: ${err}`);
+        continue;
+      }
       recovered++;
     }
 

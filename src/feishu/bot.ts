@@ -270,6 +270,13 @@ export class FeishuBot {
   }
 
   private async handleNew(msg: SpoolMessage, cwd: string): Promise<void> {
+    // C3: Validate cwd is not empty
+    if (!cwd || !cwd.trim()) {
+      await this.replyTo(msg, '用法: /bridge new <工作目录路径>');
+      this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+      return;
+    }
+
     // Security: validate cwd against allowed/denied roots
     // Use resolve() + trailing separator to prevent prefix bypass attacks
     const allowedRoots = config.get<string[]>('security.allowed_roots', []);
@@ -469,9 +476,13 @@ export class FeishuBot {
       const uuid = stableUuid(msg.messageId, chunkIndex++);
       this.spoolQueue.recordDelivery(msg.messageId, 'sending', uuid);
       const id = await this.replyFn(chunk, msg.messageId);
-      if (id && !replyId) replyId = id;
       if (id) {
+        if (!replyId) replyId = id;
         this.spoolQueue.recordDelivery(msg.messageId, 'sent', uuid);
+      } else {
+        // I7: Reply failed — stop sending remaining chunks
+        logger.warn(`飞书回复失败 (chunk ${chunkIndex}): ${msg.messageId}`);
+        break;
       }
     }
     return replyId;

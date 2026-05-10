@@ -147,8 +147,7 @@ async function mergeSessionEvents(registry: RegistryManager): Promise<number> {
  */
 function cleanExpiredSnapshots(listSnapshotManager: ListSnapshotManager): number {
   // Check if file exists first
-  const snapshotPath = (listSnapshotManager as any).snapshotPath ?? LIST_SNAPSHOT_PATH;
-  if (!existsSync(snapshotPath)) return 0;
+  if (!existsSync(listSnapshotManager.path)) return 0;
 
   // File exists — check if expired
   const snapshot = listSnapshotManager.loadSnapshot();
