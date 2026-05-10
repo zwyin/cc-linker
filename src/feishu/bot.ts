@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
-import { UserManager, MappingEntry, ListSnapshotManager, ListSnapshotEntry } from '../feishu';
+import { UserManager } from './mapping';
+import { MappingEntry } from './mapping';
+import { ListSnapshotManager, ListSnapshotEntry } from './list-snapshot';
 import { SpoolQueue, SpoolMessage, TargetSnapshot, TargetSnapshotType } from '../queue/spool';
 import { ClaudeSessionManager, SendMessageResult } from '../proxy/session';
 import { sessionManager as defaultSessionManager } from '../proxy/session';
