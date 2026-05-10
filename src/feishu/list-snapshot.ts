@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { LIST_SNAPSHOT_PATH } from '../utils/paths';
 import { logger } from '../utils/logger';
@@ -71,7 +71,8 @@ export class ListSnapshotManager {
       }
 
       return snapshot;
-    } catch {
+    } catch (err) {
+      logger.warn(`列表快照解析失败: ${err}`);
       return null;
     }
   }
@@ -92,11 +93,10 @@ export class ListSnapshotManager {
   clearSnapshot(): void {
     try {
       if (existsSync(this.snapshotPath)) {
-        // Atomic delete via rename to empty
-        writeFileSync(this.snapshotPath, JSON.stringify({ entries: [], createdAt: '', openId: '' }));
+        unlinkSync(this.snapshotPath);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      logger.warn(`清除列表快照失败: ${err}`);
     }
   }
 }

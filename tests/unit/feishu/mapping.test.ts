@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { UserManager } from '../../../src/feishu/mapping';
 import { ListSnapshotManager } from '../../../src/feishu/list-snapshot';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -21,6 +21,7 @@ describe('UserManager', () => {
   });
 
   it('creates empty mapping file on construction', () => {
+    userManager.getEntry("test"); // trigger lazy init
     expect(existsSync(mappingPath)).toBe(true);
     const raw = readFileSync(mappingPath, 'utf8');
     const data = JSON.parse(raw);
@@ -271,7 +272,7 @@ describe('ListSnapshotManager', () => {
     const raw = readFileSync(snapshotPath, 'utf8');
     const data = JSON.parse(raw);
     data.createdAt = new Date(Date.now() - 11 * 60 * 1000).toISOString(); // 11 minutes ago
-    require('fs').writeFileSync(snapshotPath, JSON.stringify(data, null, 2));
+    writeFileSync(snapshotPath, JSON.stringify(data, null, 2));
 
     expect(manager.loadSnapshot()).toBeNull();
     expect(manager.resolveIndex(1)).toBeNull();
@@ -293,9 +294,7 @@ describe('ListSnapshotManager', () => {
 
     manager.clearSnapshot();
 
-    // After clearing, loadSnapshot returns null (empty entries)
-    const snapshot = manager.loadSnapshot();
-    expect(snapshot).not.toBeNull(); // file still exists but empty
-    expect(snapshot!.entries).toHaveLength(0);
+    // After clearing, file should be deleted and loadSnapshot returns null
+    expect(manager.loadSnapshot()).toBeNull();
   });
 });
