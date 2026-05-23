@@ -44,8 +44,12 @@ export class CardUpdater {
   async startProcessing(openId: string): Promise<string> {
     const card = this.buildProcessingCard();
     const resp = await this.client.im.v1.message.create({
-      receive_id_type: 'open_id', receive_id: openId,
-      msg_type: 'interactive', content: JSON.stringify(card),
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: openId,
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
+      },
     });
     this.cardMessageId = resp.data?.message_id ?? null;
     if (!this.cardMessageId) throw new Error('Failed to create processing card');
@@ -94,17 +98,7 @@ export class CardUpdater {
   }
 
   truncateContent(content: string): string {
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(content);
-    if (bytes.length <= this.maxCardBytes) return content;
-    const decoder = new TextDecoder();
-    let low = 0, high = bytes.length;
-    while (low < high) {
-      const mid = Math.floor((low + high + 1) / 2);
-      if (decoder.decode(bytes.slice(0, mid)).length <= this.maxCardBytes) low = mid;
-      else high = mid - 1;
-    }
-    return decoder.decode(bytes.slice(0, low)) + '...';
+    return truncateBytes(content, this.maxCardBytes);
   }
 
   dispose(): void {
@@ -183,14 +177,13 @@ function esc(text: string): string {
 
 function truncateBytes(text: string, maxBytes: number): string {
   const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  if (bytes.length <= maxBytes) return text;
-  const decoder = new TextDecoder();
-  let low = 0, high = bytes.length;
+  if (encoder.encode(text).length <= maxBytes) return text;
+
+  let low = 0, high = text.length;
   while (low < high) {
     const mid = Math.floor((low + high + 1) / 2);
-    if (decoder.decode(bytes.slice(0, mid)).length <= maxBytes) low = mid;
+    if (encoder.encode(text.slice(0, mid)).length <= maxBytes) low = mid;
     else high = mid - 1;
   }
-  return decoder.decode(bytes.slice(0, low)) + '...';
+  return text.slice(0, low) + '...';
 }

@@ -37,7 +37,13 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     uuid = await searchAndSelect(registry, opts.search);
   } else if (target) {
     const match = registry.findByPrefix(target);
-    if (!match) throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    if (!match) {
+      const count = Object.keys(registry.sessions).filter(u => u.startsWith(target)).length;
+      if (count > 1) {
+        throw new CCBridgeError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
+      }
+      throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    }
     uuid = match[0];
   } else {
     uuid = await interactiveSelect(registry);

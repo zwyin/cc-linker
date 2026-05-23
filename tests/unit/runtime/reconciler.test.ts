@@ -108,7 +108,7 @@ describe('startupReconcile', () => {
   it('rolls back timed-out claims', async () => {
     const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
     const now = new Date();
-    const expiredTime = new Date(now.getTime() - 120 * 1000);
+    const expiredTime = new Date(now.getTime() - 11 * 60 * 1000);
 
     // Create an expired claim directly in the mapping file
     await userManager.compareAndSwap(

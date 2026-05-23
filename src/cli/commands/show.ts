@@ -6,6 +6,10 @@ import { formatOrigin, formatTimeAgo } from '../output';
 export async function show(registry: RegistryManager, target: string): Promise<void> {
   const match = registry.findByPrefix(target);
   if (!match) {
+    const count = Object.keys(registry.sessions).filter(u => u.startsWith(target)).length;
+    if (count > 1) {
+      throw new CCBridgeError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
+    }
     throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
   }
 

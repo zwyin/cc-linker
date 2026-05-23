@@ -199,7 +199,8 @@ export class RegistryManager {
     if (matches.length === 0) return null;
     if (matches.length === 1) return matches[0];
 
-    throw new CCBridgeError('E006', `前缀 "${prefix}" 匹配到 ${matches.length} 个会话，请输入更长的前缀`);
+    // Ambiguous: multiple matches — return null so callers can show friendly message
+    return null;
   }
 
   /** 内存中 upsert，不写磁盘。Scanner 批量操作用，完成后调用 flush()。

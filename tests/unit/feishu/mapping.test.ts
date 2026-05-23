@@ -140,7 +140,7 @@ describe('UserManager', () => {
 
   it('rollbackTimedOutClaims rolls back expired claims', async () => {
     const now = new Date();
-    const expiredTime = new Date(now.getTime() - 120 * 1000); // 2 minutes ago
+    const expiredTime = new Date(now.getTime() - 11 * 60 * 1000); // 11 minutes ago
 
     // Create an expired claim
     await userManager.compareAndSwap(

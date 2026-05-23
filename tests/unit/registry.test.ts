@@ -49,16 +49,12 @@ describe('RegistryManager', () => {
     expect(match![0]).toBe('b21d6d04-d4bf-42aa-9a8d-c87dc16ae5ec');
   });
 
-  it('findByPrefix throws E006 on multiple matches', async () => {
+  it('findByPrefix returns null on multiple matches', async () => {
     registry.upsert('b21d6d04-aaaa-aaaa-aaaa-aaaaaaaaaaaa', { title: 'A' });
     registry.upsert('b21d6d04-bbbb-bbbb-bbbb-bbbbbbbbbbbb', { title: 'B' });
 
-    try {
-      registry.findByPrefix('b21d6d04');
-      expect(true).toBe(false); // Should not reach here
-    } catch (err: any) {
-      expect(err.code).toBe('E006');
-    }
+    const result = registry.findByPrefix('b21d6d04');
+    expect(result).toBeNull();
   });
 
   it('findByPrefix returns null for no match', async () => {

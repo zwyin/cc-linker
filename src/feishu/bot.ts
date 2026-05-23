@@ -747,7 +747,11 @@ export class FeishuBot {
       return;
     }
 
-    await this.createSessionFromPrompt(msg, cwd, msg.messageId, prompt);
+    if (config.get<boolean>('stream.enabled', false)) {
+      await this.createSessionFromPromptStreaming(msg, cwd, msg.messageId, prompt);
+    } else {
+      await this.createSessionFromPrompt(msg, cwd, msg.messageId, prompt);
+    }
   }
 
   private async handleSwitch(msg: SpoolMessage, target: string): Promise<void> {
@@ -762,7 +766,7 @@ export class FeishuBot {
       : this.listSnapshotManager.resolveIndex(index, msg.openId);
 
     if (!uuid) {
-      await this.replyAndFinalize(msg, `未找到序号 ${target} 对应的会话，请先执行 /bridge list。`);
+      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /bridge list 查看完整列表。`);
       return;
     }
 
@@ -781,7 +785,7 @@ export class FeishuBot {
       : this.listSnapshotManager.resolveIndex(index, msg.openId);
 
     if (!uuid) {
-      await this.replyAndFinalize(msg, '未找到对应会话，请先执行 /bridge list。');
+      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /bridge list 查看完整列表。`);
       return;
     }
 
@@ -999,6 +1003,19 @@ export class FeishuBot {
     }
 
     const defaultCwd = config.get<string>('feishu_bot.default_cwd', '');
+    const cwd = defaultCwd || process.env.HOME || '';
+    if (!cwd) {
+      await this.replyFn('未配置默认工作目录，请先在 config.toml 中设置 feishu_bot.default_cwd。', { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');
+      return;
+    }
+    const validationError = validateCwd(cwd);
+    if (validationError) {
+      await this.replyFn(validationError, { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');
+      return;
+    }
+
     const swapped = await this.userManager.compareAndSwap(
       openId,
       currentEntry ?? null,
@@ -1006,7 +1023,7 @@ export class FeishuBot {
         type: 'pending_new_session',
         sessionUuid: null,
         createdAt: currentEntry?.createdAt ?? new Date().toISOString(),
-        cwd: defaultCwd || process.env.HOME || '',
+        cwd,
       },
     );
 

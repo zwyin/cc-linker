@@ -24,6 +24,7 @@ describe('FeishuBot', () => {
     replies = [];
     originalMaxPending = (config as any).data.queue.max_pending;
     (config as any).data.feishu_bot.owner_open_id = '';
+    (config as any).data.feishu_bot.default_cwd = '';
     (config as any).data.security.allowed_roots = [];
     (config as any).data.security.denied_roots = [];
     (config as any).data.stream.enabled = false;

@@ -164,311 +164,18 @@ export async function daemonStatus(): Promise<void> {
   }
 }
 
-async function startForeground(registry: RegistryManager, opts: StartOptions): Promise<void> {
-  console.log(chalk.blue('🚀 启动 cc-bridge...'));
-
-  // 1. Initialize modules (use singletons for shared state across modules)
-  const spoolQueue = new SpoolQueue();
-  const stateCoordinator = new StateCoordinator();
-  let replyFn: FeishuReplyFn = async () => null;
-  let cardReplyFn: FeishuBotCardReplyFn = async () => null;
-
-  // 2. Cleanup orphan processes on startup
-  cleanupOrphanProcesses();
-
-  // 3. Acquire owner lock
-  if (!stateCoordinator.tryAcquire()) {
-    console.log(chalk.red('❌ 获取 owner.lock 失败，可能有其他实例正在运行'));
-    process.exit(1);
-  }
-
-  // 4. Startup reconciliation
-  try {
-    const result = await startupReconcile({
-      registry,
-      userManager,
-      listSnapshotManager,
-      spoolQueue,
-    });
-    console.log(chalk.green(`✅ 启动协调: ${result.recoveredProcessing} 恢复, ${result.rolledBackClaims} 回滚, ${result.mergedEvents} 事件归并`));
-  } catch (err) {
-    console.error(chalk.red(`启动协调失败: ${err}`));
-    stateCoordinator.release();
-    process.exit(1);
-  }
-
-  // 6. Wire up WSClient (C4: Feishu WebSocket long connection)
-  const appId = config.get<string>('feishu_bot.app_id', '');
-  const appSecret = config.get<string>('feishu_bot.app_secret', '');
-
-  let wsClient: any = null;
-  let client: any = null;
-
-  // 5. Initialize Feishu Bot (feishuClient will be null if not yet configured)
-  const bot = new FeishuBot({
-    userManager,
-    listSnapshotManager,
-    spoolQueue,
-    registry,
-    replyFn,
-    cardReplyFn,
-    feishuClient: client,
-  });
-
-  if (!appId || !appSecret) {
-    console.log(chalk.yellow('⚠️ 飞书 App ID/Secret 未配置，跳过 WSClient 连接'));
-    console.log(chalk.cyan('请在 config.toml 中配置 [feishu_bot] app_id 和 app_secret'));
-  } else {
-    const larkSdk = await import('@larksuiteoapi/node-sdk');
-    const { WSClient, Client, Domain, LoggerLevel, EventDispatcher } = larkSdk;
-    client = new Client({
-      appId,
-      appSecret,
-      domain: Domain.Feishu,
-    });
-
-    replyFn = async (
-      text: string,
-      options?: { openId?: string; requestUuid?: string },
-    ): Promise<string | null> => {
-      const openId = options?.openId;
-      if (!openId) {
-        log('WARN', `[replyFn] 缺少 openId，跳过发送`);
-        return null;
-      }
-
-      try {
-        const response = await client.im.v1.message.create({
-          params: { receive_id_type: 'open_id' },
-          data: {
-            receive_id: openId,
-            msg_type: 'text',
-            content: JSON.stringify({ text }),
-            uuid: options?.requestUuid,
-          },
-        });
-
-        const messageId = response.data?.message_id;
-        if (!messageId) {
-          log('WARN', `[replyFn] API 返回成功但 message_id 为空: ${JSON.stringify(response)}`);
-        } else {
-          log('DEBUG', `[replyFn] 发送成功: message_id=${messageId}, uuid=${options?.requestUuid}`);
-        }
-        return messageId ?? null;
-      } catch (err: any) {
-        log('ERROR', `[replyFn] 发送消息失败: ${err?.message ?? err}, openId=${openId}, uuid=${options?.requestUuid}`);
-        return null;
-      }
-    };
-    bot.setReplyFn(replyFn);
-
-    cardReplyFn = async (
-      card: Record<string, unknown>,
-      options?: { openId?: string; messageId?: string },
-    ): Promise<string | null> => {
-      const openId = options?.openId;
-      if (!openId) {
-        log('WARN', `[cardReplyFn] 缺少 openId，跳过发送卡片`);
-        return null;
-      }
-
-      try {
-        const response = await client.im.v1.message.create({
-          params: { receive_id_type: 'open_id' },
-          data: {
-            receive_id: openId,
-            msg_type: 'interactive',
-            content: JSON.stringify(card),
-            uuid: options?.messageId ? `card-${options.messageId}` : undefined,
-          },
-        });
-
-        const messageId = response.data?.message_id;
-        if (!messageId) {
-          log('WARN', `[cardReplyFn] API 返回成功但 message_id 为空: ${JSON.stringify(response)}`);
-        } else {
-          log('DEBUG', `[cardReplyFn] 卡片发送成功: message_id=${messageId}`);
-        }
-        return messageId ?? null;
-      } catch (err: any) {
-        log('ERROR', `[cardReplyFn] 发送卡片失败: ${err?.message ?? err}, openId=${openId}`);
-        return null;
-      }
-    };
-    bot.setCardReplyFn(cardReplyFn);
-
-    // Set the Feishu client for streaming card updates
-    bot.setFeishuClient(client);
-    const eventDispatcher = new EventDispatcher({}).register({
-      'im.message.receive_v1': async (data: any) => {
-        try {
-          const msg = data?.message;
-          if (!msg) return;
-
-          const sender = data?.sender;
-          const openId = sender?.sender_id?.open_id ?? '';
-
-          const event: FeishuMessageEvent = {
-            open_id: openId,
-            message_id: msg.message_id,
-            content: msg.content ?? '{}',
-            chat_type: msg.chat_type,
-            message_type: msg.message_type,
-          };
-
-          await bot.onMessage(event);
-        } catch (err) {
-          logger.error(`处理飞书消息失败: ${err}`);
-        }
-      },
-      'card.action.trigger': async (data: any) => {
-        try {
-          const openId = data?.open_id ?? data?.operator?.open_id ?? data?.callback?.open_id ?? '';
-          const messageId = data?.open_message_id ?? data?.context?.open_message_id ?? data?.callback?.message?.message_id ?? '';
-          const actionValue = data?.action?.value ?? data?.callback?.action?.value ?? {};
-          const tag = actionValue?.tag ?? '';
-          const sessionId = actionValue?.sessionId ?? actionValue?.value ?? '';
-
-          const action: FeishuBotCardAction = {
-            open_id: openId,
-            action: { tag, value: sessionId },
-            message: { message_id: messageId },
-          };
-
-          logger.info(`[card callback] tag=${tag}, sessionId=${sessionId}, openId=${openId}`);
-          const reply = await bot.handleCardAction(action);
-          logger.info(`[card callback] reply=${reply ? reply.slice(0, 80) : 'null'}`);
-
-          // Return success response to Feishu. The feedback message is already
-          // sent via replyFn inside handleCardAction.
-          return { type: 'raw' as const, data: { code: 0 } };
-        } catch (err) {
-          logger.error(`处理卡片回调失败: ${err}`);
-          return { type: 'raw' as const, data: { code: 0 } };
-        }
-      },
-    });
-
-    wsClient = new WSClient({
-      appId,
-      appSecret,
-      domain: Domain.Feishu,
-      loggerLevel: LoggerLevel.info,
-      autoReconnect: true,
-      onReady: () => {
-        console.log(chalk.green('✅ 飞书 WebSocket 连接已建立'));
-      },
-      onError: (err: Error) => {
-        logger.error(`WSClient 错误: ${err.message}`);
-      },
-      onReconnecting: () => {
-        console.log(chalk.yellow('飞书 WebSocket 重连中...'));
-      },
-      onReconnected: () => {
-        console.log(chalk.green('飞书 WebSocket 重连成功'));
-      },
-    });
-
-    // Start WSClient with event dispatcher (official SDK API)
-    wsClient.start({ eventDispatcher });
-  }
-
-  console.log(chalk.green('✅ cc-bridge 已启动'));
-
-  // C3: Graceful shutdown sequence — signal stop, drain in-flight, release lock
-  let shuttingDown = false;
-  const gracefulShutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(chalk.yellow(`\n收到 ${signal}，优雅停机中...`));
-
-    // Step 1: Stop WSClient
-    if (wsClient && typeof wsClient.close === 'function') {
-      try { wsClient.close(); } catch {}
-    }
-
-    // Step 2: Stop accepting new messages
-    bot.requestStop();
-
-    // Step 3: Wait for in-flight dispatch to complete (up to 10s)
-    if (bot.isRunning()) {
-      logger.info('等待进行中任务完成...');
-      const deadline = Date.now() + 10_000;
-      while (bot.isRunning() && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-
-    // Step 4: Release lock
-    stateCoordinator.release();
-    logger.info('cc-bridge 已停止');
-    process.exit(0);
-  };
-
-  process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
-  process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
-
-  // Periodic dispatch loop (every 2s) — processes spool queue
-  const dispatchLoop = async () => {
-    while (!shuttingDown) {
-      await bot.dispatch();
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-  };
-
-  await dispatchLoop();
+interface BotRuntime {
+  bot: FeishuBot;
+  wsClient: any;
+  stateCoordinator: StateCoordinator;
+  shutdown: (signal: string) => Promise<void>;
 }
 
-async function startDaemonChild(registry: RegistryManager, opts: StartOptions): Promise<void> {
-  const pid = process.pid;
-
-  // Write PID file
-  mkdirSync(dirname(RUNTIME_PID_FILE), { recursive: true });
-  writeFileSync(RUNTIME_PID_FILE, String(pid), { mode: 0o600 });
-
-  // Create log stream and redirect console output
-  const logStream = Bun.file(RUNTIME_LOG_FILE).writer();
-  const { formatLocalTime } = await import('../../utils/logger');
-  const log = (level: string, msg: string) => {
-    logStream.write(`[${formatLocalTime()}] [${level}] ${msg}\n`);
-  };
-
-  const origLog = console.log;
-  const origError = console.error;
-  console.log = (...args: any[]) => log('INFO', args.join(' '));
-  console.error = (...args: any[]) => log('ERROR', args.join(' '));
-
-  log('INFO', `Daemon child started (PID: ${pid})`);
-
-  // Ignore SIGHUP (terminal disconnect)
-  process.on('SIGHUP', () => {});
-
-  // Graceful shutdown — release lock, clean PID file
-  let shuttingDown = false;
-  const gracefulShutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    log('INFO', `收到 ${signal}，优雅停机中...`);
-
-    try {
-      const sc = new StateCoordinator();
-      sc.release();
-    } catch {}
-
-    try {
-      if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE);
-    } catch {}
-
-    log('INFO', 'cc-bridge 已停止');
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-  // Now run the full foreground bot logic
-  log('INFO', 'Starting bot...');
-
+async function createBotRuntime(
+  registry: RegistryManager,
+  log: (level: string, msg: string) => void,
+  wsLogLevel?: number,
+): Promise<BotRuntime> {
   const spoolQueue = new SpoolQueue();
   const stateCoordinator = new StateCoordinator();
   let replyFn: FeishuReplyFn = async () => null;
@@ -477,7 +184,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
   cleanupOrphanProcesses();
 
   if (!stateCoordinator.tryAcquire()) {
-    log('ERROR', 'Failed to acquire owner.lock');
+    log('ERROR', '获取 owner.lock 失败，可能有其他实例正在运行');
     process.exit(1);
   }
 
@@ -488,9 +195,9 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
       listSnapshotManager,
       spoolQueue,
     });
-    log('INFO', `Startup reconcile: ${result.recoveredProcessing} recovered, ${result.rolledBackClaims} claims rolled back, ${result.mergedEvents} events merged`);
+    log('INFO', `启动协调: ${result.recoveredProcessing} 恢复, ${result.rolledBackClaims} 回滚, ${result.mergedEvents} 事件归并`);
   } catch (err) {
-    log('ERROR', `Startup reconcile failed: ${err}`);
+    log('ERROR', `启动协调失败: ${err}`);
     stateCoordinator.release();
     process.exit(1);
   }
@@ -512,7 +219,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
   });
 
   if (!appId || !appSecret) {
-    log('WARN', 'Feishu App ID/Secret not configured');
+    log('WARN', '飞书 App ID/Secret 未配置，跳过 WSClient 连接');
   } else {
     const larkSdk = await import('@larksuiteoapi/node-sdk');
     const { WSClient, Client, Domain, LoggerLevel, EventDispatcher } = larkSdk;
@@ -592,7 +299,6 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
     };
     bot.setCardReplyFn(cardReplyFn);
 
-    // Set the Feishu client for streaming card updates
     bot.setFeishuClient(client);
 
     const eventDispatcher = new EventDispatcher({}).register({
@@ -614,7 +320,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
 
           await bot.onMessage(event);
         } catch (err) {
-          logger.error(`处理飞书消息失败: ${err}`);
+          log('ERROR', `处理飞书消息失败: ${err}`);
         }
       },
       'card.action.trigger': async (data: any) => {
@@ -647,50 +353,127 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
       appId,
       appSecret,
       domain: Domain.Feishu,
-      loggerLevel: LoggerLevel.warn,
+      loggerLevel: wsLogLevel ?? LoggerLevel.info,
       autoReconnect: true,
       onReady: () => {
-        log('INFO', 'Feishu WebSocket connected');
+        log('INFO', '飞书 WebSocket 连接已建立');
       },
       onError: (err: Error) => {
-        log('ERROR', `WSClient error: ${err.message}`);
+        log('ERROR', `WSClient 错误: ${err.message}`);
       },
       onReconnecting: () => {
-        log('WARN', 'WSClient reconnecting...');
+        log('WARN', '飞书 WebSocket 重连中...');
       },
       onReconnected: () => {
-        log('INFO', 'WSClient reconnected');
+        log('INFO', '飞书 WebSocket 重连成功');
       },
     });
 
     wsClient.start({ eventDispatcher });
   }
 
-  log('INFO', 'cc-bridge daemon started');
-
-  // Override gracefulShutdown to also stop WSClient and bot
-  const daemonShutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    log('INFO', `收到 ${signal}，优雅停机中...`);
-
+  const shutdown = async (_signal: string) => {
     if (wsClient && typeof wsClient.close === 'function') {
       try { wsClient.close(); } catch {}
     }
     bot.requestStop();
-
     if (bot.isRunning()) {
       const deadline = Date.now() + 10_000;
       while (bot.isRunning() && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(r => setTimeout(r, 100));
       }
     }
-
     stateCoordinator.release();
-    try {
-      if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE);
-    } catch {}
+  };
 
+  return { bot, wsClient, stateCoordinator, shutdown };
+}
+
+async function startForeground(registry: RegistryManager, opts: StartOptions): Promise<void> {
+  console.log(chalk.blue('🚀 启动 cc-bridge...'));
+
+  const { bot, stateCoordinator, shutdown } = await createBotRuntime(registry, (level, msg) => {
+    if (level === 'ERROR') {
+      console.error(chalk.red(msg));
+      logger.error(msg);
+    } else if (level === 'WARN') {
+      console.log(chalk.yellow(msg));
+      logger.warn(msg);
+    } else if (level === 'DEBUG') {
+      logger.debug(msg);
+    } else {
+      console.log(msg);
+      logger.info(msg);
+    }
+  });
+
+  console.log(chalk.green('✅ cc-bridge 已启动'));
+
+  let shuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(chalk.yellow(`\n收到 ${signal}，优雅停机中...`));
+    await shutdown(signal);
+    logger.info('cc-bridge 已停止');
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+  const dispatchLoop = async () => {
+    while (!shuttingDown) {
+      await bot.dispatch();
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  };
+
+  await dispatchLoop();
+}
+
+async function startDaemonChild(registry: RegistryManager, opts: StartOptions): Promise<void> {
+  const pid = process.pid;
+
+  mkdirSync(dirname(RUNTIME_PID_FILE), { recursive: true });
+  writeFileSync(RUNTIME_PID_FILE, String(pid), { mode: 0o600 });
+
+  const logStream = Bun.file(RUNTIME_LOG_FILE).writer();
+  const { formatLocalTime } = await import('../../utils/logger');
+  const log = (level: string, msg: string) => {
+    logStream.write(`[${formatLocalTime()}] [${level}] ${msg}\n`);
+  };
+
+  console.log = (...args: any[]) => log('INFO', args.join(' '));
+  console.error = (...args: any[]) => log('ERROR', args.join(' '));
+
+  log('INFO', `Daemon child started (PID: ${pid})`);
+  process.on('SIGHUP', () => {});
+
+  let shuttingDown = false;
+  const baseShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('INFO', `收到 ${signal}，优雅停机中...`);
+    try { const sc = new StateCoordinator(); sc.release(); } catch {}
+    try { if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE); } catch {}
+    log('INFO', 'cc-bridge 已停止');
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => baseShutdown('SIGTERM'));
+  process.on('SIGINT', () => baseShutdown('SIGINT'));
+
+  const { bot, shutdown } = await createBotRuntime(registry, log);
+
+  log('INFO', 'cc-bridge daemon started');
+
+  const daemonShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('INFO', `收到 ${signal}，优雅停机中...`);
+    await shutdown(signal);
+    try { if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE); } catch {}
     log('INFO', 'cc-bridge 已停止');
     process.exit(0);
   };
@@ -700,11 +483,10 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
   process.on('SIGTERM', () => daemonShutdown('SIGTERM'));
   process.on('SIGINT', () => daemonShutdown('SIGINT'));
 
-  // Periodic dispatch loop (every 2s)
   const dispatchLoop = async () => {
     while (!shuttingDown) {
       await bot.dispatch();
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(r => setTimeout(r, 2000));
     }
   };
 

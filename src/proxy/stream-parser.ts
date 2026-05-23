@@ -56,8 +56,8 @@ export class StreamParser {
 
     for (const block of content) {
       const blockType = block.type as string | undefined;
-      if (blockType === 'thinking' && typeof block.text === 'string') {
-        return { type: 'thinking', content: block.text };
+      if (blockType === 'thinking' && typeof block.thinking === 'string') {
+        return { type: 'thinking', content: block.thinking };
       }
       if (blockType === 'text' && typeof block.text === 'string') {
         return { type: 'text', content: block.text };

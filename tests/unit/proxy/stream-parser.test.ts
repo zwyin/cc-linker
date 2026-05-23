@@ -10,7 +10,7 @@ test('extracts thinking content from assistant', () => {
   const parser = new StreamParser();
   const line = JSON.stringify({
     type: 'assistant',
-    message: { content: [{ type: 'thinking', text: 'Let me think...' }] }
+    message: { content: [{ type: 'thinking', thinking: 'Let me think...' }] }
   });
   const result = parser.parseLine(line);
   expect(result).not.toBeNull();
@@ -60,7 +60,7 @@ test('handles multiple content blocks — returns first non-null', () => {
   const line = JSON.stringify({
     type: 'assistant',
     message: { content: [
-      { type: 'thinking', text: 'thinking...' },
+      { type: 'thinking', thinking: 'thinking...' },
       { type: 'text', text: 'response...' }
     ]}
   });
