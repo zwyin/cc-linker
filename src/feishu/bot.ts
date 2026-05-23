@@ -13,6 +13,7 @@ import { config } from '../utils/config';
 import { logger } from '../utils/logger';
 import { repairJsonlLastPrompt } from '../utils/jsonl-repair';
 import { formatTimeAgo } from '../cli/output';
+import { ProviderManager } from '../utils/providers';
 
 export type FeishuMessageEvent = {
   open_id: string;
@@ -72,6 +73,7 @@ export class FeishuBot {
   private replyFn: FeishuReplyFn;
   private cardReplyFn: FeishuBotCardReplyFn;
   private feishuClient: any;
+  private providerManager: ProviderManager;
   private running = false;
   private stopRequested = false;
   private activeWorkers = new Set<Promise<void>>();
@@ -85,6 +87,7 @@ export class FeishuBot {
     replyFn?: FeishuReplyFn;
     cardReplyFn?: FeishuBotCardReplyFn;
     feishuClient?: any;
+    providerManager?: ProviderManager;
   }) {
     this.userManager = opts.userManager;
     this.listSnapshotManager = opts.listSnapshotManager;
@@ -94,6 +97,7 @@ export class FeishuBot {
     this.replyFn = opts.replyFn ?? (async () => null);
     this.cardReplyFn = opts.cardReplyFn ?? (async () => null);
     this.feishuClient = opts.feishuClient ?? null;
+    this.providerManager = opts.providerManager ?? new ProviderManager();
   }
 
   async onMessage(event: FeishuMessageEvent): Promise<void> {
@@ -336,6 +340,10 @@ export class FeishuBot {
 
       case 'switch':
         await this.handleSwitch(msg, parts.slice(2).join(' '));
+        return;
+
+      case 'model':
+        await this.handleModel(msg, parts.slice(2).join(' '));
         return;
 
       case 'resume':
@@ -682,9 +690,29 @@ export class FeishuBot {
   }
 
   private async handleNew(msg: SpoolMessage, rawArgs: string): Promise<void> {
-    const { cwd: rawCwd, prompt } = parseNewCommand(rawArgs);
+    const { cwd: rawCwd, prompt, providerAlias } = parseNewCommand(rawArgs);
     const defaultCwd = config.get<string>('feishu_bot.default_cwd', '');
     const cwd = normalizeCwd(rawCwd || defaultCwd);
+
+    // If --model specified, set defaultProvider first
+    if (providerAlias) {
+      const provider = this.providerManager.resolve(providerAlias);
+      if (!provider) {
+        await this.replyAndFinalize(msg, `未知模型: "${providerAlias}"\n请使用 /bridge model 查看可用列表`);
+        return;
+      }
+
+      const entry = this.userManager.getEntry(msg.openId);
+      const newEntry = entry
+        ? { ...entry, defaultProvider: provider.alias }
+        : {
+            type: 'pending_new_session' as const,
+            sessionUuid: null,
+            createdAt: new Date().toISOString(),
+            defaultProvider: provider.alias,
+          };
+      await this.userManager.compareAndSwap(msg.openId, entry ?? null, newEntry);
+    }
 
     if (!cwd) {
       await this.replyAndFinalize(msg, '请使用 /bridge new <cwd>，或在配置里设置 feishu_bot.default_cwd。');
@@ -797,16 +825,102 @@ export class FeishuBot {
     if (reply) await this.replyAndFinalize(msg, reply);
   }
 
+  private async handleModel(msg: SpoolMessage, target: string): Promise<void> {
+    if (!target) {
+      const entry = this.userManager.getEntry(msg.openId);
+      const currentAlias = entry?.defaultProvider ?? null;
+      const lines: string[] = [];
+
+      if (currentAlias) {
+        const provider = this.providerManager.resolve(currentAlias);
+        lines.push(`当前默认模型: ${provider?.name ?? currentAlias}`);
+      } else {
+        lines.push('当前默认模型: 未设置（跟随 Claude 全局配置）');
+      }
+
+      const providers = this.providerManager.list();
+      if (providers.length > 0) {
+        lines.push('');
+        lines.push('可用模型:');
+        providers.forEach((p, i) => {
+          const marker = p.alias === currentAlias ? '●' : ' ';
+          lines.push(`  ${marker} ${i + 1}. ${p.name}  (${p.alias})`);
+        });
+      } else {
+        lines.push('');
+        lines.push('未检测到可切换模型。');
+        lines.push('请安装 CC Switch 或手动创建 ~/.claude/providers/*.json');
+      }
+
+      lines.push('');
+      lines.push('用法:');
+      lines.push('  /bridge model <序号|别名>        设置默认模型');
+      lines.push('  /bridge model --clear            清除默认设置');
+      lines.push('  /bridge new /path --model <别名>  创建会话时指定模型');
+
+      await this.replyAndFinalize(msg, lines.join('\n'));
+      return;
+    }
+
+    if (target === '--clear') {
+      const entry = this.userManager.getEntry(msg.openId);
+      if (!entry) {
+        await this.replyAndFinalize(msg, '⚠️ 无当前会话状态，无需清除');
+        return;
+      }
+      const swapped = await this.userManager.compareAndSwap(
+        msg.openId, entry,
+        { ...entry, defaultProvider: undefined }
+      );
+      await this.replyAndFinalize(
+        msg,
+        swapped ? '✅ 已清除默认模型设置' : '⚠️ 清除失败，请重试'
+      );
+      return;
+    }
+
+    const provider = this.providerManager.resolve(target);
+    if (!provider) {
+      await this.replyAndFinalize(msg, `未知模型: "${target}"\n请使用 /bridge model 查看可用列表`);
+      return;
+    }
+
+    const entry = this.userManager.getEntry(msg.openId);
+    const newEntry = entry
+      ? { ...entry, defaultProvider: provider.alias }
+      : {
+          type: 'session' as const,
+          sessionUuid: null,
+          createdAt: new Date().toISOString(),
+          defaultProvider: provider.alias,
+        };
+
+    const swapped = await this.userManager.compareAndSwap(
+      msg.openId, entry ?? null, newEntry
+    );
+
+    await this.replyAndFinalize(
+      msg,
+      swapped
+        ? `✅ 默认模型已设置为 ${provider.name} (${provider.alias})`
+        : '⚠️ 设置失败，请重试'
+    );
+  }
+
   private helpText(): string {
     return [
       '可用命令:',
-      '  /bridge help                    - 显示此帮助',
-      '  /bridge list                    - 列出会话',
-      '  /bridge new [路径] [-- prompt]  - 创建新会话或设置待创建目录',
-      '  /bridge switch <序号|UUID>      - 切换会话',
-      '  /bridge resume <序号|UUID>      - 获取安全恢复建议',
-      '  /bridge status                  - 查看状态',
-      '  /bridge whoami                  - 获取你的 open_id',
+      '  /bridge help                              - 显示此帮助',
+      '  /bridge list                              - 列出会话',
+      '  /bridge new [路径] [-- prompt]            - 创建新会话',
+      '  /bridge new [路径] --model <别名> [-- p]  - 指定模型创建会话',
+      '  /bridge switch <序号|UUID>                - 切换会话',
+      '  /bridge model                             - 查看可用模型和默认设置',
+      '  /bridge model <序号|别名>                  - 设置默认模型',
+      '  /bridge model --clear                     - 清除默认设置',
+      '  /bridge resume <序号|UUID>                - 获取安全恢复建议',
+      '  /bridge status                            - 查看状态',
+      '  /bridge whoami                            - 获取你的 open_id',
     ].join('\n');
   }
 
@@ -982,7 +1096,10 @@ export class FeishuBot {
       // Fallback to text
       const lines = [`📋 我的会话（最近 ${sessions.length} 个，共 ${allSessions.length} 个）`, ''];
       for (const [index, [uuid, entry]] of sessions.entries()) {
-        lines.push(`${index + 1}. ${entry.title ?? 'Untitled'}`);
+        const providerTag = (entry as any).lastKnownProvider
+          ? ` [${(entry as any).lastKnownProvider}]`
+          : '';
+        lines.push(`${index + 1}. ${entry.title ?? 'Untitled'}${providerTag}`);
         lines.push(`   ID: ${uuid.slice(0, 8)}`);
         lines.push(`   ${formatOrigin(entry.origin, entry.status)} | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${entry.project_name ?? basename(entry.cwd)}`);
         lines.push('');
@@ -1082,6 +1199,10 @@ export class FeishuBot {
     const queueSize = this.spoolQueue.queueSize();
     const sessions = Object.values(this.registry.sessions);
 
+    const provider = entry?.defaultProvider
+      ? this.providerManager.resolve(entry.defaultProvider)
+      : null;
+
     return [
       'cc-bridge 状态',
       '─'.repeat(30),
@@ -1091,6 +1212,7 @@ export class FeishuBot {
       `飞书会话: ${sessions.filter(s => s.origin === 'feishu').length}`,
       `当前会话: ${entry?.type === 'session' ? entry.sessionUuid?.slice(0, 8) : '无'}`,
       `映射状态: ${entry?.type ?? 'none'}`,
+      `默认模型: ${provider ? `${provider.name} (${provider.alias})` : '未设置（跟随 Claude 全局配置）'}`,
     ].join('\n');
   }
 }
@@ -1173,25 +1295,35 @@ function validateCwd(cwd: string): string | null {
   return null;
 }
 
-function parseNewCommand(rawArgs: string): { cwd: string; prompt: string } {
-  const trimmed = rawArgs.trim();
-  if (!trimmed) {
-    return { cwd: '', prompt: '' };
+function parseNewCommand(rawArgs: string): { cwd: string; prompt: string; providerAlias?: string } {
+  let args = rawArgs.trim();
+  let providerAlias: string | undefined;
+
+  // Extract --model alias
+  const modelMatch = args.match(/--model\s+(\S+)/);
+  if (modelMatch) {
+    providerAlias = modelMatch[1];
+    args = args.replace(/--model\s+\S+/, '').trim();
   }
 
-  if (trimmed.startsWith('-- ')) {
-    return { cwd: '', prompt: trimmed.slice(3).trim() };
+  if (!args) {
+    return { cwd: '', prompt: '', providerAlias };
   }
 
-  const separator = trimmed.indexOf(' -- ');
+  if (args.startsWith('-- ')) {
+    return { cwd: '', prompt: args.slice(3).trim(), providerAlias };
+  }
+
+  const separator = args.indexOf(' -- ');
   if (separator >= 0) {
     return {
-      cwd: trimmed.slice(0, separator).trim(),
-      prompt: trimmed.slice(separator + 4).trim(),
+      cwd: args.slice(0, separator).trim(),
+      prompt: args.slice(separator + 4).trim(),
+      providerAlias,
     };
   }
 
-  return { cwd: trimmed, prompt: '' };
+  return { cwd: args, prompt: '', providerAlias };
 }
 
 function formatOrigin(origin: string, status?: string): string {

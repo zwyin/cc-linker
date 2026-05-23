@@ -412,6 +412,33 @@ describe('FeishuBot', () => {
     expect(entry?.last_error).toBeNull();
     expect(entry?.pending_jsonl_resolve).toBe(false);
   });
+
+  it('processes /bridge model command (no providers)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'msg-model',
+      content: JSON.stringify({ text: '/bridge model' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+    await bot.dispatch();
+
+    expect(replies.length).toBeGreaterThanOrEqual(1);
+    expect(replies.some(r => r.includes('模型') || r.includes('provider') || r.includes('默认'))).toBe(true);
+  });
+
+  it('rejects unknown model alias', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'msg-model-unknown',
+      content: JSON.stringify({ text: '/bridge model nonexistent' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+    await bot.dispatch();
+
+    expect(replies.some(r => r.includes('未知模型'))).toBe(true);
+  });
 });
 
 describe('FeishuBot cards', () => {
