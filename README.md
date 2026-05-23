@@ -1,8 +1,74 @@
 # cc-linker
 
-让飞书和终端（Claude Code CLI）之间的对话切换像切换设备一样无缝。
+> 让飞书 Bot 和终端（Claude Code CLI）之间的对话切换，像切换设备一样无缝。
 
-## 3 步上手
+[![npm version](https://img.shields.io/npm/v/cc-linker)](https://www.npmjs.com/package/cc-linker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**语言:** 中文 | [English](README_en.md)
+
+## 💡 为什么需要 cc-linker？
+
+你是否遇到过这样的场景：
+
+- **通勤路上用手机聊，到公司终端继续** — 地铁上用手机飞书给 Bot 发消息讨论技术方案，到公司打开终端 `cc-linker list` 找到会话，`resume` 一键恢复上下文
+- **飞书快速提问，终端深度调试** — 在飞书里快速问了个 API 用法，发现需要本地调试，终端 `cc-linker resume` 切换到同一会话继续让 Claude 帮你写代码
+- **多项目并行，会话不乱** — 同时在 `project-a` 和 `project-b` 两个目录与 Claude 对话，`/list` 清晰展示每个会话的目录和状态，卡片按钮一键切换不混淆
+
+**cc-linker 就是解决这些痛点的桥接工具。** 它在你电脑上维护一个统一的会话注册表，让飞书 Bot 和 Claude Code CLI 共享同一套会话状态——无论你在哪个端发起对话，都能无缝切换到另一端继续。
+
+## ✨ 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| 🔄 **跨端无缝切换** | 飞书发起的对话，终端一键恢复（含上下文和目录）；终端创建的会话，飞书随时查看 |
+| 💬 **流式卡片交互** | 飞书中实时看到 Claude 的 thinking 和回复，不再是"转圈等待" |
+| 📋 **统一会话管理** | 自动扫描、增量同步，无需手动维护会话列表 |
+| 🎛 **多模型切换** | 在飞书卡片中一键切换模型，无需改配置 |
+| 🛡 **持久化不丢消息** | 文件级消息队列，进程崩溃、重启后消息不丢失 |
+| 🚀 **3 步上手** | `install → setup → start`，5 分钟完成配置 |
+
+## 📸 效果展示
+
+### 飞书端体验
+
+<table>
+  <tr>
+    <td align="center"><b>会话列表</b><br><code>/list</code> 查看所有会话</td>
+    <td align="center"><b>开始处理</b><br>消息发出后即时反馈</td>
+    <td align="center"><b>流式实时反馈</b><br>实时看到 thinking 过程</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/feishu-list.png" alt="飞书会话列表" width="280"></td>
+    <td align="center"><img src="docs/images/feishu-start-processing.png" alt="开始处理" width="280"></td>
+    <td align="center"><img src="docs/images/feishu-streaming-thinking.png" alt="流式 thinking" width="280"></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><b>处理完成</b><br>token / 耗时 / 轮数统计</td>
+    <td align="center"><b>处理完成（长回复）</b><br>长文本同样展示</td>
+    <td align="center"><b>模型切换</b><br>卡片按钮一键切换</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/feishu-complete.png" alt="处理完成" width="280"></td>
+    <td align="center"><img src="docs/images/feishu-complete-long.png" alt="处理完成-长回复" width="280"></td>
+    <td align="center"><img src="docs/images/feishu-model.png" alt="模型选择" width="280"></td>
+  </tr>
+</table>
+
+### 终端端体验
+
+**查看所有会话** — 清晰的表格展示，状态一目了然：
+
+<img src="docs/images/cli-list.png" alt="终端会话列表" width="700">
+
+**一键恢复会话** — 支持前缀匹配，自动切换目录并恢复上下文：
+
+<img src="docs/images/cli-resume.png" alt="终端恢复会话" width="700">
+
+## 🚀 快速开始
 
 ### 1. 安装
 
@@ -23,7 +89,7 @@ bun add -g cc-linker
 cc-linker setup
 ```
 
-交互式向导会引导你：
+交互式向导会引导你完成：
 - 初始化会话注册表
 - 安装 Claude Code 自动注册钩子
 - 配置飞书 Bot（App ID + App Secret + 开机自启）
@@ -40,50 +106,9 @@ cc-linker setup
 | 飞书切换会话 | `/switch <序号>` |
 | 飞书创建新会话 | `/new <路径> -- <提示词>` |
 
----
+## 📋 命令参考
 
-## 飞书开放平台权限配置
-
-在配置飞书 Bot 前，需要在 [飞书开放平台](https://open.feishu.cn/app) 创建应用并配置权限。
-
-### 创建应用
-
-1. 访问 https://open.feishu.cn/app → 创建企业自建应用
-2. 在「应用功能」→「机器人」中启用 Bot 能力
-3. 获取 App ID 和 App Secret（凭证与基础信息）
-
-### 必需权限
-
-进入「权限管理」，搜索并开通以下权限：
-
-| 权限 | 用途 |
-|------|------|
-| `im:message` | 读取和发送消息 |
-| `im:message:send_as_bot` | 以应用身份发送消息 |
-| `im:message:readonly` | 获取消息详情 |
-| `im:chat:readonly` | 获取群组信息 |
-| `contact:user.base:readonly` | 获取用户基本信息（用于识别 open_id） |
-
-### 必需事件订阅
-
-进入「事件订阅」，添加以下事件：
-
-| 事件 | 用途 |
-|------|------|
-| `im.message.receive_v1` | 接收用户发给 Bot 的消息 |
-| `im.chat.member.bot.added_v1` | Bot 被邀请进群时触发（可选） |
-
-> **重要**：事件订阅方式选择 **WebSocket**（不是 HTTP 回调）。
-
-### 发布应用
-
-配置完权限后，进入「版本管理与发布」→ 创建版本 → 发布。**只有发布后的权限才会生效。**
-
----
-
-## 详细使用
-
-### 常用命令
+### CLI 命令
 
 ```bash
 cc-linker list                      # 列出所有会话
@@ -111,14 +136,6 @@ cc-linker status                    # 查看桥接状态
 | `/status` | 查看状态 |
 | `/whoami` | 获取你的 open_id |
 
-### 流式响应体验
-
-当 `stream.enabled = true`（默认开启）时，飞书消息会触发流式卡片：
-
-1. **⏳ 正在处理...** — Claude 进程启动后立即出现
-2. **💭 处理中** — 实时展示 thinking 和回复内容，底部显示已用时间
-3. **✅ 处理完成** — 展示最终回复 + 费用/耗时/轮数统计
-
 ### Bot 运行管理
 
 | 命令 | 说明 |
@@ -126,33 +143,49 @@ cc-linker status                    # 查看桥接状态
 | `cc-linker start` | 前台启动（阻塞终端） |
 | `cc-linker start --daemon` | 后台守护进程模式 |
 | `cc-linker stop` | 停止后台 Bot |
-| `cc-linker restart` | 重启 Bot 服务（先 stop 再 start --daemon） |
+| `cc-linker restart` | 重启 Bot 服务 |
 | `cc-linker daemon install` | 配置开机自动启动 |
 | `cc-linker daemon uninstall` | 移除开机自启 |
 | `cc-linker daemon status` | 查看后台服务状态 |
 
-### 分步配置（替代 setup 向导）
+## 🔧 飞书开放平台配置
 
-如果不想使用一键配置，也可以分步执行：
+在配置飞书 Bot 前，需要在 [飞书开放平台](https://open.feishu.cn/app) 创建应用并配置权限。
 
-```bash
-# 1. 初始化注册表
-cc-linker init
+### 创建应用
 
-# 2. 安装 Claude Code 钩子（可选但推荐）
-cc-linker hook install
+1. 访问 https://open.feishu.cn/app → 创建企业自建应用
+2. 在「应用功能」→「机器人」中启用 Bot 能力
+3. 获取 App ID 和 App Secret（凭证与基础信息）
 
-# 3. 配置飞书 Bot
-cc-linker init-feishu
+### 必需权限
 
-# 4. 启动 Bot
-cc-linker start --daemon
+进入「权限管理」，搜索并开通以下权限：
 
-# 5. 配置开机自启
-cc-linker daemon install
-```
+| 权限 | 用途 |
+|------|------|
+| `im:message` | 读取和发送消息 |
+| `im:message:send_as_bot` | 以应用身份发送消息 |
+| `im:message:readonly` | 获取消息详情 |
+| `im:chat:readonly` | 获取群组信息 |
+| `contact:user.base:readonly` | 获取用户基本信息 |
 
-### 配置说明
+### 必需事件订阅
+
+进入「事件订阅」，添加以下事件：
+
+| 事件 | 用途 |
+|------|------|
+| `im.message.receive_v1` | 接收用户发给 Bot 的消息 |
+| `im.chat.member.bot.added_v1` | Bot 被邀请进群时触发（可选） |
+
+> **重要**：事件订阅方式选择 **WebSocket**（不是 HTTP 回调）。
+
+### 发布应用
+
+配置完权限后，进入「版本管理与发布」→ 创建版本 → 发布。**只有发布后的权限才会生效。**
+
+## 📖 配置说明
 
 配置文件：`~/.cc-linker/config.toml`（可选，不创建则使用默认值）
 
@@ -178,9 +211,7 @@ fallback_to_text = true
 | `CC_LINKER_STREAM_ENABLED` | 流式响应开关 |
 | `CC_LINKER_LOG_LEVEL` | 日志级别 |
 
----
-
-## 架构概览
+## 🏗 架构概览
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -191,8 +222,8 @@ fallback_to_text = true
 └──────────────────────────────────────────────────────┘
 ```
 
-- **Registry** (`~/.cc-linker/registry.json`): 统一会话索引
-- **Scanner**: 增量扫描 Claude Code JSONL 文件
+- **Registry** (`~/.cc-linker/registry.json`): 统一会话索引，带文件锁和自动备份
+- **Scanner**: 增量扫描 Claude Code JSONL 文件，保持注册表最新
 - **Hook**: Claude Code 启动时自动注册新会话
 - **Spool Queue**: 持久化消息队列，崩溃后可恢复
 - **Stream Parser**: 解析 Claude `stream-json` 输出
@@ -200,17 +231,7 @@ fallback_to_text = true
 
 详细架构见 [docs/产品设计文档-自建方案.md](docs/产品设计文档-自建方案.md)。
 
-## 完整文档索引
-
-| 文档 | 说明 |
-|------|------|
-| [docs/产品设计文档-自建方案.md](docs/产品设计文档-自建方案.md) | 产品设计文档 |
-| [docs/验收指南.md](docs/验收指南.md) | 功能验收指南 |
-| [docs/验收测试报告.md](docs/验收测试报告.md) | 验收测试结果 |
-| [docs/Product.md](docs/Product.md) | 产品需求文档 |
-| [docs/model-switch-design.md](docs/model-switch-design.md) | 模型切换设计 |
-
-## 开发者指南
+## 💻 开发者指南
 
 ```bash
 git clone https://github.com/yujuntea/cc-linker.git
@@ -234,6 +255,16 @@ npm version minor
 npm publish               # prepublishOnly 自动触发 build:npm
 git push --tags
 ```
+
+## 📚 详细文档
+
+| 文档 | 说明 |
+|------|------|
+| [docs/产品设计文档-自建方案.md](docs/产品设计文档-自建方案.md) | 产品设计文档 |
+| [docs/验收指南.md](docs/验收指南.md) | 功能验收指南 |
+| [docs/验收测试报告.md](docs/验收测试报告.md) | 验收测试结果 |
+| [docs/Product.md](docs/Product.md) | 产品需求文档 |
+| [docs/model-switch-design.md](docs/model-switch-design.md) | 模型切换设计 |
 
 ## License
 
