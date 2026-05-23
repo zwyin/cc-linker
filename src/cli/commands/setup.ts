@@ -20,7 +20,7 @@ function isHookInstalled(): boolean {
     const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
     if (!Array.isArray(settings.hooks?.SessionStart)) return false;
     return settings.hooks.SessionStart.some((matcher: any) =>
-      matcher?.hooks?.some((h: any) => h?.command?.includes('cc-bridge'))
+      matcher?.hooks?.some((h: any) => h?.command?.includes('cc-linker'))
     );
   } catch {
     return false;
@@ -45,7 +45,7 @@ export async function setup(registry: RegistryManager, opts: SetupOptions = {}):
   const totalSteps = opts.skipFeishu ? 2 : 3;
 
   console.log(chalk.blue('═══════════════════════════════════════════'));
-  console.log(chalk.blue('  cc-link 一键配置向导'));
+  console.log(chalk.blue('  cc-linker 一键配置向导'));
   console.log(chalk.blue('═══════════════════════════════════════════\n'));
 
   console.log(chalk.gray('本向导将引导你完成以下配置：'));
@@ -84,7 +84,7 @@ export async function setup(registry: RegistryManager, opts: SetupOptions = {}):
         hookInstalled = true;
       } catch (err) {
         console.log(chalk.red(`  ❌ Hook 安装失败: ${err}`));
-        console.log(chalk.yellow('  提示：你可以稍后手动执行 cc-link hook install'));
+        console.log(chalk.yellow('  提示：你可以稍后手动执行 cc-linker hook install'));
       }
     }
     console.log('');
@@ -213,7 +213,7 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
     const { manualId } = await inquirer.prompt([{
       type: 'input',
       name: 'manualId',
-      message: '请输入 owner_open_id（在飞书发送 /bridge whoami 可获取）:',
+      message: '请输入 owner_open_id（在飞书发送 /whoami 可获取）:',
       validate: (v: string) => v.trim() ? true : 'open_id 不能为空',
     }]);
     openId = manualId.trim();
@@ -246,7 +246,7 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
   const { defaultCwd } = await inquirer.prompt([{
     type: 'input',
     name: 'defaultCwd',
-    message: '默认工作目录（/bridge new 未指定路径时使用）:',
+    message: '默认工作目录（/new 未指定路径时使用）:',
     default: process.env.HOME || '~/Git',
   }]);
 
@@ -278,13 +278,13 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
     const { join } = await import('path');
     const { existsSync } = await import('fs');
 
-    // Detect cc-bridge executable (supports compiled binary + dev mode)
-    let exePath = 'cc-bridge';
+    // Detect cc-linker executable (supports compiled binary + dev mode)
+    let exePath = 'cc-linker';
     const argv0 = process.argv[0];
-    if (argv0.endsWith('cc-bridge')) {
+    if (argv0.endsWith('cc-linker')) {
       exePath = argv0;
     } else {
-      const distPath = join(process.cwd(), 'dist', 'cc-bridge');
+      const distPath = join(process.cwd(), 'dist', 'cc-linker');
       if (existsSync(distPath)) exePath = distPath;
     }
 
@@ -293,7 +293,7 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
     if (result.started) {
       console.log(chalk.green('  ✅ Bot 已启动'));
     } else {
-      console.log(chalk.yellow('  ⚠️ 自动启动失败，请手动执行: cc-link start --daemon'));
+      console.log(chalk.yellow('  ⚠️ 自动启动失败，请手动执行: cc-linker start --daemon'));
     }
   }
 
@@ -355,27 +355,27 @@ function printSummary(sessionCount: number, hookInstalled: boolean, feishu: Feis
 
   if (feishu.configured) {
     console.log(chalk.gray(`  飞书 Bot:     ✅ 已配置 (App ID: ${feishu.appId.slice(0, 6)}****)`));
-    console.log(chalk.gray(`  Bot 运行:     ${feishu.started ? '✅ 运行中' : '⏸️  未启动 (cc-link start --daemon)'}`));
+    console.log(chalk.gray(`  Bot 运行:     ${feishu.started ? '✅ 运行中' : '⏸️  未启动 (cc-linker start --daemon)'}`));
   } else {
     console.log(chalk.gray('  飞书 Bot:     ⏸️  未配置（终端侧功能已就绪）'));
   }
   console.log('');
 
   console.log(chalk.cyan('  常用命令:'));
-  console.log(chalk.white('    cc-link list              — 查看会话'));
-  console.log(chalk.white('    cc-link resume <ID>       — 恢复会话到终端'));
-  console.log(chalk.white('    cc-link daemon status     — 查看 Bot 状态'));
-  console.log(chalk.white('    cc-link daemon uninstall  — 移除开机自启'));
-  console.log(chalk.white('    cc-link stop              — 停止 Bot 服务'));
+  console.log(chalk.white('    cc-linker list              — 查看会话'));
+  console.log(chalk.white('    cc-linker resume <ID>       — 恢复会话到终端'));
+  console.log(chalk.white('    cc-linker daemon status     — 查看 Bot 状态'));
+  console.log(chalk.white('    cc-linker daemon uninstall  — 移除开机自启'));
+  console.log(chalk.white('    cc-linker stop              — 停止 Bot 服务'));
   console.log('');
 
   if (feishu.configured) {
     console.log(chalk.cyan('  飞书端可用命令:'));
-    console.log(chalk.white('    /bridge list                — 列出会话'));
-    console.log(chalk.white('    /bridge new [路径] -- 提示  — 创建新会话'));
-    console.log(chalk.white('    /bridge switch <序号>       — 切换会话'));
-    console.log(chalk.white('    /bridge model               — 管理模型'));
-    console.log(chalk.white('    /bridge status              — 查看状态'));
+    console.log(chalk.white('    /list                — 列出会话'));
+    console.log(chalk.white('    /new [路径] -- 提示  — 创建新会话'));
+    console.log(chalk.white('    /switch <序号>       — 切换会话'));
+    console.log(chalk.white('    /model               — 管理模型'));
+    console.log(chalk.white('    /status              — 查看状态'));
     console.log('');
   }
 }

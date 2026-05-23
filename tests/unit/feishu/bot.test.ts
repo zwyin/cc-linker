@@ -66,11 +66,11 @@ describe('FeishuBot', () => {
     expect(replies).toHaveLength(0);
   });
 
-  it('processes /bridge help command', async () => {
+  it('processes /help command', async () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-1',
-      content: JSON.stringify({ text: '/bridge help' }),
+      content: JSON.stringify({ text: '/help' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -82,11 +82,11 @@ describe('FeishuBot', () => {
     expect(replies.some(r => r.includes('help'))).toBe(true);
   });
 
-  it('processes /bridge status command', async () => {
+  it('processes /status command', async () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-1',
-      content: JSON.stringify({ text: '/bridge status' }),
+      content: JSON.stringify({ text: '/status' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -97,7 +97,7 @@ describe('FeishuBot', () => {
     expect(replies.some(r => r.includes('状态'))).toBe(true);
   });
 
-  it('processes /bridge list command', async () => {
+  it('processes /list command', async () => {
     registry.upsert('session-1', {
       origin: 'cli',
       cwd: '/tmp/project',
@@ -114,7 +114,7 @@ describe('FeishuBot', () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-1',
-      content: JSON.stringify({ text: '/bridge list' }),
+      content: JSON.stringify({ text: '/list' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -129,7 +129,7 @@ describe('FeishuBot', () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-1',
-      content: JSON.stringify({ text: '/bridge unknown' }),
+      content: JSON.stringify({ text: '/unknown' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -143,7 +143,7 @@ describe('FeishuBot', () => {
     const event = {
       open_id: 'ou_user1',
       message_id: 'msg-dup',
-      content: JSON.stringify({ text: '/bridge status' }),
+      content: JSON.stringify({ text: '/status' }),
       chat_type: 'p2p',
       message_type: 'text',
     };
@@ -227,7 +227,7 @@ describe('FeishuBot', () => {
     await retryBot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-retry',
-      content: JSON.stringify({ text: '/bridge status' }),
+      content: JSON.stringify({ text: '/status' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -274,7 +274,7 @@ describe('FeishuBot', () => {
     spoolQueue.enqueue({
       messageId: 'msg-chunk',
       openId: 'ou_user1',
-      text: '/bridge status',
+      text: '/status',
       target: { type: 'session', sessionUuid: 'sess-1', openId: 'ou_user1', cwd: '/tmp' },
       serialKey: 'sess-1',
       status: 'pending',
@@ -335,7 +335,7 @@ describe('FeishuBot', () => {
     await flakyBot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-create',
-      content: JSON.stringify({ text: '/bridge new /tmp/project -- hello' }),
+      content: JSON.stringify({ text: '/new /tmp/project -- hello' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -413,11 +413,11 @@ describe('FeishuBot', () => {
     expect(entry?.pending_jsonl_resolve).toBe(false);
   });
 
-  it('processes /bridge model command (no providers)', async () => {
+  it('processes /model command (no providers)', async () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-model',
-      content: JSON.stringify({ text: '/bridge model' }),
+      content: JSON.stringify({ text: '/model' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -431,7 +431,7 @@ describe('FeishuBot', () => {
     await bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'msg-model-unknown',
-      content: JSON.stringify({ text: '/bridge model nonexistent' }),
+      content: JSON.stringify({ text: '/model nonexistent' }),
       chat_type: 'p2p',
       message_type: 'text',
     });
@@ -560,7 +560,7 @@ describe('FeishuBot cards', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-link resume');
+    expect(textReplies[0]).toContain('cc-linker resume');
   });
 
   it('handleCardAction routes resume with corrupted session', async () => {
@@ -592,7 +592,7 @@ describe('FeishuBot cards', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-link 状态');
+    expect(textReplies[0]).toContain('cc-linker 状态');
     expect(textReplies[0]).toContain('队列消息');
   });
 

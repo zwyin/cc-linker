@@ -1,6 +1,6 @@
 import { RegistryManager, type SessionEntry } from '../../registry';
 import { OriginSchema } from '../../registry/types';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { isValidUUID } from '../../utils/validation';
 
 interface RegisterOptions {
@@ -15,12 +15,12 @@ export async function registerSession(
   opts: RegisterOptions = {}
 ): Promise<void> {
   if (!isValidUUID(uuid)) {
-    throw new CCBridgeError('E005', `无效的 UUID 格式: ${uuid}`);
+    throw new CCLinkerError('E005', `无效的 UUID 格式: ${uuid}`);
   }
 
   const originResult = OriginSchema.safeParse(opts.origin ?? 'cli');
   if (!originResult.success) {
-    throw new CCBridgeError('E005', `无效的 origin 值: ${opts.origin}`);
+    throw new CCLinkerError('E005', `无效的 origin 值: ${opts.origin}`);
   }
 
   const entry: Partial<SessionEntry> = {

@@ -10,23 +10,23 @@ const HOME = homedir();
 const IS_MACOS = platform() === 'darwin';
 const IS_LINUX = platform() === 'linux';
 
-/** Get the path to the cc-bridge executable */
+/** Get the path to the cc-linker executable */
 function getExecutablePath(): string {
   // If running from compiled binary, use that path
   const exe = process.argv[0];
-  if (exe.endsWith('cc-bridge')) return exe;
-  // npm installed: bin name is cc-link
-  return 'cc-link';
+  if (exe.endsWith('cc-linker')) return exe;
+  // npm installed: bin name is cc-linker
+  return 'cc-linker';
 }
 
 /** macOS: ~/Library/LaunchAgents/ */
 function getMacOSPlistPath(): string {
-  return join(HOME, 'Library', 'LaunchAgents', 'com.ccbridge.daemon.plist');
+  return join(HOME, 'Library', 'LaunchAgents', 'com.cclinker.daemon.plist');
 }
 
 /** Linux: ~/.config/systemd/user/ */
 function getLinuxServicePath(): string {
-  return join(HOME, '.config', 'systemd', 'user', 'cc-bridge.service');
+  return join(HOME, '.config', 'systemd', 'user', 'cc-linker.service');
 }
 
 /** Generate macOS launchd plist */
@@ -39,7 +39,7 @@ function generateMacOSPlist(): string {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.ccbridge.daemon</string>
+  <string>com.cclinker.daemon</string>
   <key>ProgramArguments</key>
   <array>
     <string>${exe}</string>
@@ -71,7 +71,7 @@ function generateLinuxService(): string {
   const cwd = dirname(exe) === '.' ? process.cwd() : dirname(exe);
 
   return `[Unit]
-Description=cc-bridge Feishu Bot Daemon
+Description=cc-linker Feishu Bot Daemon
 After=network.target
 
 [Service]
@@ -90,7 +90,7 @@ WantedBy=default.target`;
 }
 
 export async function installDaemon(): Promise<void> {
-  console.log(chalk.blue('=== cc-bridge 开机自启配置 ===\n'));
+  console.log(chalk.blue('=== cc-linker 开机自启配置 ===\n'));
 
   if (IS_MACOS) {
     await installMacOS();
@@ -131,15 +131,15 @@ async function installMacOS(): Promise<void> {
   }
 
   // Also start immediately
-  const startResult = spawnSync('launchctl', ['start', 'com.ccbridge.daemon']);
+  const startResult = spawnSync('launchctl', ['start', 'com.cclinker.daemon']);
 
   console.log(chalk.green('✅ 开机自启已配置'));
   console.log(chalk.cyan(`   配置: ${plistPath}`));
   console.log(chalk.cyan(`   日志: ${RUNTIME_LOG_FILE}`));
   console.log(chalk.gray('\n操作:'));
-  console.log(chalk.gray(`   停止: launchctl stop com.ccbridge.daemon`));
-  console.log(chalk.gray(`   卸载: cc-bridge daemon uninstall`));
-  console.log(chalk.gray(`   状态: cc-bridge daemon status`));
+  console.log(chalk.gray(`   停止: launchctl stop com.cclinker.daemon`));
+  console.log(chalk.gray(`   卸载: cc-linker daemon uninstall`));
+  console.log(chalk.gray(`   状态: cc-linker daemon status`));
 }
 
 async function installLinux(): Promise<void> {
@@ -170,21 +170,21 @@ async function installLinux(): Promise<void> {
   }
 
   // Enable for autostart
-  const enableResult = spawnSync('systemctl', ['--user', 'enable', 'cc-bridge.service']);
+  const enableResult = spawnSync('systemctl', ['--user', 'enable', 'cc-linker.service']);
   if (enableResult.status !== 0) {
     console.log(chalk.yellow(`⚠️ systemctl enable 警告: ${enableResult.stderr.toString().trim()}`));
   }
 
   // Start immediately
-  const startResult = spawnSync('systemctl', ['--user', 'start', 'cc-bridge.service']);
+  const startResult = spawnSync('systemctl', ['--user', 'start', 'cc-linker.service']);
 
   console.log(chalk.green('✅ 开机自启已配置'));
   console.log(chalk.cyan(`   配置: ${servicePath}`));
   console.log(chalk.cyan(`   日志: ${RUNTIME_LOG_FILE}`));
   console.log(chalk.gray('\n操作:'));
-  console.log(chalk.gray(`   停止: systemctl --user stop cc-bridge.service`));
-  console.log(chalk.gray(`   卸载: cc-bridge daemon uninstall`));
-  console.log(chalk.gray(`   状态: cc-bridge daemon status`));
+  console.log(chalk.gray(`   停止: systemctl --user stop cc-linker.service`));
+  console.log(chalk.gray(`   卸载: cc-linker daemon uninstall`));
+  console.log(chalk.gray(`   状态: cc-linker daemon status`));
 }
 
 export async function uninstallDaemon(): Promise<void> {
@@ -226,8 +226,8 @@ async function uninstallLinux(): Promise<void> {
   }
 
   // Disable and stop
-  spawnSync('systemctl', ['--user', 'disable', 'cc-bridge.service']);
-  spawnSync('systemctl', ['--user', 'stop', 'cc-bridge.service']);
+  spawnSync('systemctl', ['--user', 'disable', 'cc-linker.service']);
+  spawnSync('systemctl', ['--user', 'stop', 'cc-linker.service']);
   spawnSync('systemctl', ['--user', 'daemon-reload']);
 
   // Remove file
@@ -237,19 +237,19 @@ async function uninstallLinux(): Promise<void> {
 }
 
 export async function daemonStatus(): Promise<void> {
-  console.log(chalk.blue('=== cc-bridge 服务状态 ===\n'));
+  console.log(chalk.blue('=== cc-linker 服务状态 ===\n'));
 
   // Check daemon PID
   if (existsSync(RUNTIME_PID_FILE)) {
     try {
       const pid = parseInt(readFileSync(RUNTIME_PID_FILE, 'utf8').trim(), 10);
       process.kill(pid, 0);
-      console.log(chalk.green(`✅ cc-bridge 正在运行 (PID: ${pid})`));
+      console.log(chalk.green(`✅ cc-linker 正在运行 (PID: ${pid})`));
     } catch {
-      console.log(chalk.red('❌ cc-bridge PID 存在但进程不存在'));
+      console.log(chalk.red('❌ cc-linker PID 存在但进程不存在'));
     }
   } else {
-    console.log(chalk.yellow('⚠️ cc-bridge 未在运行'));
+    console.log(chalk.yellow('⚠️ cc-linker 未在运行'));
   }
 
   // Check autostart configuration
@@ -261,7 +261,7 @@ export async function daemonStatus(): Promise<void> {
       console.log(chalk.green(`   ✅ launchd 已配置 (${plistPath})`));
     } else {
       console.log(chalk.gray('   ️ 未配置 launchd'));
-      console.log(chalk.gray('   执行: cc-bridge daemon install'));
+      console.log(chalk.gray('   执行: cc-linker daemon install'));
     }
   } else if (IS_LINUX) {
     const servicePath = getLinuxServicePath();
@@ -269,7 +269,7 @@ export async function daemonStatus(): Promise<void> {
       console.log(chalk.green(`   ✅ systemd 已配置 (${servicePath})`));
     } else {
       console.log(chalk.gray('   ⏸️ 未配置 systemd'));
-      console.log(chalk.gray('   执行: cc-bridge daemon install'));
+      console.log(chalk.gray('   执行: cc-linker daemon install'));
     }
   }
 

@@ -8,7 +8,7 @@ describe('ConfigManager', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `cc-bridge-config-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `cc-linker-config-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 

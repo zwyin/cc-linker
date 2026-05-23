@@ -146,7 +146,8 @@ export class FeishuBot {
       return;
     }
 
-    const target = text.startsWith('/bridge')
+    const isCommand = text.startsWith('/') && text.length > 1 && text[1] !== ' ';
+    const target = isCommand
       ? { type: 'no_target' as const, openId: event.open_id, mappingVersion: this.userManager.getVersion() }
       : await this.resolveChatTarget(event.open_id, event.message_id);
 
@@ -323,7 +324,7 @@ export class FeishuBot {
     try {
       if (msg.responseText) {
         await this.replyAndFinalize(msg, msg.responseText);
-      } else if (msg.text.startsWith('/bridge')) {
+      } else if (msg.text.startsWith('/') && msg.text.length > 1 && msg.text[1] !== ' ') {
         await this.handleCommand(msg);
       } else {
         await this.handleChat(msg);
@@ -349,7 +350,7 @@ export class FeishuBot {
 
   private async handleCommand(msg: SpoolMessage): Promise<void> {
     const parts = msg.text.split(/\s+/);
-    const cmd = parts[1]?.toLowerCase();
+    const cmd = parts[0]?.replace(/^\/+/, '')?.toLowerCase();
 
     switch (cmd) {
       case 'help':
@@ -361,19 +362,19 @@ export class FeishuBot {
         return;
 
       case 'new':
-        await this.handleNew(msg, msg.text.replace(/^\/bridge\s+new\s*/i, ''));
+        await this.handleNew(msg, msg.text.replace(/^\/new\b\s*/i, ''));
         return;
 
       case 'switch':
-        await this.handleSwitch(msg, parts.slice(2).join(' '));
+        await this.handleSwitch(msg, parts.slice(1).join(' '));
         return;
 
       case 'model':
-        await this.handleModel(msg, parts.slice(2).join(' '));
+        await this.handleModel(msg, parts.slice(1).join(' '));
         return;
 
       case 'resume':
-        await this.handleResume(msg, parts.slice(2).join(' '));
+        await this.handleResume(msg, parts.slice(1).join(' '));
         return;
 
       case 'status':
@@ -385,7 +386,7 @@ export class FeishuBot {
         return;
 
       default:
-        await this.replyAndFinalize(msg, `未知命令: /bridge ${cmd}\n\n${this.helpText()}`);
+        await this.replyAndFinalize(msg, `未知命令: /${cmd}\n\n${this.helpText()}`);
         return;
     }
   }
@@ -410,12 +411,12 @@ export class FeishuBot {
         const claimResult = await this.userManager.claimPendingNewSession(msg.openId, claimMessageId);
 
         if (claimResult.status === 'creating') {
-          await this.replyAndFinalize(msg, '新会话正在创建，请稍后重试，或执行 /bridge list 查看是否已生成。');
+          await this.replyAndFinalize(msg, '新会话正在创建，请稍后重试，或执行 /list 查看是否已生成。');
           return;
         }
 
         if (claimResult.status !== 'claimed') {
-          await this.replyAndFinalize(msg, '新会话创建入口已失效，请重新执行 /bridge new。');
+          await this.replyAndFinalize(msg, '新会话创建入口已失效，请重新执行 /new。');
           return;
         }
 
@@ -428,7 +429,7 @@ export class FeishuBot {
       }
 
       case 'new_session_creating':
-        await this.replyAndFinalize(msg, '新会话正在创建，请稍后重试，或执行 /bridge list 查看是否已生成。');
+        await this.replyAndFinalize(msg, '新会话正在创建，请稍后重试，或执行 /list 查看是否已生成。');
         return;
 
       case 'no_target':
@@ -436,9 +437,9 @@ export class FeishuBot {
         await this.replyAndFinalize(msg, [
           '当前没有活跃会话。',
           '请先执行以下任一命令：',
-          '1. /bridge list',
-          '2. /bridge switch <ID>',
-          '3. /bridge new [cwd] [-- prompt]',
+          '1. /list',
+          '2. /switch <ID>',
+          '3. /new [cwd] [-- prompt]',
         ].join('\n'));
         return;
     }
@@ -728,7 +729,7 @@ export class FeishuBot {
     if (providerAlias) {
       const provider = this.providerManager.resolve(providerAlias);
       if (!provider) {
-        await this.replyAndFinalize(msg, `未知模型: "${providerAlias}"\n请使用 /bridge model 查看可用列表`);
+        await this.replyAndFinalize(msg, `未知模型: "${providerAlias}"\n请使用 /model 查看可用列表`);
         return;
       }
 
@@ -745,7 +746,7 @@ export class FeishuBot {
     }
 
     if (!cwd) {
-      await this.replyAndFinalize(msg, '请使用 /bridge new <cwd>，或在配置里设置 feishu_bot.default_cwd。');
+      await this.replyAndFinalize(msg, '请使用 /new <cwd>，或在配置里设置 feishu_bot.default_cwd。');
       return;
     }
 
@@ -816,7 +817,7 @@ export class FeishuBot {
 
   private async handleSwitch(msg: SpoolMessage, target: string): Promise<void> {
     if (!target) {
-      await this.replyAndFinalize(msg, '用法: /bridge switch <序号或 UUID>');
+      await this.replyAndFinalize(msg, '用法: /switch <序号或 UUID>');
       return;
     }
 
@@ -826,7 +827,7 @@ export class FeishuBot {
       : this.listSnapshotManager.resolveIndex(index, msg.openId);
 
     if (!uuid) {
-      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /bridge list 查看完整列表。`);
+      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /list 查看完整列表。`);
       return;
     }
 
@@ -835,7 +836,7 @@ export class FeishuBot {
 
   private async handleResume(msg: SpoolMessage, target: string): Promise<void> {
     if (!target) {
-      await this.replyAndFinalize(msg, '用法: /bridge resume <序号或 UUID>');
+      await this.replyAndFinalize(msg, '用法: /resume <序号或 UUID>');
       return;
     }
 
@@ -845,7 +846,7 @@ export class FeishuBot {
       : this.listSnapshotManager.resolveIndex(index, msg.openId);
 
     if (!uuid) {
-      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /bridge list 查看完整列表。`);
+      await this.replyAndFinalize(msg, `未找到 "${target}" 对应的会话（或匹配到多个），请先执行 /list 查看完整列表。`);
       return;
     }
 
@@ -898,9 +899,9 @@ export class FeishuBot {
         });
         lines.push('');
         lines.push('用法:');
-        lines.push('  /bridge model <序号|别名>        设置默认模型');
-        lines.push('  /bridge model --clear            清除默认设置');
-        lines.push('  /bridge new /path --model <别名>  创建会话时指定模型');
+        lines.push('  /model <序号|别名>        设置默认模型');
+        lines.push('  /model --clear            清除默认设置');
+        lines.push('  /new /path --model <别名>  创建会话时指定模型');
         await this.replyAndFinalize(msg, lines.join('\n'));
       }
       return;
@@ -925,7 +926,7 @@ export class FeishuBot {
 
     const provider = this.providerManager.resolve(target);
     if (!provider) {
-      await this.replyAndFinalize(msg, `未知模型: "${target}"\n请使用 /bridge model 查看可用列表`);
+      await this.replyAndFinalize(msg, `未知模型: "${target}"\n请使用 /model 查看可用列表`);
       return;
     }
 
@@ -954,17 +955,17 @@ export class FeishuBot {
   private helpText(): string {
     return [
       '可用命令:',
-      '  /bridge help                              - 显示此帮助',
-      '  /bridge list                              - 列出会话',
-      '  /bridge new [路径] [-- prompt]            - 创建新会话',
-      '  /bridge new [路径] --model <别名> [-- p]  - 指定模型创建会话',
-      '  /bridge switch <序号|UUID>                - 切换会话',
-      '  /bridge model                             - 查看可用模型和默认设置',
-      '  /bridge model <序号|别名>                  - 设置默认模型',
-      '  /bridge model --clear                     - 清除默认设置',
-      '  /bridge resume <序号|UUID>                - 获取安全恢复建议',
-      '  /bridge status                            - 查看状态',
-      '  /bridge whoami                            - 获取你的 open_id',
+      '  /help                              - 显示此帮助',
+      '  /list                              - 列出会话',
+      '  /new [路径] [-- prompt]            - 创建新会话',
+      '  /new [路径] --model <别名> [-- p]  - 指定模型创建会话',
+      '  /switch <序号|UUID>                - 切换会话',
+      '  /model                             - 查看可用模型和默认设置',
+      '  /model <序号|别名>                  - 设置默认模型',
+      '  /model --clear                     - 清除默认设置',
+      '  /resume <序号|UUID>                - 获取安全恢复建议',
+      '  /status                            - 查看状态',
+      '  /whoami                            - 获取你的 open_id',
     ].join('\n');
   }
 
@@ -1201,7 +1202,7 @@ export class FeishuBot {
   private async doSwitch(openId: string, uuid: string, messageId?: string, msg?: SpoolMessage): Promise<string> {
     const session = this.registry.get(uuid);
     if (!session) {
-      const reply = '未找到对应会话，请先执行 /bridge list。';
+      const reply = '未找到对应会话，请先执行 /list。';
       if (msg) await this.replyAndFinalize(msg, reply);
       else await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
       return reply;
@@ -1230,7 +1231,7 @@ export class FeishuBot {
   private async doSelectModel(openId: string, alias: string, messageId?: string): Promise<string> {
     const provider = this.providerManager.resolve(alias);
     if (!provider) {
-      return `未知模型: "${alias}"\n请使用 /bridge model 查看可用列表`;
+      return `未知模型: "${alias}"\n请使用 /model 查看可用列表`;
     }
 
     const entry = this.userManager.getEntry(openId);
@@ -1266,12 +1267,12 @@ export class FeishuBot {
 
   private async doResume(openId: string, uuid: string, messageId?: string): Promise<string> {
     const entry = this.registry.get(uuid);
-    if (!entry) return '未找到对应会话，请先执行 /bridge list。';
+    if (!entry) return '未找到对应会话，请先执行 /list。';
     if (entry.status === 'corrupted') return `会话 ${uuid.slice(0, 8)} 已损坏，不能直接恢复。`;
     if (entry.status === 'provisioning' || entry.status === 'degraded') {
-      return `会话 ${uuid.slice(0, 8)} 状态为 ${entry.status}，建议先保持 cc-bridge 运行让系统自动修复。`;
+      return `会话 ${uuid.slice(0, 8)} 状态为 ${entry.status}，建议先保持 cc-linker 运行让系统自动修复。`;
     }
-    return `在终端执行: cc-link resume ${uuid.slice(0, 8)}`;
+    return `在终端执行: cc-linker resume ${uuid.slice(0, 8)}`;
   }
 
   private async doResumeReply(openId: string, uuid: string, msg: SpoolMessage): Promise<void> {
@@ -1289,7 +1290,7 @@ export class FeishuBot {
       : null;
 
     return [
-      'cc-link 状态',
+      'cc-linker 状态',
       '─'.repeat(30),
       `队列消息: ${queueSize}`,
       `总会话数: ${sessions.length}`,

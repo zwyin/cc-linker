@@ -9,7 +9,7 @@ describe('RegistryManager', () => {
   let registry: RegistryManager;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'cc-bridge-registry-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'cc-linker-registry-test-'));
     registry = new RegistryManager(tmpDir);
   });
 

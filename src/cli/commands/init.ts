@@ -26,7 +26,7 @@ export async function init(registry: RegistryManager): Promise<void> {
   console.log(chalk.green(`✅ Registered ${sessions.length} sessions total`));
 
   console.log('\nNext steps:');
-  console.log('  1. Run \'cc-link start\' to launch the Feishu bot');
-  console.log('  2. Run \'cc-link list\' to view all sessions');
-  console.log('  3. Run \'cc-link resume\' to resume a session');
+  console.log('  1. Run \'cc-linker start\' to launch the Feishu bot');
+  console.log('  2. Run \'cc-linker list\' to view all sessions');
+  console.log('  3. Run \'cc-linker resume\' to resume a session');
 }

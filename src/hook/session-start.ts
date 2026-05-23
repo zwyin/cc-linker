@@ -6,7 +6,7 @@ import { isValidUUID } from '../utils/validation';
 
 /**
  * 会话启动 Hook：将 session 发现事件写入 runtime/session-events/ 目录，
- * 供 Round 5 Reconciler 在启动时归并。不再调用 `cc-bridge register`。
+ * 供 Round 5 Reconciler 在启动时归并。不再调用 `cc-linker register`。
  */
 export function hookSessionStart(): void {
   try {

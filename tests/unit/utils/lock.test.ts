@@ -9,7 +9,7 @@ describe('withLock', () => {
   let testFile: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `cc-bridge-lock-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `cc-linker-lock-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     testFile = join(tmpDir, 'test.json');
     writeFileSync(testFile, '{"value": 0}');

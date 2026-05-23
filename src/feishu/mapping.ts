@@ -12,7 +12,7 @@ export interface MappingEntry {
   sessionUuid: string | null;
   createdAt: string;
   casToken?: string; // I3: Unique CAS token to prevent ABA race (auto-generated)
-  cwd?: string; // I4: Working directory for new sessions (set by /bridge new)
+  cwd?: string; // I4: Working directory for new sessions (set by /new)
   lastActiveAt?: string;
   claimedByMessageId?: string;
   claimedAt?: string;

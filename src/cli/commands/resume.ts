@@ -4,7 +4,7 @@ import { SPOOL_PROCESSING_DIR } from '../../utils/paths';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
 import { CLAUDE_PROJECTS_DIR } from '../../utils/paths';
 import { StateCoordinator } from '../../runtime/state-coordinator';
@@ -40,9 +40,9 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     if (!match) {
       const count = Object.keys(registry.sessions).filter(u => u.startsWith(target)).length;
       if (count > 1) {
-        throw new CCBridgeError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
+        throw new CCLinkerError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
       }
-      throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+      throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
     }
     uuid = match[0];
   } else {
@@ -50,7 +50,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
   }
 
   let entry = registry.get(uuid);
-  if (!entry) throw new CCBridgeError('E002', '会话不存在');
+  if (!entry) throw new CCLinkerError('E002', '会话不存在');
 
   entry = await attemptRepairSession(registry, uuid, entry);
 
@@ -64,7 +64,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     if (status === 'degraded' && entry.last_error) {
       msg += `, 原因: ${entry.last_error}`;
     }
-    throw new CCBridgeError(err.code as any, msg);
+    throw new CCLinkerError(err.code as any, msg);
   }
 
   // Check if target session is actively being processed by the bot
@@ -96,7 +96,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     } else {
       registry.upsert(uuid, { status: 'corrupted' });
       await registry.flush();
-      throw new CCBridgeError('E002', 'JSONL 文件不存在，会话可能已被清理（已标记 status=corrupted）');
+      throw new CCLinkerError('E002', 'JSONL 文件不存在，会话可能已被清理（已标记 status=corrupted）');
     }
   } else if (!entry.jsonl_path) {
     // 尝试查找 JSONL 文件
@@ -131,7 +131,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
 
   // Execute
   if (!existsSync(targetCwd)) {
-    throw new CCBridgeError('E008', `工作目录不存在: ${targetCwd}，使用 --cwd 指定替代目录`);
+    throw new CCLinkerError('E008', `工作目录不存在: ${targetCwd}，使用 --cwd 指定替代目录`);
   }
 
   console.log(chalk.green(`恢复会话: ${entry.title ?? uuid}`));
@@ -162,7 +162,7 @@ function findLatestSession(registry: RegistryManager, project?: string): string 
   }
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到活跃会话');
+    throw new CCLinkerError('E002', '没有找到活跃会话');
   }
 
   sessions.sort((a, b) => b[1].last_active.localeCompare(a[1].last_active));
@@ -174,7 +174,7 @@ async function searchAndSelect(registry: RegistryManager, query: string): Promis
     .filter(([_, s]) => s.title?.toLowerCase().includes(query.toLowerCase()));
 
   if (matches.length === 0) {
-    throw new CCBridgeError('E002', `未找到包含 "${query}" 的会话`);
+    throw new CCLinkerError('E002', `未找到包含 "${query}" 的会话`);
   }
   if (matches.length === 1) return matches[0][0];
 
@@ -200,7 +200,7 @@ async function interactiveSelect(registry: RegistryManager): Promise<string> {
     .slice(0, 20);
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到会话');
+    throw new CCLinkerError('E002', '没有找到会话');
   }
 
   const { selected } = await inquirer.prompt([{

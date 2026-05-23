@@ -12,11 +12,11 @@ const IS_MACOS = platform() === 'darwin';
 const IS_LINUX = platform() === 'linux';
 
 function getMacOSPlistPath(): string {
-  return join(homedir(), 'Library', 'LaunchAgents', 'com.ccbridge.daemon.plist');
+  return join(homedir(), 'Library', 'LaunchAgents', 'com.cclinker.daemon.plist');
 }
 
 function getLinuxServicePath(): string {
-  return join(homedir(), '.config', 'systemd', 'user', 'cc-bridge.service');
+  return join(homedir(), '.config', 'systemd', 'user', 'cc-linker.service');
 }
 
 /** Check if daemon is currently running */
@@ -46,7 +46,7 @@ function disableAutoStartTemporarily(): void {
       spawnSync('launchctl', ['unload', plistPath]);
     }
   } else if (IS_LINUX) {
-    spawnSync('systemctl', ['--user', 'stop', 'cc-bridge.service']);
+    spawnSync('systemctl', ['--user', 'stop', 'cc-linker.service']);
   }
 }
 
@@ -180,7 +180,7 @@ export function saveConfig(config: Record<string, any>): void {
 }
 
 export async function initFeishu(): Promise<void> {
-  console.log(chalk.blue('=== cc-bridge 飞书配置向导 ===\n'));
+  console.log(chalk.blue('=== cc-linker 飞书配置向导 ===\n'));
 
   // Check if daemon is already running
   let skipCapture = false;
@@ -267,7 +267,7 @@ export async function initFeishu(): Promise<void> {
     const { manualId } = await inquirer.prompt([{
       type: 'input',
       name: 'manualId',
-      message: '请输入 owner_open_id（在飞书发送 /bridge whoami 可获取）:',
+      message: '请输入 owner_open_id（在飞书发送 /whoami 可获取）:',
       default: feishu.owner_open_id || undefined,
       validate: (v: string) => v.trim() ? true : 'open_id 不能为空',
     }]);
@@ -301,8 +301,8 @@ export async function initFeishu(): Promise<void> {
   const { defaultCwd } = await inquirer.prompt([{
     type: 'input',
     name: 'defaultCwd',
-    message: '默认工作目录（/bridge new 未指定路径时使用）:',
-    default: feishu.default_cwd || '~/Git/cc-bridge',
+    message: '默认工作目录（/new 未指定路径时使用）:',
+    default: feishu.default_cwd || '~/Git/cc-linker',
   }]);
 
   // Step 6: Save config
@@ -343,16 +343,16 @@ export async function initFeishu(): Promise<void> {
   if (startNow) {
     console.log(chalk.cyan('\n启动 Bot 服务...'));
 
-    // Find the cc-bridge executable
-    let exePath = 'cc-bridge';
+    // Find the cc-linker executable
+    let exePath = 'cc-linker';
     const argv0 = process.argv[0];
 
     // If compiled binary, argv[0] is the binary
-    if (argv0.endsWith('cc-bridge')) {
+    if (argv0.endsWith('cc-linker')) {
       exePath = argv0;
     } else {
-      // Development (bun run): check dist/cc-bridge relative to CWD
-      const distPath = join(process.cwd(), 'dist', 'cc-bridge');
+      // Development (bun run): check dist/cc-linker relative to CWD
+      const distPath = join(process.cwd(), 'dist', 'cc-linker');
       if (existsSync(distPath)) exePath = distPath;
     }
 
@@ -361,9 +361,9 @@ export async function initFeishu(): Promise<void> {
     });
     if (result.status === 0) {
       botStarted = true;
-      console.log(chalk.gray('运行 cc-link list 可查看会话'));
+      console.log(chalk.gray('运行 cc-linker list 可查看会话'));
     } else {
-      console.log(chalk.yellow('⚠️ 自动启动失败，请手动执行: cc-link start --daemon'));
+      console.log(chalk.yellow('⚠️ 自动启动失败，请手动执行: cc-linker start --daemon'));
     }
   }
 
@@ -387,10 +387,10 @@ export async function initFeishu(): Promise<void> {
   console.log(chalk.gray(`  开机自启:    ${autoStart ? '已配置' : '未配置'}`));
 
   console.log(chalk.cyan('\n常用命令:'));
-  console.log(chalk.white('  cc-link list              — 查看会话'));
-  console.log(chalk.white('  cc-link daemon status     — 查看服务状态'));
-  console.log(chalk.white('  cc-link daemon uninstall  — 移除开机自启'));
-  console.log(chalk.white('  cc-link stop              — 停止 Bot 服务'));
+  console.log(chalk.white('  cc-linker list              — 查看会话'));
+  console.log(chalk.white('  cc-linker daemon status     — 查看服务状态'));
+  console.log(chalk.white('  cc-linker daemon uninstall  — 移除开机自启'));
+  console.log(chalk.white('  cc-linker stop              — 停止 Bot 服务'));
 
   process.exit(0);
 }

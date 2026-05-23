@@ -11,7 +11,7 @@ export async function status(registry: RegistryManager): Promise<void> {
   const fromFeishu = sessions.filter(s => s.origin === 'feishu').length;
   const archivedOrCorrupted = sessions.filter(s => s.status === 'archived' || s.status === 'corrupted' || s.status === 'degraded' || s.status === 'provisioning').length;
 
-  console.log(chalk.bold('cc-link Status'));
+  console.log(chalk.bold('cc-linker Status'));
   console.log('─'.repeat(40));
   console.log(`Registry:      ${registry.path}`);
 
@@ -38,7 +38,7 @@ export async function status(registry: RegistryManager): Promise<void> {
       const sessionStart = settings.hooks?.SessionStart;
       if (Array.isArray(sessionStart)) {
         hookInstalled = sessionStart.some((matcher: any) =>
-          matcher?.hooks?.some((h: any) => h?.command?.includes('cc-link'))
+          matcher?.hooks?.some((h: any) => h?.command?.includes('cc-linker'))
         );
       }
     } catch {}
@@ -47,8 +47,8 @@ export async function status(registry: RegistryManager): Promise<void> {
 
   // Commands 列表
   console.log('\nCommands:');
-  console.log('  cc-link start      Launch Feishu bot');
-  console.log('  cc-link list       List all sessions');
-  console.log('  cc-link resume     Resume a session');
-  console.log('  cc-link sync       Sync sessions');
+  console.log('  cc-linker start      Launch Feishu bot');
+  console.log('  cc-linker list       List all sessions');
+  console.log('  cc-linker resume     Resume a session');
+  console.log('  cc-linker sync       Sync sessions');
 }

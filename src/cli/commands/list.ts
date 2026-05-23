@@ -59,6 +59,6 @@ export async function list(registry: RegistryManager, opts: ListOptions): Promis
     }
 
     console.log(formatTable(sessions));
-    console.log(`\n共 ${sessions.length} 个会话。使用 cc-link resume <Ref> 或完整 UUID 恢复会话。`);
+    console.log(`\n共 ${sessions.length} 个会话。使用 cc-linker resume <Ref> 或完整 UUID 恢复会话。`);
   }
 }

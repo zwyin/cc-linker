@@ -1,9 +1,9 @@
-# cc-bridge 自建方案 Phase 1 实现计划
+# cc-linker 自建方案 Phase 1 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Version:** v1.1
-> **Goal:** 将 cc-bridge 从 cc-connect 方案迁移到自建飞书 Bot 方案，6 轮递进实现，每轮可独立验证。
+> **Goal:** 将 cc-linker 从 cc-connect 方案迁移到自建飞书 Bot 方案，6 轮递进实现，每轮可独立验证。
 
 **Architecture:** 单进程架构，内部通过 import 直接调用模块。Feishu Bot（WSClient）+ Session Manager（Claude 进程管理）+ Spool Queue（可靠消息队列）+ Runtime Coordinator（运行态单写者）。
 
@@ -303,8 +303,8 @@ const DEFAULTS: ConfigData = {
     default_cwd: '',
   },
   runtime: {
-    owner_lock_path: join(getHome(), '.cc-bridge', 'runtime', 'owner.lock'),
-    session_event_dir: join(getHome(), '.cc-bridge', 'runtime', 'session-events'),
+    owner_lock_path: join(getHome(), '.cc-linker', 'runtime', 'owner.lock'),
+    session_event_dir: join(getHome(), '.cc-linker', 'runtime', 'session-events'),
   },
   security: {
     allowed_roots: [],
@@ -312,7 +312,7 @@ const DEFAULTS: ConfigData = {
     confirm_risky_actions: true,
   },
   queue: {
-    spool_dir: join(getHome(), '.cc-bridge', 'spool'),
+    spool_dir: join(getHome(), '.cc-linker', 'spool'),
     max_pending: 100,
     worker_concurrency: 2,
     done_retention_hours: 24,
@@ -328,7 +328,7 @@ const DEFAULTS: ConfigData = {
     timeout_ms: 30 * 60 * 1000,
   },
   hook: {
-    log_path: '~/.cc-bridge/hook.log',
+    log_path: '~/.cc-linker/hook.log',
     timeout: 10,
   },
 };
@@ -376,12 +376,12 @@ export class ConfigManager {
 
   private loadEnv(): void {
     const mappings: [string, keyof ConfigData, string][] = [
-      ['CC_BRIDGE_LOG_LEVEL', 'general', 'log_level'],
-      ['CC_BRIDGE_LOG_PATH', 'general', 'log_path'],
-      ['CC_BRIDGE_FEISHU_APP_ID', 'feishu_bot', 'app_id'],
-      ['CC_BRIDGE_FEISHU_APP_SECRET', 'feishu_bot', 'app_secret'],
-      ['CC_BRIDGE_FEISHU_OWNER_OPEN_ID', 'feishu_bot', 'owner_open_id'],
-      ['CC_BRIDGE_FEISHU_DEFAULT_CWD', 'feishu_bot', 'default_cwd'],
+      ['CC_LINKER_LOG_LEVEL', 'general', 'log_level'],
+      ['CC_LINKER_LOG_PATH', 'general', 'log_path'],
+      ['CC_LINKER_FEISHU_APP_ID', 'feishu_bot', 'app_id'],
+      ['CC_LINKER_FEISHU_APP_SECRET', 'feishu_bot', 'app_secret'],
+      ['CC_LINKER_FEISHU_OWNER_OPEN_ID', 'feishu_bot', 'owner_open_id'],
+      ['CC_LINKER_FEISHU_DEFAULT_CWD', 'feishu_bot', 'default_cwd'],
     ];
 
     for (const [envKey, section, key] of mappings) {
@@ -431,24 +431,24 @@ function getHome(): string {
 }
 
 export const HOME = getHome();
-export const CC_BRIDGE_DIR = process.env.CC_BRIDGE_DIR ?? join(HOME, '.cc-bridge');
-export const REGISTRY_PATH = process.env.CC_BRIDGE_REGISTRY_PATH ?? join(CC_BRIDGE_DIR, 'registry.json');
-export const BACKUP_DIR = join(CC_BRIDGE_DIR, 'backups');
-export const SCAN_CACHE_PATH = join(CC_BRIDGE_DIR, 'scan_cache.json');
-export const HOOK_LOG_PATH = join(CC_BRIDGE_DIR, 'hook.log');
-export const CONFIG_PATH = process.env.CC_BRIDGE_CONFIG_PATH ?? join(CC_BRIDGE_DIR, 'config.toml');
+export const CC_LINKER_DIR = process.env.CC_LINKER_DIR ?? join(HOME, '.cc-linker');
+export const REGISTRY_PATH = process.env.CC_LINKER_REGISTRY_PATH ?? join(CC_LINKER_DIR, 'registry.json');
+export const BACKUP_DIR = join(CC_LINKER_DIR, 'backups');
+export const SCAN_CACHE_PATH = join(CC_LINKER_DIR, 'scan_cache.json');
+export const HOOK_LOG_PATH = join(CC_LINKER_DIR, 'hook.log');
+export const CONFIG_PATH = process.env.CC_LINKER_CONFIG_PATH ?? join(CC_LINKER_DIR, 'config.toml');
 
 // User mapping & list snapshot
-export const USER_MAPPING_PATH = join(CC_BRIDGE_DIR, 'user-mapping.json');
-export const LIST_SNAPSHOT_PATH = join(CC_BRIDGE_DIR, 'list-snapshot.json');
+export const USER_MAPPING_PATH = join(CC_LINKER_DIR, 'user-mapping.json');
+export const LIST_SNAPSHOT_PATH = join(CC_LINKER_DIR, 'list-snapshot.json');
 
 // Runtime
-export const RUNTIME_DIR = join(CC_BRIDGE_DIR, 'runtime');
+export const RUNTIME_DIR = join(CC_LINKER_DIR, 'runtime');
 export const RUNTIME_OWNER_LOCK_PATH = join(RUNTIME_DIR, 'owner.lock');
 export const RUNTIME_SESSION_EVENTS_DIR = join(RUNTIME_DIR, 'session-events');
 
 // Spool queue
-export const SPOOL_DIR = join(CC_BRIDGE_DIR, 'spool');
+export const SPOOL_DIR = join(CC_LINKER_DIR, 'spool');
 export const SPOOL_PENDING = join(SPOOL_DIR, 'pending');
 export const SPOOL_PROCESSING = join(SPOOL_DIR, 'processing');
 export const SPOOL_REPLIED = join(SPOOL_DIR, 'replied');
@@ -482,14 +482,14 @@ git commit -m "refactor: update paths for self-hosted scheme (add user-mapping, 
 
 ```typescript
   const suggestions: Record<string, string[]> = {
-    'E001': ['运行 cc-bridge init 初始化 registry'],
-    'E002': ['会话已被清理或状态异常，无法恢复', '运行 cc-bridge sync 重新扫描'],
-    'E007': ['等待其他进程完成', '或删除 ~/.cc-bridge/registry.json.lock'],
+    'E001': ['运行 cc-linker init 初始化 registry'],
+    'E002': ['会话已被清理或状态异常，无法恢复', '运行 cc-linker sync 重新扫描'],
+    'E007': ['等待其他进程完成', '或删除 ~/.cc-linker/registry.json.lock'],
     'E008': ['会话创建目录已被删除，使用 --cwd 指定替代目录'],
-    'E010': ['会话处于降级状态，执行 cc-bridge start 触发自动修复'],
+    'E010': ['会话处于降级状态，执行 cc-linker start 触发自动修复'],
     'E011': ['会话仍在创建中，请稍后重试'],
     'E012': ['会话已损坏，无法恢复。请使用 /bridge switch 切换到其他会话'],
-    'E013': ['服务正在运行，请先执行 cc-bridge stop 后再执行此命令'],
+    'E013': ['服务正在运行，请先执行 cc-linker stop 后再执行此命令'],
   };
 ```
 
@@ -680,7 +680,7 @@ git commit -m "refactor: remove ccConnectUuids from JSONLScanner, update origin 
 **Files:**
 - Modify: `src/hook/session-start.ts`
 
-Hook 不再调用 `cc-bridge register` 写 registry，改为写 `runtime/session-events/` 发现事件文件。
+Hook 不再调用 `cc-linker register` 写 registry，改为写 `runtime/session-events/` 发现事件文件。
 
 - [ ] **Step 1: 覆盖写入 `src/hook/session-start.ts`**
 
@@ -785,7 +785,7 @@ import { existsSync } from 'fs';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
 import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 import { config } from '../../utils/config';
@@ -808,14 +808,14 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     uuid = await searchAndSelect(registry, opts.search);
   } else if (target) {
     const match = registry.findByPrefix(target);
-    if (!match) throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    if (!match) throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
     uuid = match[0];
   } else {
     uuid = await interactiveSelect(registry);
   }
 
   let entry = registry.get(uuid);
-  if (!entry) throw new CCBridgeError('E002', '会话不存在');
+  if (!entry) throw new CCLinkerError('E002', '会话不存在');
 
   // 状态检测（第 1 轮仅提示，不触发真正的 repair）
   const status = entry.status ?? 'active';
@@ -824,11 +824,11 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     case 'archived':
       break; // 允许恢复
     case 'provisioning':
-      throw new CCBridgeError('E011', '会话仍在创建中，请稍后重试');
+      throw new CCLinkerError('E011', '会话仍在创建中，请稍后重试');
     case 'degraded':
-      throw new CCBridgeError('E010', `会话处于降级状态: ${entry.last_error ?? '原因未知'}`);
+      throw new CCLinkerError('E010', `会话处于降级状态: ${entry.last_error ?? '原因未知'}`);
     case 'corrupted':
-      throw new CCBridgeError('E012', '会话已损坏，无法恢复。请切换到其他会话或重新创建');
+      throw new CCLinkerError('E012', '会话已损坏，无法恢复。请切换到其他会话或重新创建');
     default:
       break;
   }
@@ -843,7 +843,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
 
   // 第 1 轮不做 repair / 状态回写。只基于当前 registry 状态做提示。
   if (entry.jsonl_path && !existsSync(entry.jsonl_path)) {
-    throw new CCBridgeError('E002', 'JSONL 文件不存在，会话可能已被清理。请稍后执行 sync，或等待第 5 轮 repair/reconciler 能力接入。');
+    throw new CCLinkerError('E002', 'JSONL 文件不存在，会话可能已被清理。请稍后执行 sync，或等待第 5 轮 repair/reconciler 能力接入。');
   }
 
   // CWD check
@@ -859,7 +859,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
   }
 
   if (!existsSync(targetCwd)) {
-    throw new CCBridgeError('E008', `工作目录不存在: ${targetCwd}，使用 --cwd 指定替代目录`);
+    throw new CCLinkerError('E008', `工作目录不存在: ${targetCwd}，使用 --cwd 指定替代目录`);
   }
 
   console.log(chalk.green(`恢复会话: ${entry.title ?? uuid}`));
@@ -881,7 +881,7 @@ function findLatestSession(registry: RegistryManager, project?: string): string 
   }
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到活跃会话');
+    throw new CCLinkerError('E002', '没有找到活跃会话');
   }
 
   sessions.sort((a, b) => b[1].last_active.localeCompare(a[1].last_active));
@@ -893,7 +893,7 @@ async function searchAndSelect(registry: RegistryManager, query: string): Promis
     .filter(([_, s]) => s.title?.toLowerCase().includes(query.toLowerCase()));
 
   if (matches.length === 0) {
-    throw new CCBridgeError('E002', `未找到包含 "${query}" 的会话`);
+    throw new CCLinkerError('E002', `未找到包含 "${query}" 的会话`);
   }
   if (matches.length === 1) return matches[0][0];
 
@@ -919,7 +919,7 @@ async function interactiveSelect(registry: RegistryManager): Promise<string> {
     .slice(0, 20);
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到会话');
+    throw new CCLinkerError('E002', '没有找到会话');
   }
 
   const { selected } = await inquirer.prompt([{
@@ -954,7 +954,7 @@ import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
 import { syncBeforeCommand } from '../../scanner';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 export async function init(registry: RegistryManager): Promise<void> {
@@ -966,7 +966,7 @@ export async function init(registry: RegistryManager): Promise<void> {
   }
 
   if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
-    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，init 会写 registry，请停止服务后重试');
+    throw new CCLinkerError('E013', '检测到 cc-linker start 正在运行，init 会写 registry，请停止服务后重试');
   }
 
   console.log(chalk.blue('🔍 Scanning for existing sessions...'));
@@ -981,9 +981,9 @@ export async function init(registry: RegistryManager): Promise<void> {
   console.log(chalk.green(`✅ Registered ${sessions.length} sessions total`));
 
   console.log('\nNext steps:');
-  console.log('  1. Run \'cc-bridge hook install\' to install Claude Code hook');
-  console.log('  2. Run \'cc-bridge list\' to view all sessions');
-  console.log('  3. Run \'cc-bridge resume\' to resume a session');
+  console.log('  1. Run \'cc-linker hook install\' to install Claude Code hook');
+  console.log('  2. Run \'cc-linker list\' to view all sessions');
+  console.log('  3. Run \'cc-linker resume\' to resume a session');
 }
 ```
 
@@ -1005,7 +1005,7 @@ import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
 import { syncBeforeCommand } from '../../scanner';
 import { existsSync } from 'fs';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 interface SyncOptions {
@@ -1016,7 +1016,7 @@ interface SyncOptions {
 
 export async function sync(registry: RegistryManager, opts: SyncOptions): Promise<void> {
   if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
-    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，sync 会写 registry，请停止服务后重试');
+    throw new CCLinkerError('E013', '检测到 cc-linker start 正在运行，sync 会写 registry，请停止服务后重试');
   }
 
   console.log(chalk.blue('🔄 Syncing sessions...'));
@@ -1080,7 +1080,7 @@ export async function sync(registry: RegistryManager, opts: SyncOptions): Promis
 import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { RUNTIME_OWNER_LOCK_PATH } from '../../utils/paths';
 
 interface CleanOptions {
@@ -1090,12 +1090,12 @@ interface CleanOptions {
 
 export async function clean(registry: RegistryManager, opts: CleanOptions = {}): Promise<void> {
   if (existsSync(RUNTIME_OWNER_LOCK_PATH)) {
-    throw new CCBridgeError('E013', '检测到 cc-bridge start 正在运行，clean 会写 registry，请停止服务后重试');
+    throw new CCLinkerError('E013', '检测到 cc-linker start 正在运行，clean 会写 registry，请停止服务后重试');
   }
 
   const olderThanDays = opts.olderThan ? (() => {
     const n = parseInt(opts.olderThan, 10);
-    if (isNaN(n)) throw new CCBridgeError('E005', `无效的天数: ${opts.olderThan}`);
+    if (isNaN(n)) throw new CCLinkerError('E005', `无效的天数: ${opts.olderThan}`);
     return n;
   })() : undefined;
   const cutoff = olderThanDays
@@ -1169,7 +1169,7 @@ export async function status(registry: RegistryManager): Promise<void> {
   const fromFeishu = sessions.filter(s => s.origin === 'feishu').length;
   const corrupted = sessions.filter(s => s.status === 'corrupted').length;
 
-  console.log(chalk.bold('cc-bridge Status'));
+  console.log(chalk.bold('cc-linker Status'));
   console.log('─'.repeat(40));
   console.log(`Registry:      ${registry.path}`);
 
@@ -1194,7 +1194,7 @@ export async function status(registry: RegistryManager): Promise<void> {
       const sessionStart = settings.hooks?.SessionStart;
       if (Array.isArray(sessionStart)) {
         hookInstalled = sessionStart.some((matcher: any) =>
-          matcher?.hooks?.some((h: any) => h?.command?.includes('cc-bridge'))
+          matcher?.hooks?.some((h: any) => h?.command?.includes('cc-linker'))
         );
       }
     } catch {}
@@ -1225,7 +1225,7 @@ git commit -m "refactor: update status command for self-hosted scheme"
 ```typescript
 import { RegistryManager, type SessionEntry } from '../../registry';
 import { OriginSchema } from '../../registry/types';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { isValidUUID } from '../../utils/validation';
 
 interface RegisterOptions {
@@ -1240,12 +1240,12 @@ export async function registerSession(
   opts: RegisterOptions = {}
 ): Promise<void> {
   if (!isValidUUID(uuid)) {
-    throw new CCBridgeError('E005', `无效的 UUID 格式: ${uuid}`);
+    throw new CCLinkerError('E005', `无效的 UUID 格式: ${uuid}`);
   }
 
   const originResult = OriginSchema.safeParse(opts.origin ?? 'cli');
   if (!originResult.success) {
-    throw new CCBridgeError('E005', `无效的 origin 值: ${opts.origin}`);
+    throw new CCLinkerError('E005', `无效的 origin 值: ${opts.origin}`);
   }
 
   const entry: Partial<SessionEntry> = {
@@ -1309,7 +1309,7 @@ import { clean } from './cli/commands/clean';
 const program = new Command();
 
 program
-  .name('cc-bridge')
+  .name('cc-linker')
   .description('飞书 ↔ Claude Code CLI 桥接工具')
   .version('0.2.0');
 
@@ -1601,7 +1601,7 @@ export async function list(registry: RegistryManager, opts: ListOptions): Promis
     }
 
     console.log(formatTable(sessions));
-    console.log(`\n共 ${sessions.length} 个会话。使用 cc-bridge resume <Ref> 或完整 UUID 恢复会话。`);
+    console.log(`\n共 ${sessions.length} 个会话。使用 cc-linker resume <Ref> 或完整 UUID 恢复会话。`);
   }
 }
 ```
@@ -1613,13 +1613,13 @@ export async function list(registry: RegistryManager, opts: ListOptions): Promis
 ```typescript
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
 
 export async function show(registry: RegistryManager, target: string): Promise<void> {
   const match = registry.findByPrefix(target);
   if (!match) {
-    throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
   }
 
   const [uuid, s] = match;
@@ -1640,7 +1640,7 @@ export async function show(registry: RegistryManager, target: string): Promise<v
     console.log(`最后错误:    ${s.last_error}`);
   }
   console.log(`\n操作:`);
-  console.log(`  cc-bridge resume ${uuid.slice(0, 8)}   恢复此会话`);
+  console.log(`  cc-linker resume ${uuid.slice(0, 8)}   恢复此会话`);
 }
 ```
 
@@ -1702,26 +1702,26 @@ git commit -m "test: update tests for self-hosted scheme types"
 - [ ] **Step 1: 全量验证**
 
 ```bash
-bun run typecheck && bun test && bun build src/index.ts --compile --outfile dist/cc-bridge
+bun run typecheck && bun test && bun build src/index.ts --compile --outfile dist/cc-linker
 ```
 
 - [ ] **Step 2: 手动验证 CLI 命令**
 
 ```bash
-# 确保 cc-bridge 命令可用
+# 确保 cc-linker 命令可用
 bun link
 
-cc-bridge --version
-cc-bridge --help
-cc-bridge list --help
-cc-bridge resume --help
-cc-bridge status --help
-cc-bridge init --help
-cc-bridge sync --help
-cc-bridge clean --help
-cc-bridge search --help
-cc-bridge export --help
-cc-bridge hook --help
+cc-linker --version
+cc-linker --help
+cc-linker list --help
+cc-linker resume --help
+cc-linker status --help
+cc-linker init --help
+cc-linker sync --help
+cc-linker clean --help
+cc-linker search --help
+cc-linker export --help
+cc-linker hook --help
 ```
 
 - [ ] **Step 3: 提交最终**
@@ -1802,7 +1802,7 @@ class ClaudeSessionManager {
 4. **Task 4.4**: 创建 `src/feishu/bot.ts` — WSClient + 命令路由
 5. **Task 4.5**: 实现 `/bridge help/list/new/switch/resume/status` 命令处理
 6. **Task 4.6**: 实现飞书回复（分片 + 限流重试）
-7. **Task 4.7**: 创建 `cc-bridge start` 命令
+7. **Task 4.7**: 创建 `cc-linker start` 命令
 8. **Task 4.8**: 集成测试 — mock WSClient + API 验证全链路
 
 ---
@@ -1878,7 +1878,7 @@ class ClaudeSessionManager {
 
 ### 3. Type consistency
 
-第 1 轮中定义的新类型（SessionEntry、Status、Origin 等）在后续命令修改中保持一致。`CCBridgeError` 代码 E010-E013 与 resume.ts 中的使用匹配。
+第 1 轮中定义的新类型（SessionEntry、Status、Origin 等）在后续命令修改中保持一致。`CCLinkerError` 代码 E010-E013 与 resume.ts 中的使用匹配。
 
 ### 4. Scope check
 

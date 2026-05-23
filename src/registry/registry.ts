@@ -4,8 +4,8 @@ import { homedir } from 'os';
 import { RegistrySchema, type Registry, type SessionEntry } from './types';
 import { withLock, withReadLock } from '../utils/lock';
 import { logger } from '../utils/logger';
-import { CCBridgeError } from '../utils/errors';
-import { CC_BRIDGE_DIR } from '../utils/paths';
+import { CCLinkerError } from '../utils/errors';
+import { CC_LINKER_DIR } from '../utils/paths';
 import { config } from '../utils/config';
 
 const MAX_BACKUPS = 3;
@@ -57,7 +57,7 @@ export class RegistryManager {
       this.registryPath = join(this.basePath, 'registry.json');
     } else {
       const configuredPath = this.expandPath(
-        config.get<string>('general.registry_path', join(CC_BRIDGE_DIR, 'registry.json'))
+        config.get<string>('general.registry_path', join(CC_LINKER_DIR, 'registry.json'))
       );
       this.registryPath = configuredPath;
       this.basePath = dirname(configuredPath);

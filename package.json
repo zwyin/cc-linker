@@ -6,11 +6,11 @@
   "author": "wuyujun",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yujuntea/cc-bridge.git"
+    "url": "git+https://github.com/yujuntea/cc-linker.git"
   },
-  "homepage": "https://github.com/yujuntea/cc-bridge#readme",
+  "homepage": "https://github.com/yujuntea/cc-linker#readme",
   "bugs": {
-    "url": "https://github.com/yujuntea/cc-bridge/issues"
+    "url": "https://github.com/yujuntea/cc-linker/issues"
   },
   "keywords": [
     "claude-code",
@@ -21,7 +21,7 @@
     "cli"
   ],
   "bin": {
-    "cc-link": "./dist/cli.js"
+    "cc-linker": "./dist/cli.js"
   },
   "files": [
     "dist/cli.js",
@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build src/index.ts --compile --outfile dist/cc-bridge",
+    "build": "bun build src/index.ts --compile --outfile dist/cc-linker",
     "build:npm": "bun build src/index.ts --outdir dist --target node --sourcemap && mv dist/index.js dist/cli.js && mv dist/index.js.map dist/cli.js.map 2>/dev/null; chmod +x dist/cli.js",
     "prepublishOnly": "bun run build:npm",
     "test": "bun test",

@@ -1,4 +1,4 @@
-# cc-bridge
+# cc-linker
 
 让飞书和终端（Claude Code CLI）之间的对话切换像切换设备一样无缝。
 
@@ -8,10 +8,10 @@
 
 ```bash
 # npm 全局安装
-npm install -g cc-link
+npm install -g cc-linker
 
 # 或 bun 全局安装
-bun add -g cc-link
+bun add -g cc-linker
 
 # 需要 Bun 运行时。安装 Bun:
 # curl -fsSL https://bun.sh/install | bash
@@ -20,7 +20,7 @@ bun add -g cc-link
 ### 2. 一键配置
 
 ```bash
-cc-bridge setup
+cc-linker setup
 ```
 
 交互式向导会引导你：
@@ -28,17 +28,17 @@ cc-bridge setup
 - 安装 Claude Code 自动注册钩子
 - 配置飞书 Bot（App ID + App Secret + 开机自启）
 
-> **仅需终端侧功能？** 运行 `cc-bridge setup --skip-feishu` 跳过飞书配置。
+> **仅需终端侧功能？** 运行 `cc-linker setup --skip-feishu` 跳过飞书配置。
 
 ### 3. 开始使用
 
 | 场景 | 操作 |
 |------|------|
 | 飞书中给 Bot 发消息 | 直接对话，流式卡片实时更新 |
-| 终端查看所有会话 | `cc-bridge list` |
-| 终端恢复某个会话 | `cc-bridge resume <UUID>` |
-| 飞书切换会话 | `/bridge switch <序号>` |
-| 飞书创建新会话 | `/bridge new <路径> -- <提示词>` |
+| 终端查看所有会话 | `cc-linker list` |
+| 终端恢复某个会话 | `cc-linker resume <UUID>` |
+| 飞书切换会话 | `/switch <序号>` |
+| 飞书创建新会话 | `/new <路径> -- <提示词>` |
 
 ---
 
@@ -86,14 +86,14 @@ cc-bridge setup
 ### 常用命令
 
 ```bash
-cc-bridge list                      # 列出所有会话
-cc-bridge resume <UUID>             # 恢复指定会话到终端（支持前缀匹配）
-cc-bridge show <UUID>               # 查看会话详情
-cc-bridge sync                      # 手动同步两端会话
-cc-bridge search <关键词>           # 搜索会话
-cc-bridge export <UUID>             # 导出会话为 Markdown/JSON/Text
-cc-bridge clean                     # 清理无效记录
-cc-bridge status                    # 查看桥接状态
+cc-linker list                      # 列出所有会话
+cc-linker resume <UUID>             # 恢复指定会话到终端（支持前缀匹配）
+cc-linker show <UUID>               # 查看会话详情
+cc-linker sync                      # 手动同步两端会话
+cc-linker search <关键词>           # 搜索会话
+cc-linker export <UUID>             # 导出会话为 Markdown/JSON/Text
+cc-linker clean                     # 清理无效记录
+cc-linker status                    # 查看桥接状态
 ```
 
 ### 飞书 Bot 命令
@@ -102,14 +102,14 @@ cc-bridge status                    # 查看桥接状态
 
 | 命令 | 说明 |
 |------|------|
-| `/bridge help` | 显示帮助 |
-| `/bridge list` | 列出会话（带切换/恢复按钮卡片） |
-| `/bridge new [路径] [-- 提示词]` | 创建新会话 |
-| `/bridge switch <序号\|UUID>` | 切换会话 |
-| `/bridge resume <序号\|UUID>` | 获取终端恢复命令 |
-| `/bridge model` | 查看/设置默认模型 |
-| `/bridge status` | 查看状态 |
-| `/bridge whoami` | 获取你的 open_id |
+| `/help` | 显示帮助 |
+| `/list` | 列出会话（带切换/恢复按钮卡片） |
+| `/new [路径] [-- 提示词]` | 创建新会话 |
+| `/switch <序号\|UUID>` | 切换会话 |
+| `/resume <序号\|UUID>` | 获取终端恢复命令 |
+| `/model` | 查看/设置默认模型 |
+| `/status` | 查看状态 |
+| `/whoami` | 获取你的 open_id |
 
 ### 流式响应体验
 
@@ -123,12 +123,12 @@ cc-bridge status                    # 查看桥接状态
 
 | 命令 | 说明 |
 |------|------|
-| `cc-bridge start` | 前台启动（阻塞终端） |
-| `cc-bridge start --daemon` | 后台守护进程模式 |
-| `cc-bridge stop` | 停止后台 Bot |
-| `cc-bridge daemon install` | 配置开机自动启动 |
-| `cc-bridge daemon uninstall` | 移除开机自启 |
-| `cc-bridge daemon status` | 查看后台服务状态 |
+| `cc-linker start` | 前台启动（阻塞终端） |
+| `cc-linker start --daemon` | 后台守护进程模式 |
+| `cc-linker stop` | 停止后台 Bot |
+| `cc-linker daemon install` | 配置开机自动启动 |
+| `cc-linker daemon uninstall` | 移除开机自启 |
+| `cc-linker daemon status` | 查看后台服务状态 |
 
 ### 分步配置（替代 setup 向导）
 
@@ -136,24 +136,24 @@ cc-bridge status                    # 查看桥接状态
 
 ```bash
 # 1. 初始化注册表
-cc-bridge init
+cc-linker init
 
 # 2. 安装 Claude Code 钩子（可选但推荐）
-cc-bridge hook install
+cc-linker hook install
 
 # 3. 配置飞书 Bot
-cc-bridge init-feishu
+cc-linker init-feishu
 
 # 4. 启动 Bot
-cc-bridge start --daemon
+cc-linker start --daemon
 
 # 5. 配置开机自启
-cc-bridge daemon install
+cc-linker daemon install
 ```
 
 ### 配置说明
 
-配置文件：`~/.cc-bridge/config.toml`（可选，不创建则使用默认值）
+配置文件：`~/.cc-linker/config.toml`（可选，不创建则使用默认值）
 
 ```toml
 [general]
@@ -171,11 +171,11 @@ fallback_to_text = true
 
 | 环境变量 | 说明 |
 |---------|------|
-| `CC_BRIDGE_FEISHU_APP_ID` | 飞书 App ID |
-| `CC_BRIDGE_FEISHU_APP_SECRET` | 飞书 App Secret |
-| `CC_BRIDGE_FEISHU_OWNER_OPEN_ID` | 限制仅指定用户使用 |
-| `CC_BRIDGE_STREAM_ENABLED` | 流式响应开关 |
-| `CC_BRIDGE_LOG_LEVEL` | 日志级别 |
+| `CC_LINKER_FEISHU_APP_ID` | 飞书 App ID |
+| `CC_LINKER_FEISHU_APP_SECRET` | 飞书 App Secret |
+| `CC_LINKER_FEISHU_OWNER_OPEN_ID` | 限制仅指定用户使用 |
+| `CC_LINKER_STREAM_ENABLED` | 流式响应开关 |
+| `CC_LINKER_LOG_LEVEL` | 日志级别 |
 
 ---
 
@@ -190,7 +190,7 @@ fallback_to_text = true
 └──────────────────────────────────────────────────────┘
 ```
 
-- **Registry** (`~/.cc-bridge/registry.json`): 统一会话索引
+- **Registry** (`~/.cc-linker/registry.json`): 统一会话索引
 - **Scanner**: 增量扫描 Claude Code JSONL 文件
 - **Hook**: Claude Code 启动时自动注册新会话
 - **Spool Queue**: 持久化消息队列，崩溃后可恢复
@@ -212,8 +212,8 @@ fallback_to_text = true
 ## 开发者指南
 
 ```bash
-git clone https://github.com/yujuntea/cc-bridge.git
-cd cc-bridge
+git clone https://github.com/yujuntea/cc-linker.git
+cd cc-linker
 bun install
 bun run dev <命令>        # 开发模式
 bun run typecheck         # 类型检查
@@ -226,7 +226,7 @@ bun run build             # 编译为独立二进制文件
 
 ```bash
 # 独立二进制（本地分发）
-bun run build             # → dist/cc-bridge
+bun run build             # → dist/cc-linker
 
 # npm 发布
 npm version minor

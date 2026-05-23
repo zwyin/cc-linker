@@ -21,7 +21,7 @@ export interface StartOptions {
 
 export async function start(registry: RegistryManager, opts: StartOptions = {}): Promise<void> {
   // Daemon child process — runs the bot with log file redirection
-  if (process.env.CC_BRIDGE_DAEMON === '1') {
+  if (process.env.CC_LINKER_DAEMON === '1') {
     await startDaemonChild(registry, opts);
     return;
   }
@@ -31,7 +31,7 @@ export async function start(registry: RegistryManager, opts: StartOptions = {}):
     if (isRunning()) {
       const pid = readPid();
       console.log(chalk.yellow(`⚠️  Bot 已在后台运行 (PID: ${pid})`));
-      console.log(chalk.cyan(`   停止: cc-bridge stop`));
+      console.log(chalk.cyan(`   停止: cc-linker stop`));
       return;
     }
     await startDaemon();
@@ -41,7 +41,7 @@ export async function start(registry: RegistryManager, opts: StartOptions = {}):
   // Check owner.lock for foreground mode
   const sc = new StateCoordinator();
   if (StateCoordinator.isLocked()) {
-    console.log(chalk.red('❌ Bot 进程正在运行，请先执行 cc-bridge stop'));
+    console.log(chalk.red('❌ Bot 进程正在运行，请先执行 cc-linker stop'));
     process.exit(1);
   }
 
@@ -65,12 +65,12 @@ function readPid(): number {
   return parseInt(readFileSync(RUNTIME_PID_FILE, 'utf8').trim(), 10);
 }
 
-/** Stop all cc-bridge daemon processes */
+/** Stop all cc-linker daemon processes */
 export async function stop(): Promise<void> {
   let stopped = false;
 
   // 1. Stop launchd service if exists
-  const plistPath = join(homedir(), 'Library', 'LaunchAgents', 'com.ccbridge.daemon.plist');
+  const plistPath = join(homedir(), 'Library', 'LaunchAgents', 'com.cclinker.daemon.plist');
   if (existsSync(plistPath)) {
     try {
       spawnSync('launchctl', ['unload', plistPath]);
@@ -115,10 +115,10 @@ export async function stop(): Promise<void> {
     }
   }
 
-  // 3. Kill any remaining cc-bridge processes
+  // 3. Kill any remaining cc-linker processes
   try {
     const { execSync } = await import('child_process');
-    const pids = execSync("pgrep -f 'cc-bridge.*daemon' 2>/dev/null || true", { encoding: 'utf8' })
+    const pids = execSync("pgrep -f 'cc-linker.*daemon' 2>/dev/null || true", { encoding: 'utf8' })
       .trim()
       .split('\n')
       .filter(Boolean);
@@ -150,7 +150,7 @@ export async function daemonStatus(): Promise<void> {
   const pid = readPid();
   console.log(chalk.green(`✅ Bot 正在运行 (PID: ${pid})`));
   console.log(chalk.gray(`   日志: ${RUNTIME_LOG_FILE}`));
-  console.log(chalk.gray(`   停止: cc-bridge stop`));
+  console.log(chalk.gray(`   停止: cc-linker stop`));
 
   // Show last few log lines
   if (existsSync(RUNTIME_LOG_FILE)) {
@@ -403,7 +403,7 @@ async function createBotRuntime(
 }
 
 async function startForeground(registry: RegistryManager, opts: StartOptions): Promise<void> {
-  console.log(chalk.blue('🚀 启动 cc-bridge...'));
+  console.log(chalk.blue('🚀 启动 cc-linker...'));
 
   const { bot, stateCoordinator, shutdown } = await createBotRuntime(registry, (level, msg) => {
     if (level === 'ERROR') {
@@ -420,7 +420,7 @@ async function startForeground(registry: RegistryManager, opts: StartOptions): P
     }
   });
 
-  console.log(chalk.green('✅ cc-bridge 已启动'));
+  console.log(chalk.green('✅ cc-linker 已启动'));
 
   let shuttingDown = false;
   const gracefulShutdown = async (signal: string) => {
@@ -428,7 +428,7 @@ async function startForeground(registry: RegistryManager, opts: StartOptions): P
     shuttingDown = true;
     console.log(chalk.yellow(`\n收到 ${signal}，优雅停机中...`));
     await shutdown(signal);
-    logger.info('cc-bridge 已停止');
+    logger.info('cc-linker 已停止');
     process.exit(0);
   };
 
@@ -470,7 +470,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
     log('INFO', `收到 ${signal}，优雅停机中...`);
     try { const sc = new StateCoordinator(); sc.release(); } catch {}
     try { if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE); } catch {}
-    log('INFO', 'cc-bridge 已停止');
+    log('INFO', 'cc-linker 已停止');
     process.exit(0);
   };
 
@@ -479,7 +479,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
 
   const { bot, shutdown } = await createBotRuntime(registry, log);
 
-  log('INFO', 'cc-bridge daemon started');
+  log('INFO', 'cc-linker daemon started');
 
   const daemonShutdown = async (signal: string) => {
     if (shuttingDown) return;
@@ -487,7 +487,7 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
     log('INFO', `收到 ${signal}，优雅停机中...`);
     await shutdown(signal);
     try { if (existsSync(RUNTIME_PID_FILE)) unlinkSync(RUNTIME_PID_FILE); } catch {}
-    log('INFO', 'cc-bridge 已停止');
+    log('INFO', 'cc-linker 已停止');
     process.exit(0);
   };
 
@@ -506,31 +506,31 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
   await dispatchLoop();
 }
 
-/** Resolve the cc-bridge executable path */
+/** Resolve the cc-linker executable path */
 function getExecutablePath(): string {
   const argv0 = process.argv[0];
   // If compiled binary, argv[0] IS the binary
-  if (argv0.endsWith('cc-bridge')) return argv0;
+  if (argv0.endsWith('cc-linker')) return argv0;
 
-  // Development (bun run): try dist/cc-bridge relative to CWD
-  const distPath = join(process.cwd(), 'dist', 'cc-bridge');
+  // Development (bun run): try dist/cc-linker relative to CWD
+  const distPath = join(process.cwd(), 'dist', 'cc-linker');
   if (existsSync(distPath)) return distPath;
 
-  // Fallback: assume 'cc-bridge' is in PATH
-  return 'cc-bridge';
+  // Fallback: assume 'cc-linker' is in PATH
+  return 'cc-linker';
 }
 
 /** Parent process: spawns detached child and exits */
 async function startDaemon(): Promise<void> {
   const { spawn } = await import('child_process');
   const exe = getExecutablePath();
-  // For compiled binaries, argv[1] is the internal script path (/$bunfs/root/cc-bridge),
+  // For compiled binaries, argv[1] is the internal script path (/$bunfs/root/cc-linker),
   // not a CLI argument. Use slice(2) to get actual CLI args.
   const args = process.argv.slice(2);
   const child = spawn(exe, args, {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, CC_BRIDGE_DAEMON: '1' },
+    env: { ...process.env, CC_LINKER_DAEMON: '1' },
   });
   child.unref();
 
@@ -543,9 +543,9 @@ async function startDaemon(): Promise<void> {
   }
 
   const pid = readPid();
-  console.log(chalk.green(`✅ cc-bridge 已在后台启动 (PID: ${pid})`));
+  console.log(chalk.green(`✅ cc-linker 已在后台启动 (PID: ${pid})`));
   console.log(chalk.cyan(`   日志: ${RUNTIME_LOG_FILE}`));
-  console.log(chalk.cyan(`   停止: cc-bridge stop`));
-  console.log(chalk.cyan(`   状态: cc-bridge daemon status`));
+  console.log(chalk.cyan(`   停止: cc-linker stop`));
+  console.log(chalk.cyan(`   状态: cc-linker daemon status`));
   process.exit(0);
 }

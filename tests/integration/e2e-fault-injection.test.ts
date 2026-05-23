@@ -70,7 +70,7 @@ describe('Round 6: E2E + Fault Injection', () => {
     const { bot, replies, spoolQueue } = createBot();
 
     // Enqueue a message
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-1', '/bridge status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-1', '/status'));
 
     // Dispatch
     await bot.dispatch();
@@ -81,13 +81,13 @@ describe('Round 6: E2E + Fault Injection', () => {
   });
 
   // ============================================================
-  // 2. Race condition: /bridge switch queues messages correctly
+  // 2. Race condition: /switch queues messages correctly
   // ============================================================
   it('竞态: switch 后排队消息正确路由', async () => {
     const { bot, replies, spoolQueue, userManager, registry } = createBot();
 
     // First, establish a session
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-init', '/bridge new /tmp/test'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-init', '/new /tmp/test'));
     await bot.dispatch();
     expect(replies.length).toBeGreaterThanOrEqual(1);
 
@@ -105,7 +105,7 @@ describe('Round 6: E2E + Fault Injection', () => {
     await registry.flush();
 
     // Now switch to a specific session
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-switch', '/bridge switch abc-12345'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-switch', '/switch abc-12345'));
     await bot.dispatch();
 
     // Verify mapping was updated
@@ -127,8 +127,8 @@ describe('Round 6: E2E + Fault Injection', () => {
     const { bot, replies, spoolQueue } = createBot();
 
     // Send two commands (not plain text, which would spawn Claude)
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-a', '/bridge status'));
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-b', '/bridge status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-a', '/status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-b', '/status'));
 
     await bot.dispatch();
 
@@ -144,7 +144,7 @@ describe('Round 6: E2E + Fault Injection', () => {
     const { spoolQueue, bot, replies } = createBot();
 
     // Enqueue and process a message
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-crash', '/bridge status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-crash', '/status'));
     await bot.dispatch();
 
     const initialReplies = replies.length;
@@ -177,7 +177,7 @@ describe('Round 6: E2E + Fault Injection', () => {
     const msg = {
       messageId: 'msg-idem',
       openId: 'ou_user1',
-      text: '/bridge status',
+      text: '/status',
       target: { type: 'session' as const },
       serialKey: 'ou_user1',
       status: 'pending' as const,
@@ -283,8 +283,8 @@ describe('Round 6: E2E + Fault Injection', () => {
     const { bot, replies, spoolQueue } = createBot();
 
     // Send same message twice
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-dup', '/bridge status'));
-    await bot.onMessage(p2pMessage('ou_user1', 'msg-dup', '/bridge status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-dup', '/status'));
+    await bot.onMessage(p2pMessage('ou_user1', 'msg-dup', '/status'));
 
     await bot.dispatch();
 

@@ -1,7 +1,7 @@
 import { writeFileSync, readFileSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { RUNTIME_OWNER_LOCK_PATH } from '../utils/paths';
-import { CCBridgeError } from '../utils/errors';
+import { CCLinkerError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
 /**
@@ -124,7 +124,7 @@ export class StateCoordinator {
    */
   static assertNotRunning(lockPath?: string): void {
     if (StateCoordinator.isLocked(lockPath)) {
-      throw new CCBridgeError('E013', 'Bot 进程正在运行，请使用飞书命令操作会话，而非直接 CLI 操作');
+      throw new CCLinkerError('E013', 'Bot 进程正在运行，请使用飞书命令操作会话，而非直接 CLI 操作');
     }
   }
 

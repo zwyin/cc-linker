@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'fs';
 import { join, basename } from 'path';
-import { CC_BRIDGE_DIR, expandPath } from './paths';
+import { CC_LINKER_DIR, expandPath } from './paths';
 import { logger } from './logger';
 import { Database } from 'bun:sqlite';
 
@@ -27,7 +27,7 @@ async function fileExists(path: string): Promise<boolean> {
 export class ProviderManager {
   private providers = new Map<string, ProviderConfig>();
   private source: ProviderSource = 'none';
-  private readonly autoProviderDir = join(CC_BRIDGE_DIR, 'auto-providers');
+  private readonly autoProviderDir = join(CC_LINKER_DIR, 'auto-providers');
 
   getSource(): ProviderSource { return this.source; }
 

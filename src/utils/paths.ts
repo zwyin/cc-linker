@@ -6,25 +6,25 @@ function getHome(): string {
 }
 
 export const HOME = getHome();
-export const CC_BRIDGE_DIR = process.env.CC_BRIDGE_DIR ?? join(HOME, '.cc-bridge');
-export const REGISTRY_PATH = process.env.CC_BRIDGE_REGISTRY_PATH ?? join(CC_BRIDGE_DIR, 'registry.json');
-export const BACKUP_DIR = join(CC_BRIDGE_DIR, 'backups');
-export const SCAN_CACHE_PATH = join(CC_BRIDGE_DIR, 'scan_cache.json');
-export const HOOK_LOG_PATH = join(CC_BRIDGE_DIR, 'hook.log');
-export const CONFIG_PATH = process.env.CC_BRIDGE_CONFIG_PATH ?? join(CC_BRIDGE_DIR, 'config.toml');
+export const CC_LINKER_DIR = process.env.CC_LINKER_DIR ?? join(HOME, '.cc-linker');
+export const REGISTRY_PATH = process.env.CC_LINKER_REGISTRY_PATH ?? join(CC_LINKER_DIR, 'registry.json');
+export const BACKUP_DIR = join(CC_LINKER_DIR, 'backups');
+export const SCAN_CACHE_PATH = join(CC_LINKER_DIR, 'scan_cache.json');
+export const HOOK_LOG_PATH = join(CC_LINKER_DIR, 'hook.log');
+export const CONFIG_PATH = process.env.CC_LINKER_CONFIG_PATH ?? join(CC_LINKER_DIR, 'config.toml');
 
 // Feishu Bot paths
-export const USER_MAPPING_PATH = join(CC_BRIDGE_DIR, 'user-mapping.json');
-export const LIST_SNAPSHOT_PATH = join(CC_BRIDGE_DIR, 'list-snapshot.json');
+export const USER_MAPPING_PATH = join(CC_LINKER_DIR, 'user-mapping.json');
+export const LIST_SNAPSHOT_PATH = join(CC_LINKER_DIR, 'list-snapshot.json');
 
 // Runtime paths
-export const RUNTIME_OWNER_LOCK_PATH = join(CC_BRIDGE_DIR, 'owner.lock');
-export const RUNTIME_SESSION_EVENTS_DIR = join(CC_BRIDGE_DIR, 'session-events');
-export const RUNTIME_PID_FILE = join(CC_BRIDGE_DIR, 'cc-bridge.pid');
-export const RUNTIME_LOG_FILE = join(CC_BRIDGE_DIR, 'cc-bridge.log');
+export const RUNTIME_OWNER_LOCK_PATH = join(CC_LINKER_DIR, 'owner.lock');
+export const RUNTIME_SESSION_EVENTS_DIR = join(CC_LINKER_DIR, 'session-events');
+export const RUNTIME_PID_FILE = join(CC_LINKER_DIR, 'cc-linker.pid');
+export const RUNTIME_LOG_FILE = join(CC_LINKER_DIR, 'cc-linker.log');
 
 // Spool queue paths
-export const SPOOL_DIR = join(CC_BRIDGE_DIR, 'spool');
+export const SPOOL_DIR = join(CC_LINKER_DIR, 'spool');
 export const SPOOL_PENDING_DIR = join(SPOOL_DIR, 'pending');
 export const SPOOL_PROCESSING_DIR = join(SPOOL_DIR, 'processing');
 export const SPOOL_REPLIED_DIR = join(SPOOL_DIR, 'replied');

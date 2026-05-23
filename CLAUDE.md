@@ -10,28 +10,28 @@ This is a **Bun** project. Do not use Node.js tools.
 - `bun test` — run tests (uses `bun:test`)
 - `bun test --coverage` — with coverage
 - `bun run typecheck` — `tsc --noEmit`
-- `bun run build` — compile to `dist/cc-bridge` standalone binary
+- `bun run build` — compile to `dist/cc-linker` standalone binary
 - `bun run dev <cmd>` — run a CLI command in dev mode, e.g. `bun run dev list`
 
 Bun loads `.env` automatically — do not use `dotenv`.
 
 ## Project Overview
 
-cc-bridge bridges Feishu (Lark) IM and Claude Code CLI sessions. It maintains a unified session registry so users can start a conversation in Feishu and continue it in the terminal (or vice versa).
+cc-linker bridges Feishu (Lark) IM and Claude Code CLI sessions. It maintains a unified session registry so users can start a conversation in Feishu and continue it in the terminal (or vice versa).
 
 **Two runtime modes:**
 
-1. **CLI commands** (`cc-bridge <cmd>`) — registry management, session resume, sync, export
-2. **Feishu Bot** (`cc-bridge start`) — WebSocket bot that receives Feishu messages and proxies them to Claude Code CLI
+1. **CLI commands** (`cc-linker <cmd>`) — registry management, session resume, sync, export
+2. **Feishu Bot** (`cc-linker start`) — WebSocket bot that receives Feishu messages and proxies them to Claude Code CLI
 
 ## High-Level Architecture
 
 ### Session Registry
 
-The single source of truth is `~/.cc-bridge/registry.json` (v2 schema), managed by `RegistryManager` (`src/registry/`).
+The single source of truth is `~/.cc-linker/registry.json` (v2 schema), managed by `RegistryManager` (`src/registry/`).
 
 - **File locking**: All writes go through `proper-lockfile` (`src/utils/lock.ts`). Reads use read locks.
-- **Backups**: Every write creates a rotated backup (max 3) in `~/.cc-bridge/backups/`.
+- **Backups**: Every write creates a rotated backup (max 3) in `~/.cc-linker/backups/`.
 - **Migrations**: `migrateV1toV2` in `src/registry/registry.ts`. Bump version and add migration when changing schema.
 - **SessionEntry fields**: `origin` (`'cli'` | `'feishu'`), `cwd`, `jsonl_path`, `project_name`, `status`, `title`, `message_count`, plus Feishu-specific fields.
 
@@ -40,7 +40,7 @@ The single source of truth is `~/.cc-bridge/registry.json` (v2 schema), managed 
 `syncBeforeCommand()` (`src/scanner/index.ts`) runs before most CLI commands to keep the registry fresh:
 
 1. `JSONLScanner` scans `~/.claude/projects/*/*.jsonl` for Claude Code sessions
-2. Reads incremental cache from `~/.cc-bridge/scan_cache.json` to skip unchanged files
+2. Reads incremental cache from `~/.cc-linker/scan_cache.json` to skip unchanged files
 3. Updates registry entries with latest `last_active`, `message_count`, `title`
 4. Single flush + backup write at the end
 
@@ -94,7 +94,7 @@ const args = ['claude', '-p', text, '--output-format', 'stream-json'];
 
 ### User State & CAS
 
-`UserManager` (`src/feishu/mapping.ts`) manages per-openId state in `~/.cc-bridge/user-mapping.json`:
+`UserManager` (`src/feishu/mapping.ts`) manages per-openId state in `~/.cc-linker/user-mapping.json`:
 
 - `type: 'session'` — user has an active session
 - `type: 'pending_new_session'` — user ran `/bridge new` without a prompt, waiting for next message
@@ -125,11 +125,11 @@ The `withSync()` helper in `src/index.ts` wraps this. Some commands skip sync wi
 
 ## Key Patterns
 
-**Error handling**: Use `CCBridgeError(code, message)` from `src/utils/errors.ts`. Error codes have user-facing suggestions in `handleError()`.
+**Error handling**: Use `CCLinkerError(code, message)` from `src/utils/errors.ts`. Error codes have user-facing suggestions in `handleError()`.
 
 **Path expansion**: `expandPath()` handles `~` → `$HOME`. Always use it for user-provided paths.
 
-**Config**: `config.toml` at `~/.cc-bridge/config.toml`. Access via `config.get<string>('section.key', defaultValue)`. Many keys have env var overrides (see `src/utils/config.ts`).
+**Config**: `config.toml` at `~/.cc-linker/config.toml`. Access via `config.get<string>('section.key', defaultValue)`. Many keys have env var overrides (see `src/utils/config.ts`).
 
 **Logging**: Use `logger.info/warn/error/debug()` from `src/utils/logger.ts`. Never `console.log` in library code; CLI commands may use `console.log` for user output.
 
@@ -181,4 +181,4 @@ bun run dev daemon status
 bun run dev stop
 ```
 
-The bot requires `feishu_bot.app_id` and `feishu_bot.app_secret` in `config.toml`. Use `cc-bridge init-feishu` for interactive setup.
+The bot requires `feishu_bot.app_id` and `feishu_bot.app_secret` in `config.toml`. Use `cc-linker init-feishu` for interactive setup.

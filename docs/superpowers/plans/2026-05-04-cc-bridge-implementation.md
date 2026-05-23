@@ -1,10 +1,10 @@
-# cc-bridge Implementation Plan
+# cc-linker Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build cc-bridge, a local CLI tool that bridges cc-connect (Feishu/WeChat) and Claude Code CLI sessions via a unified Session Registry.
+**Goal:** Build cc-linker, a local CLI tool that bridges cc-connect (Feishu/WeChat) and Claude Code CLI sessions via a unified Session Registry.
 
-**Architecture:** Single-package TypeScript CLI using bun runtime. Registry stored in `~/.cc-bridge/registry.json` with file locking and atomic writes. Scanner runs incrementally before CLI commands using mtime-based caching.
+**Architecture:** Single-package TypeScript CLI using bun runtime. Registry stored in `~/.cc-linker/registry.json` with file locking and atomic writes. Scanner runs incrementally before CLI commands using mtime-based caching.
 
 **Tech Stack:** TypeScript, bun, commander, inquirer, proper-lockfile, @iarna/toml, chalk, cli-table3, zod
 
@@ -13,7 +13,7 @@
 ## File Structure
 
 ```
-cc-bridge/
+cc-linker/
 ├── src/
 │   ├── index.ts                    # CLI entry point
 │   ├── registry/
@@ -27,18 +27,18 @@ cc-bridge/
 │   │   └── index.ts                # Unified sync entry
 │   ├── cli/
 │   │   ├── commands/
-│   │   │   ├── init.ts             # cc-bridge init
-│   │   │   ├── list.ts             # cc-bridge list
-│   │   │   ├── resume.ts           # cc-bridge resume
-│   │   │   ├── show.ts             # cc-bridge show
-│   │   │   ├── sync.ts             # cc-bridge sync
-│   │   │   ├── status.ts           # cc-bridge status
-│   │   │   ├── hook.ts             # cc-bridge hook install/uninstall/status
-│   │   │   ├── register.ts         # cc-bridge register (internal)
-│   │   │   ├── export.ts           # cc-bridge export
-│   │   │   ├── search.ts           # cc-bridge search
-│   │   │   ├── clean.ts            # cc-bridge clean
-│   │   │   └── feishu-cmd.ts       # cc-bridge feishu-cmd
+│   │   │   ├── init.ts             # cc-linker init
+│   │   │   ├── list.ts             # cc-linker list
+│   │   │   ├── resume.ts           # cc-linker resume
+│   │   │   ├── show.ts             # cc-linker show
+│   │   │   ├── sync.ts             # cc-linker sync
+│   │   │   ├── status.ts           # cc-linker status
+│   │   │   ├── hook.ts             # cc-linker hook install/uninstall/status
+│   │   │   ├── register.ts         # cc-linker register (internal)
+│   │   │   ├── export.ts           # cc-linker export
+│   │   │   ├── search.ts           # cc-linker search
+│   │   │   ├── clean.ts            # cc-linker clean
+│   │   │   └── feishu-cmd.ts       # cc-linker feishu-cmd
 │   │   └── output.ts               # Table/JSON/CSV formatting
 │   ├── hook/
 │   │   └── session-start.ts        # Hook script logic
@@ -80,7 +80,7 @@ cc-bridge/
 - [ ] **Step 1: Initialize bun project**
 
 ```bash
-cd /Users/wuyujun/Git/cc-bridge
+cd /Users/wuyujun/Git/cc-linker
 bun init -y
 ```
 
@@ -100,16 +100,16 @@ bun add -d @types/node @types/inquirer typescript
 
 ```json
 {
-  "name": "cc-bridge",
+  "name": "cc-linker",
   "version": "0.1.0",
   "description": "Bridge cc-connect and Claude Code CLI sessions",
   "main": "src/index.ts",
   "bin": {
-    "cc-bridge": "src/index.ts"
+    "cc-linker": "src/index.ts"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build src/index.ts --compile --outfile dist/cc-bridge",
+    "build": "bun build src/index.ts --compile --outfile dist/cc-linker",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit"
@@ -150,7 +150,7 @@ import { Command } from 'commander';
 const program = new Command();
 
 program
-  .name('cc-bridge')
+  .name('cc-linker')
   .description('cc-connect 与 Claude Code CLI 的会话桥接工具')
   .version('0.1.0');
 
@@ -164,7 +164,7 @@ bun run src/index.ts --version
 # Expected: 0.1.0
 
 bun run src/index.ts --help
-# Expected: Shows help with cc-bridge description
+# Expected: Shows help with cc-linker description
 ```
 
 - [ ] **Step 8: Commit**
@@ -188,23 +188,23 @@ git commit -m "feat: initialize project with bun, commander, dependencies"
 ```typescript
 // tests/unit/utils/errors.test.ts
 import { describe, it, expect } from 'bun:test';
-import { CCBridgeError } from '../../../src/utils/errors';
+import { CCLinkerError } from '../../../src/utils/errors';
 
-describe('CCBridgeError', () => {
+describe('CCLinkerError', () => {
   it('creates error with code and message', () => {
-    const err = new CCBridgeError('E001', 'Registry not found');
+    const err = new CCLinkerError('E001', 'Registry not found');
     expect(err.code).toBe('E001');
     expect(err.message).toBe('Registry not found');
-    expect(err.name).toBe('CCBridgeError');
+    expect(err.name).toBe('CCLinkerError');
   });
 
   it('includes details when provided', () => {
-    const err = new CCBridgeError('E006', 'Multiple matches', { count: 3 });
+    const err = new CCLinkerError('E006', 'Multiple matches', { count: 3 });
     expect(err.details).toEqual({ count: 3 });
   });
 
   it('formats toString correctly', () => {
-    const err = new CCBridgeError('E001', 'Registry not found');
+    const err = new CCLinkerError('E001', 'Registry not found');
     expect(err.toString()).toBe('[E001] Registry not found');
   });
 });
@@ -221,28 +221,28 @@ bun test tests/unit/utils/errors.test.ts
 
 ```typescript
 // src/utils/errors.ts
-export class CCBridgeError extends Error {
+export class CCLinkerError extends Error {
   constructor(
     public code: string,
     message: string,
     public details?: Record<string, any>
   ) {
     super(message);
-    this.name = 'CCBridgeError';
+    this.name = 'CCLinkerError';
   }
 }
 
 export function handleError(err: unknown): never {
-  if (err instanceof CCBridgeError) {
+  if (err instanceof CCLinkerError) {
     console.error(`错误 [${err.code}]: ${err.message}`);
     if (err.details) {
       console.error(`详情: ${JSON.stringify(err.details)}`);
     }
 
     const suggestions: Record<string, string[]> = {
-      'E001': ['运行 cc-bridge init 初始化 registry'],
-      'E002': ['会话已被清理，无法恢复', '运行 cc-bridge sync 重新扫描'],
-      'E007': ['等待其他进程完成', '或删除 ~/.cc-bridge/registry.json.lock'],
+      'E001': ['运行 cc-linker init 初始化 registry'],
+      'E002': ['会话已被清理，无法恢复', '运行 cc-linker sync 重新扫描'],
+      'E007': ['等待其他进程完成', '或删除 ~/.cc-linker/registry.json.lock'],
       'E008': ['会话创建目录已被删除，使用 --cwd 指定替代目录'],
     };
 
@@ -274,12 +274,12 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 export const HOME = homedir();
-export const CC_BRIDGE_DIR = process.env.CC_BRIDGE_DIR ?? join(HOME, '.cc-bridge');
-export const REGISTRY_PATH = process.env.CC_BRIDGE_REGISTRY_PATH ?? join(CC_BRIDGE_DIR, 'registry.json');
-export const BACKUP_DIR = join(CC_BRIDGE_DIR, 'backups');
-export const SCAN_CACHE_PATH = join(CC_BRIDGE_DIR, 'scan_cache.json');
-export const HOOK_LOG_PATH = join(CC_BRIDGE_DIR, 'hook.log');
-export const CONFIG_PATH = process.env.CC_BRIDGE_CONFIG_PATH ?? join(CC_BRIDGE_DIR, 'config.toml');
+export const CC_LINKER_DIR = process.env.CC_LINKER_DIR ?? join(HOME, '.cc-linker');
+export const REGISTRY_PATH = process.env.CC_LINKER_REGISTRY_PATH ?? join(CC_LINKER_DIR, 'registry.json');
+export const BACKUP_DIR = join(CC_LINKER_DIR, 'backups');
+export const SCAN_CACHE_PATH = join(CC_LINKER_DIR, 'scan_cache.json');
+export const HOOK_LOG_PATH = join(CC_LINKER_DIR, 'hook.log');
+export const CONFIG_PATH = process.env.CC_LINKER_CONFIG_PATH ?? join(CC_LINKER_DIR, 'config.toml');
 
 export const CC_CONNECT_SESSIONS_DIR = join(HOME, '.cc-connect', 'sessions');
 export const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
@@ -308,7 +308,7 @@ git commit -m "feat: add error codes and path constants"
 // src/utils/logger.ts
 import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { CC_BRIDGE_DIR, HOOK_LOG_PATH } from './paths';
+import { CC_LINKER_DIR, HOOK_LOG_PATH } from './paths';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -385,7 +385,7 @@ describe('ConfigManager', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `cc-bridge-config-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `cc-linker-config-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -454,7 +454,7 @@ interface ConfigData {
 
 const DEFAULTS: ConfigData = {
   general: {
-    registry_path: '~/.cc-bridge/registry.json',
+    registry_path: '~/.cc-linker/registry.json',
     log_level: 'info',
     log_path: null,
   },
@@ -469,7 +469,7 @@ const DEFAULTS: ConfigData = {
     restart_delay: 5,
   },
   hook: {
-    log_path: '~/.cc-bridge/hook.log',
+    log_path: '~/.cc-linker/hook.log',
     timeout: 10,
   },
 };
@@ -504,10 +504,10 @@ export class ConfigManager {
 
   private loadEnv(): void {
     const mappings: [string, keyof ConfigData, string][] = [
-      ['CC_BRIDGE_REGISTRY_PATH', 'general', 'registry_path'],
-      ['CC_BRIDGE_LOG_LEVEL', 'general', 'log_level'],
-      ['CC_BRIDGE_TOKEN', 'bridge', 'token'],
-      ['CC_BRIDGE_API_URL', 'bridge', 'api_url'],
+      ['CC_LINKER_REGISTRY_PATH', 'general', 'registry_path'],
+      ['CC_LINKER_LOG_LEVEL', 'general', 'log_level'],
+      ['CC_LINKER_TOKEN', 'bridge', 'token'],
+      ['CC_LINKER_API_URL', 'bridge', 'api_url'],
     ];
 
     for (const [envKey, section, key] of mappings) {
@@ -569,7 +569,7 @@ describe('withLock', () => {
   let testFile: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `cc-bridge-lock-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `cc-linker-lock-test-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     testFile = join(tmpDir, 'test.json');
     writeFileSync(testFile, '{"value": 0}');
@@ -625,7 +625,7 @@ bun test tests/unit/utils/lock.test.ts
 // src/utils/lock.ts
 import lockfile from 'proper-lockfile';
 import { existsSync } from 'fs';
-import { CCBridgeError } from './errors';
+import { CCLinkerError } from './errors';
 import { logger } from './logger';
 
 interface LockOptions {
@@ -661,7 +661,7 @@ export async function withLock<T>(
     return await fn();
   } catch (err: any) {
     if (err.code === 'ELOCKED') {
-      throw new CCBridgeError('E007', '注册表被锁，等待超时');
+      throw new CCLinkerError('E007', '注册表被锁，等待超时');
     }
     throw err;
   } finally {
@@ -811,7 +811,7 @@ describe('RegistryManager', () => {
   let registry: RegistryManager;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'cc-bridge-registry-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'cc-linker-registry-test-'));
     registry = new RegistryManager(tmpDir);
   });
 
@@ -908,7 +908,7 @@ import { join } from 'path';
 import { RegistrySchema, type Registry, type SessionEntry } from './types';
 import { withLock } from '../utils/lock';
 import { logger } from '../utils/logger';
-import { CCBridgeError } from '../utils/errors';
+import { CCLinkerError } from '../utils/errors';
 
 const MAX_BACKUPS = 3;
 
@@ -919,7 +919,7 @@ export class RegistryManager {
   private backupDir: string;
 
   constructor(basePath?: string) {
-    this.basePath = basePath ?? join(process.env.HOME ?? '~', '.cc-bridge');
+    this.basePath = basePath ?? join(process.env.HOME ?? '~', '.cc-linker');
     this.registryPath = join(this.basePath, 'registry.json');
     this.backupDir = join(this.basePath, 'backups');
 
@@ -992,7 +992,7 @@ export class RegistryManager {
     if (matches.length === 0) return null;
     if (matches.length === 1) return matches[0];
 
-    throw new CCBridgeError('E006', `前缀 "${prefix}" 匹配到 ${matches.length} 个会话，请输入更长的前缀`);
+    throw new CCLinkerError('E006', `前缀 "${prefix}" 匹配到 ${matches.length} 个会话，请输入更长的前缀`);
   }
 
   async upsert(uuid: string, entry: Partial<SessionEntry>): Promise<void> {
@@ -1839,7 +1839,7 @@ import { RegistryManager } from '../../registry';
 import { syncBeforeCommand } from '../../scanner';
 
 export async function init(registry: RegistryManager): Promise<void> {
-  console.log(chalk.green('✅ Created ~/.cc-bridge/registry.json'));
+  console.log(chalk.green('✅ Created ~/.cc-linker/registry.json'));
 
   console.log(chalk.blue('🔍 Scanning for existing sessions...'));
   await syncBeforeCommand(registry);
@@ -1853,9 +1853,9 @@ export async function init(registry: RegistryManager): Promise<void> {
   console.log(chalk.green(`✅ Registered ${sessions.length} sessions total`));
 
   console.log('\nNext steps:');
-  console.log('  1. Run \'cc-bridge hook install\' to install Claude Code hook');
-  console.log('  2. Run \'cc-bridge list\' to view all sessions');
-  console.log('  3. Run \'cc-bridge resume\' to resume a session');
+  console.log('  1. Run \'cc-linker hook install\' to install Claude Code hook');
+  console.log('  2. Run \'cc-linker list\' to view all sessions');
+  console.log('  3. Run \'cc-linker resume\' to resume a session');
 }
 ```
 
@@ -1921,7 +1921,7 @@ export async function list(registry: RegistryManager, opts: ListOptions): Promis
     }
 
     console.log(formatTable(sessions));
-    console.log(`\n共 ${sessions.length} 个会话。使用 cc-bridge resume <Ref> 或完整 UUID 恢复会话。`);
+    console.log(`\n共 ${sessions.length} 个会话。使用 cc-linker resume <Ref> 或完整 UUID 恢复会话。`);
   }
 }
 ```
@@ -1941,7 +1941,7 @@ import { list } from './cli/commands/list';
 const program = new Command();
 
 program
-  .name('cc-bridge')
+  .name('cc-linker')
   .description('cc-connect 与 Claude Code CLI 的会话桥接工具')
   .version('0.1.0');
 
@@ -2020,7 +2020,7 @@ import chalk from 'chalk';
 import { execSync } from 'child_process';
 import { chdir } from 'process';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
 import { CLAUDE_PROJECTS_DIR } from '../../utils/paths';
 
@@ -2042,14 +2042,14 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     uuid = await searchAndSelect(registry, opts.search);
   } else if (target) {
     const match = registry.findByPrefix(target);
-    if (!match) throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    if (!match) throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
     uuid = match[0];
   } else {
     uuid = await interactiveSelect(registry);
   }
 
   const entry = registry.get(uuid);
-  if (!entry) throw new CCBridgeError('E002', '会话不存在');
+  if (!entry) throw new CCLinkerError('E002', '会话不存在');
 
   // Verify JSONL exists
   if (!existsSync(entry.jsonl_path)) {
@@ -2058,7 +2058,7 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
       await registry.upsert(uuid, { jsonl_path: found });
       entry.jsonl_path = found;
     } else {
-      throw new CCBridgeError('E002', 'JSONL 文件不存在，会话可能已被清理');
+      throw new CCLinkerError('E002', 'JSONL 文件不存在，会话可能已被清理');
     }
   }
 
@@ -2098,7 +2098,7 @@ function findLatestSession(registry: RegistryManager, project?: string, platform
   }
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到活跃会话');
+    throw new CCLinkerError('E002', '没有找到活跃会话');
   }
 
   sessions.sort((a, b) => b[1].last_active.localeCompare(a[1].last_active));
@@ -2110,7 +2110,7 @@ async function searchAndSelect(registry: RegistryManager, query: string): Promis
     .filter(([_, s]) => s.title?.toLowerCase().includes(query.toLowerCase()));
 
   if (matches.length === 0) {
-    throw new CCBridgeError('E002', `未找到包含 "${query}" 的会话`);
+    throw new CCLinkerError('E002', `未找到包含 "${query}" 的会话`);
   }
   if (matches.length === 1) return matches[0][0];
 
@@ -2134,7 +2134,7 @@ async function interactiveSelect(registry: RegistryManager): Promise<string> {
     .slice(0, 20);
 
   if (sessions.length === 0) {
-    throw new CCBridgeError('E002', '没有找到会话');
+    throw new CCLinkerError('E002', '没有找到会话');
   }
 
   const { selected } = await inquirer.prompt([{
@@ -2168,13 +2168,13 @@ function findJsonlFile(uuid: string): string | null {
 // src/cli/commands/show.ts
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatOrigin, formatTimeAgo } from '../output';
 
 export async function show(registry: RegistryManager, target: string): Promise<void> {
   const match = registry.findByPrefix(target);
   if (!match) {
-    throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
   }
 
   const [uuid, s] = match;
@@ -2192,7 +2192,7 @@ export async function show(registry: RegistryManager, target: string): Promise<v
   console.log(`消息数:      ${s.message_count}`);
   console.log(`\nJSONL 文件: ${s.jsonl_path}`);
   console.log(`\n操作:`);
-  console.log(`  cc-bridge resume ${uuid.slice(0, 8)}   恢复此会话`);
+  console.log(`  cc-linker resume ${uuid.slice(0, 8)}   恢复此会话`);
 }
 ```
 
@@ -2318,7 +2318,7 @@ export async function status(registry: RegistryManager): Promise<void> {
   const fromCli = sessions.filter(s => s.origin === 'cli').length;
   const fromCcConnect = sessions.filter(s => s.origin === 'cc-connect').length;
 
-  console.log(chalk.bold('cc-bridge Status'));
+  console.log(chalk.bold('cc-linker Status'));
   console.log('─'.repeat(40));
   console.log(`Registry:      ${REGISTRY_PATH}`);
 
@@ -2401,7 +2401,7 @@ export function hookSessionStart(): void {
 
     const cwd = process.env.PWD || process.cwd();
 
-    execSync(`cc-bridge register "${sessionId}" --origin cli --cwd "${cwd}" --source terminal`, {
+    execSync(`cc-linker register "${sessionId}" --origin cli --cwd "${cwd}" --source terminal`, {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -2459,19 +2459,19 @@ export function hookInstall(): void {
     settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
   }
 
-  if (settings.hooks?.SessionStart?.includes('cc-bridge')) {
+  if (settings.hooks?.SessionStart?.includes('cc-linker')) {
     console.log(chalk.green('✅ Hook 已安装'));
     return;
   }
 
   settings.hooks = settings.hooks ?? {};
-  settings.hooks.SessionStart = 'cc-bridge hook session-start';
+  settings.hooks.SessionStart = 'cc-linker hook session-start';
 
   writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
 
   console.log(chalk.green('✅ Hook 安装成功'));
   console.log(`已添加到 ${CLAUDE_SETTINGS_PATH}:`);
-  console.log('  "hooks": { "SessionStart": "cc-bridge hook session-start" }');
+  console.log('  "hooks": { "SessionStart": "cc-linker hook session-start" }');
 }
 
 export function hookUninstall(): void {
@@ -2481,7 +2481,7 @@ export function hookUninstall(): void {
   }
 
   const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
-  if (settings.hooks?.SessionStart?.includes('cc-bridge')) {
+  if (settings.hooks?.SessionStart?.includes('cc-linker')) {
     delete settings.hooks.SessionStart;
     writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
     console.log(chalk.green('✅ Hook 已卸载'));
@@ -2497,7 +2497,7 @@ export function hookStatus(): void {
   }
 
   const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
-  const installed = settings.hooks?.SessionStart?.includes('cc-bridge');
+  const installed = settings.hooks?.SessionStart?.includes('cc-linker');
 
   console.log(`Hook 状态: ${installed ? chalk.green('✅ 已安装') : chalk.red('❌ 未安装')}`);
 
@@ -2583,7 +2583,7 @@ git commit -m "feat: implement SessionStart hook and register command"
 // src/cli/commands/feishu-cmd.ts
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { formatTimeAgo, formatOrigin } from '../output';
 
 interface FeishuCmdOptions {
@@ -2680,7 +2680,7 @@ function feishuSwitch(registry: RegistryManager, caller: string | undefined, tar
   console.log(`⚠️ 此会话来自终端，尚未映射到 cc-connect`);
   console.log(`首次切换需要创建映射并重启 cc-connect，可能中断其他用户的会话。`);
   console.log(`\n请在终端执行以下命令手动映射：`);
-  console.log(`\n  cc-bridge resume ${uuid.slice(0, 8)}\n`);
+  console.log(`\n  cc-linker resume ${uuid.slice(0, 8)}\n`);
   console.log(`后续版本将支持自动映射。`);
 }
 
@@ -2693,7 +2693,7 @@ function feishuResume(registry: RegistryManager, target: string): void {
 
   const [uuid] = match;
   console.log(`📱 请在终端执行以下命令恢复此会话：\n`);
-  console.log(`  cc-bridge resume ${uuid.slice(0, 8)}\n`);
+  console.log(`  cc-linker resume ${uuid.slice(0, 8)}\n`);
   console.log(`或直接运行：`);
   console.log(`  claude --resume ${uuid}`);
 }
@@ -2704,7 +2704,7 @@ function feishuStatus(registry: RegistryManager): void {
   const fromCli = sessions.filter(s => s.origin === 'cli').length;
   const fromCcConnect = sessions.filter(s => s.origin === 'cc-connect').length;
 
-  console.log(`🔗 cc-bridge 状态`);
+  console.log(`🔗 cc-linker 状态`);
   console.log(`注册会话: ${sessions.length}`);
   console.log(`来源: ${fromCli} 个来自终端，${fromCcConnect} 个来自飞书`);
   console.log(`活跃: ${active}`);
@@ -2758,7 +2758,7 @@ git commit -m "feat: implement feishu-cmd for /bridge commands"
 import { readFileSync, writeFileSync } from 'fs';
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 
 interface ExportOptions {
   format?: string;
@@ -2775,7 +2775,7 @@ export async function exportSession(
 ): Promise<void> {
   const match = registry.findByPrefix(target);
   if (!match) {
-    throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
   }
 
   const [uuid, entry] = match;
@@ -3000,10 +3000,10 @@ describe('CLI Commands Integration', () => {
   let env: Record<string, string>;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'cc-bridge-integration-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'cc-linker-integration-'));
     env = {
       ...process.env,
-      CC_BRIDGE_DIR: tmpDir,
+      CC_LINKER_DIR: tmpDir,
       HOME: tmpDir,
     };
   });
@@ -3015,7 +3015,7 @@ describe('CLI Commands Integration', () => {
   function run(args: string): string {
     try {
       return execSync(`bun run src/index.ts ${args}`, {
-        cwd: '/Users/wuyujun/Git/cc-bridge',
+        cwd: '/Users/wuyujun/Git/cc-linker',
         env,
         encoding: 'utf8',
       });
@@ -3039,7 +3039,7 @@ describe('CLI Commands Integration', () => {
   it('status shows registry info', () => {
     run('init');
     const output = run('status');
-    expect(output).toContain('cc-bridge Status');
+    expect(output).toContain('cc-linker Status');
     expect(output).toContain('Total sessions');
   });
 
@@ -3082,11 +3082,11 @@ Add to README.md:
 
 ```bash
 # From npm (when published)
-npm install -g cc-bridge
+npm install -g cc-linker
 
 # From source
-git clone https://github.com/xxx/cc-bridge.git
-cd cc-bridge
+git clone https://github.com/xxx/cc-linker.git
+cd cc-linker
 bun install
 bun run build
 ```
@@ -3095,16 +3095,16 @@ bun run build
 
 ```bash
 # Initialize
-cc-bridge init
+cc-linker init
 
 # List sessions
-cc-bridge list
+cc-linker list
 
 # Resume a session
-cc-bridge resume <prefix>
+cc-linker resume <prefix>
 
 # Install hook for auto-registration
-cc-bridge hook install
+cc-linker hook install
 ```
 
 ## Feishu Integration
@@ -3115,7 +3115,7 @@ Add to cc-connect config.toml:
 [[commands]]
 name = "bridge"
 description = "Cross-platform session management"
-exec = "cc-bridge feishu-cmd --caller {{user}} {{args}}"
+exec = "cc-linker feishu-cmd --caller {{user}} {{args}}"
 ```
 
 Then use in Feishu:

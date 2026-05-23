@@ -23,7 +23,7 @@ import { installDaemon, uninstallDaemon, daemonStatus as daemonServiceStatus } f
 const program = new Command();
 
 program
-  .name('cc-link')
+  .name('cc-linker')
   .description('飞书 ↔ Claude Code CLI 桥接工具')
   .version('0.2.0');
 

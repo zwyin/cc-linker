@@ -1,4 +1,4 @@
-# cc-bridge 飞书端模型切换功能设计规格
+# cc-linker 飞书端模型切换功能设计规格
 
 > 版本: v1.0
 > 日期: 2026-05-23
@@ -8,7 +8,7 @@
 
 ## 1. 背景
 
-cc-bridge 当前 spawn Claude CLI 时不传递 `--settings` 参数，完全依赖 Claude 全局配置。用户无法在飞书端独立选择模型。
+cc-linker 当前 spawn Claude CLI 时不传递 `--settings` 参数，完全依赖 Claude 全局配置。用户无法在飞书端独立选择模型。
 
 本地用户通过两种方式切换模型：
 - **CC Switch** (GUI App): 修改 `~/.claude/settings.json`，数据库在 `~/.cc-switch/cc-switch.db`
@@ -87,7 +87,7 @@ export class ProviderManager {
     // Layer 2: 从 CC Switch 数据库自动生成
     const ccSwitchDb = expandPath('~/.cc-switch/cc-switch.db');
     if (await fileExists(ccSwitchDb)) {
-      const autoDir = expandPath('~/.cc-bridge/auto-providers');
+      const autoDir = expandPath('~/.cc-linker/auto-providers');
       await this.generateFromCcSwitch(ccSwitchDb, autoDir);
       await this.scanDirectory(autoDir, true);
       this.source = 'cc-switch';
@@ -102,7 +102,7 @@ export class ProviderManager {
 
 ### 5.2 配置净化
 
-从 CC Switch 读取的 `settings_config` 包含 hooks、permissions、plugins 等字段。必须**过滤为只保留 `model` 和 `env`**，避免 `--settings` 覆盖用户全局 `~/.claude/settings.json` 中的配置（如 cc-bridge 的 SessionStart hook）。
+从 CC Switch 读取的 `settings_config` 包含 hooks、permissions、plugins 等字段。必须**过滤为只保留 `model` 和 `env`**，避免 `--settings` 覆盖用户全局 `~/.claude/settings.json` 中的配置（如 cc-linker 的 SessionStart hook）。
 
 ```typescript
 private sanitizeSettingsConfig(raw: string): object {
@@ -154,7 +154,7 @@ private sanitizeName(name: string): string {
 
 ### 5.4 临时文件管理
 
-- 目录：`~/.cc-bridge/auto-providers/`
+- 目录：`~/.cc-linker/auto-providers/`
 - 权限：`0o700`
 - 每次 `scan()` 时重新生成（清理旧文件 → 写入新文件）
 - 写文件时先写 `.tmp` 再 `renameSync`，保证原子性
@@ -348,4 +348,4 @@ private async _doSendMessage(
 ### Phase 3（可选）
 
 - `config.toml` 新增 `[providers]` 配置段
-- 支持从环境变量 `CC_BRIDGE_PROVIDERS_DIR` 读取自定义目录
+- 支持从环境变量 `CC_LINKER_PROVIDERS_DIR` 读取自定义目录

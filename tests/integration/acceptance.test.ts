@@ -15,8 +15,8 @@ describe('Acceptance Tests', () => {
   let projectDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'cc-bridge-acceptance-'));
-    ccBridgeDir = join(tmpDir, '.cc-bridge');
+    tmpDir = mkdtempSync(join(tmpdir(), 'cc-linker-acceptance-'));
+    ccBridgeDir = join(tmpDir, '.cc-linker');
     claudeDir = join(tmpDir, '.claude');
     projectDir = join(claudeDir, 'projects', '-Users-test-project');
 
@@ -43,7 +43,7 @@ describe('Acceptance Tests', () => {
     env = {
       ...process.env,
       HOME: tmpDir,
-      CC_BRIDGE_DIR: ccBridgeDir,
+      CC_LINKER_DIR: ccBridgeDir,
     };
   });
 
@@ -79,7 +79,7 @@ describe('Acceptance Tests', () => {
   describe('1. 安装验收', () => {
     it('CLI 帮助信息显示完整', () => {
       const output = runOk('--help');
-      expect(output).toContain('cc-link');
+      expect(output).toContain('cc-linker');
       expect(output).toContain('init');
       expect(output).toContain('list');
       expect(output).toContain('resume');
@@ -153,7 +153,7 @@ describe('Acceptance Tests', () => {
       mkdirSync(claudeSettingsDir, { recursive: true });
       writeFileSync(join(claudeSettingsDir, 'settings.json'), JSON.stringify({
         hooks: {
-          SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'cc-link hook session-start', timeout: 10 }] }],
+          SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'cc-linker hook session-start', timeout: 10 }] }],
         },
       }, null, 2));
 
@@ -273,7 +273,7 @@ describe('Acceptance Tests', () => {
     describe('4.8 status', () => {
       it('显示完整状态信息', () => {
         const output = runOk('status');
-        expect(output).toContain('cc-link Status');
+        expect(output).toContain('cc-linker Status');
         expect(output).toContain('Total sessions:');
       });
     });

@@ -1,4 +1,4 @@
-# cc-bridge 飞书端模型切换功能设计方案
+# cc-linker 飞书端模型切换功能设计方案
 
 > 版本: v1.0
 > 日期: 2026-05-23
@@ -22,13 +22,13 @@
 - 通过 `cc-kimi='claude --settings ~/.claude/providers/kimi-for-coding.json'` 等别名启动
 - 实现会话级隔离
 
-### 1.2 cc-bridge 当前行为
+### 1.2 cc-linker 当前行为
 
 ```
 飞书用户消息 → FeishuBot → ClaudeSessionManager → spawn("claude -p <text> --resume <session>")
 ```
 
-cc-bridge 在 spawn Claude CLI 时：
+cc-linker 在 spawn Claude CLI 时：
 - **不传递任何 `--settings` 参数**
 - 完全依赖 Claude 的全局配置（即 CC Switch 当前选中的模型）
 - 用户无法在飞书端独立选择模型
@@ -148,7 +148,7 @@ export interface ProviderConfig {
 export class ProviderManager {
   private providers = new Map<string, ProviderConfig>();
   private source: ProviderSource = 'none';
-  private autoProviderDir = join(CC_BRIDGE_DIR, 'auto-providers');
+  private autoProviderDir = join(CC_LINKER_DIR, 'auto-providers');
 
   async scan(): Promise<void> {
     this.providers.clear();
@@ -199,7 +199,7 @@ ORDER BY sort_index ASC
 
 CC Switch 的 `settings_config` 包含完整配置（hooks、permissions、plugins 等），如果直接作为 `--settings` 文件，会**完全覆盖**用户全局 `~/.claude/settings.json` 中的对应字段。
 
-这会导致严重问题：例如用户全局配置了 cc-bridge 的 `SessionStart` hook，如果 provider 文件里没有这个 hook，`--settings` 会将其覆盖为空，导致 hook 不执行。
+这会导致严重问题：例如用户全局配置了 cc-linker 的 `SessionStart` hook，如果 provider 文件里没有这个 hook，`--settings` 会将其覆盖为空，导致 hook 不执行。
 
 **净化规则：** 只保留 `model` 和 `env` 字段
 
@@ -789,7 +789,7 @@ Bot: ✅ 已清除默认模型设置，后续将跟随 Claude 全局配置
 |------|------|
 | 旧版本 user-mapping.json 没有 `defaultProvider` | `getEntry()` 返回 `undefined`，视为未设置 |
 | 旧版本 registry.json（version 2）没有 `lastKnownProvider` | migrateV2toV3 自动补 `null` |
-| 用户降级 cc-bridge（新版本→旧版本） | 旧版本忽略 `defaultProvider` 和 `lastKnownProvider`，行为退化到当前状态，数据不丢失 |
+| 用户降级 cc-linker（新版本→旧版本） | 旧版本忽略 `defaultProvider` 和 `lastKnownProvider`，行为退化到当前状态，数据不丢失 |
 
 ---
 
@@ -816,7 +816,7 @@ Bot: ✅ 已清除默认模型设置，后续将跟随 Claude 全局配置
 ### 9.3 配置隔离保证
 
 - 自动生成的 provider 配置**只包含** `model` 和 `env`，不会覆盖用户全局的：
-  - `hooks`（如 cc-bridge 的 SessionStart hook）
+  - `hooks`（如 cc-linker 的 SessionStart hook）
   - `permissions`
   - `enabledPlugins`
   - `theme`
@@ -832,13 +832,13 @@ Bot: ✅ 已清除默认模型设置，后续将跟随 Claude 全局配置
 
 - CC Switch db 中的 `ANTHROPIC_AUTH_TOKEN` 在自动生成的临时文件中**原样保留**
 - 临时文件权限设置为 `0o600`（仅所有者可读写）
-- 临时文件目录 `~/.cc-bridge/auto-providers/` 权限 `0o700`
+- 临时文件目录 `~/.cc-linker/auto-providers/` 权限 `0o700`
 - 不将 token 打印到日志或回复消息中
 
 ### 10.2 文件操作安全
 
 - 自动生成时先写 `.tmp` 文件，再 `rename`，避免半写文件被读取
-- 清理旧临时文件使用 `rm -rf` 前先验证路径在 `CC_BRIDGE_DIR` 下
+- 清理旧临时文件使用 `rm -rf` 前先验证路径在 `CC_LINKER_DIR` 下
 - 读取 `~/.cc-switch/cc-switch.db` 时只读打开，不修改源数据库
 
 ---
@@ -890,7 +890,7 @@ Bot: ✅ 已清除默认模型设置，后续将跟随 Claude 全局配置
 
 1. [ ] `config.toml` 新增 `[providers]` 配置段，支持自定义 providers 目录路径
 2. [ ] 支持 `/bridge model <provider>` 时自动检测 provider 健康状态（调用 Claude 的 stream check）
-3. [ ] 支持从环境变量 `CC_BRIDGE_PROVIDERS_DIR` 读取自定义目录
+3. [ ] 支持从环境变量 `CC_LINKER_PROVIDERS_DIR` 读取自定义目录
 
 ---
 

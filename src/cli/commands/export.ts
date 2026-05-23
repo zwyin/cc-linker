@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
@@ -25,9 +25,9 @@ export async function exportSession(
   if (!match) {
     const count = Object.keys(registry.sessions).filter(u => u.startsWith(target)).length;
     if (count > 1) {
-      throw new CCBridgeError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
+      throw new CCLinkerError('E006', `前缀 "${target}" 匹配到 ${count} 个会话，请输入更长的前缀`);
     }
-    throw new CCBridgeError('E002', `未找到匹配 "${target}" 的会话`);
+    throw new CCLinkerError('E002', `未找到匹配 "${target}" 的会话`);
   }
 
   const [uuid, entry] = match;
@@ -35,13 +35,13 @@ export async function exportSession(
   const outputFile = opts.output ?? `./export-${uuid.slice(0, 8)}.${format === 'markdown' ? 'md' : format === 'json' ? 'json' : 'txt'}`;
   const maxMessages = opts.maxMessages ? (() => {
     const n = parseInt(opts.maxMessages, 10);
-    if (isNaN(n)) throw new CCBridgeError('E005', `无效的消息数: ${opts.maxMessages}`);
+    if (isNaN(n)) throw new CCLinkerError('E005', `无效的消息数: ${opts.maxMessages}`);
     return n;
   })() : undefined;
 
   // 安全防护：检查 JSONL 文件存在
   if (!entry.jsonl_path || !existsSync(entry.jsonl_path)) {
-    throw new CCBridgeError('E002', `JSONL 文件不存在: ${entry.jsonl_path ?? uuid}`);
+    throw new CCLinkerError('E002', `JSONL 文件不存在: ${entry.jsonl_path ?? uuid}`);
   }
 
   // 检查文件大小
@@ -162,7 +162,7 @@ export async function exportSession(
   // Wait for stream to finish writing
   await new Promise<void>((resolve, reject) => {
     writeStream.on('close', () => {
-      if (writeError) reject(new CCBridgeError('E010', `写入文件失败: ${writeError}`));
+      if (writeError) reject(new CCLinkerError('E010', `写入文件失败: ${writeError}`));
       else resolve();
     });
     writeStream.on('error', reject);

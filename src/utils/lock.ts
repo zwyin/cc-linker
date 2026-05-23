@@ -1,6 +1,6 @@
 import lockfile from 'proper-lockfile';
 import { existsSync, writeFileSync } from 'fs';
-import { CCBridgeError } from './errors';
+import { CCLinkerError } from './errors';
 
 // ===== 进程内读写锁 =====
 // 多读单写：无活跃写时可并发读；写操作独占。
@@ -116,13 +116,13 @@ export async function withLock<T>(
       elapsed += minTimeout * (attempt + 1);
       if (elapsed >= MAX_WAIT) {
         releaseInner();
-        throw new CCBridgeError('E007', '注册表被锁，等待超时');
+        throw new CCLinkerError('E007', '注册表被锁，等待超时');
       }
       await sleep(minTimeout * (attempt + 1));
     }
   }
   releaseInner();
-  throw new CCBridgeError('E007', '注册表被锁，等待超时');
+  throw new CCLinkerError('E007', '注册表被锁，等待超时');
 }
 
 /** 读锁：仅进程内排队，不加跨进程锁 */

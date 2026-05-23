@@ -53,11 +53,11 @@ In `cloneDefaults()` (after `hook`):
 In `loadEnv()` mappings array, add:
 
 ```typescript
-['CC_BRIDGE_STREAM_ENABLED', 'stream', 'enabled'],
-['CC_BRIDGE_STREAM_THROTTLE_MS', 'stream', 'throttle_ms'],
-['CC_BRIDGE_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
-['CC_BRIDGE_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
-['CC_BRIDGE_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
+['CC_LINKER_STREAM_ENABLED', 'stream', 'enabled'],
+['CC_LINKER_STREAM_THROTTLE_MS', 'stream', 'throttle_ms'],
+['CC_LINKER_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
+['CC_LINKER_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
+['CC_LINKER_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
 ```
 
 - [ ] **Step 3: Run tests and verify**
@@ -1202,7 +1202,7 @@ Expected: 0 errors.
 
 ```bash
 bun run build
-./dist/cc-bridge --help
+./dist/cc-linker --help
 ```
 Expected: Build succeeds, help displays.
 

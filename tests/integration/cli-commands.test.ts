@@ -15,8 +15,8 @@ describe('CLI Commands Integration', () => {
   let projectDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'cc-bridge-integration-'));
-    ccBridgeDir = join(tmpDir, '.cc-bridge');
+    tmpDir = mkdtempSync(join(tmpdir(), 'cc-linker-integration-'));
+    ccBridgeDir = join(tmpDir, '.cc-linker');
     claudeDir = join(tmpDir, '.claude');
     projectDir = join(claudeDir, 'projects', '-Users-test-project');
 
@@ -45,7 +45,7 @@ describe('CLI Commands Integration', () => {
     env = {
       ...process.env,
       HOME: tmpDir,
-      CC_BRIDGE_DIR: ccBridgeDir,
+      CC_LINKER_DIR: ccBridgeDir,
     };
   });
 
@@ -73,11 +73,11 @@ describe('CLI Commands Integration', () => {
     expect(output).toContain('Scanning');
   });
 
-  it('init respects CC_BRIDGE_DIR override', () => {
+  it('init respects CC_LINKER_DIR override', () => {
     const customDir = join(tmpDir, 'custom-registry-dir');
     mkdirSync(customDir, { recursive: true });
 
-    const customEnv = { ...env, CC_BRIDGE_DIR: customDir };
+    const customEnv = { ...env, CC_LINKER_DIR: customDir };
     const output = execSync('bun run src/index.ts init', {
       cwd: '/Users/wuyujun/Git/cc-bridge',
       env: customEnv,
@@ -140,7 +140,7 @@ describe('CLI Commands Integration', () => {
   it('status shows registry info', () => {
     run('init');
     const output = run('status');
-    expect(output).toContain('cc-link Status');
+    expect(output).toContain('cc-linker Status');
     expect(output).toContain('Total sessions');
   });
 
@@ -469,7 +469,7 @@ describe('CLI Commands Integration', () => {
         SessionStart: [
           {
             matcher: 'startup|resume|clear|compact',
-            hooks: [{ type: 'command', command: 'cc-link hook session-start', timeout: 10 }],
+            hooks: [{ type: 'command', command: 'cc-linker hook session-start', timeout: 10 }],
           },
         ],
       },

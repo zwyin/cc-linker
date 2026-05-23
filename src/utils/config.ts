@@ -106,7 +106,7 @@ const DEFAULTS: ConfigData = {
     enabled: false,
   },
   hook: {
-    log_path: '~/.cc-bridge/hook.log',
+    log_path: '~/.cc-linker/hook.log',
     timeout: 10,
   },
   stream: {
@@ -181,22 +181,22 @@ export class ConfigManager {
 
   private loadEnv(): void {
     const mappings: [string, keyof ConfigData, string][] = [
-      ['CC_BRIDGE_REGISTRY_PATH', 'general', 'registry_path'],
-      ['CC_BRIDGE_LOG_LEVEL', 'general', 'log_level'],
-      ['CC_BRIDGE_LOG_PATH', 'general', 'log_path'],
-      ['CC_BRIDGE_FEISHU_APP_ID', 'feishu_bot', 'app_id'],
-      ['CC_BRIDGE_FEISHU_APP_SECRET', 'feishu_bot', 'app_secret'],
-      ['CC_BRIDGE_FEISHU_OWNER_OPEN_ID', 'feishu_bot', 'owner_open_id'],
-      ['CC_BRIDGE_FEISHU_DEFAULT_CWD', 'feishu_bot', 'default_cwd'],
-      ['CC_BRIDGE_MAX_CONCURRENT_SESSIONS', 'runtime', 'max_concurrent_sessions'],
-      ['CC_BRIDGE_SESSION_LOCK_TIMEOUT_MS', 'runtime', 'session_lock_timeout_ms'],
-      ['CC_BRIDGE_MAX_QUEUE_SIZE', 'queue', 'max_pending'],
-      ['CC_BRIDGE_CONFIRM_RISKY_ACTIONS', 'security', 'confirm_risky_actions'],
-      ['CC_BRIDGE_STREAM_ENABLED', 'stream', 'enabled'],
-      ['CC_BRIDGE_STREAM_THROTTLE_MS', 'stream', 'throttle_ms'],
-      ['CC_BRIDGE_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
-      ['CC_BRIDGE_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
-      ['CC_BRIDGE_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
+      ['CC_LINKER_REGISTRY_PATH', 'general', 'registry_path'],
+      ['CC_LINKER_LOG_LEVEL', 'general', 'log_level'],
+      ['CC_LINKER_LOG_PATH', 'general', 'log_path'],
+      ['CC_LINKER_FEISHU_APP_ID', 'feishu_bot', 'app_id'],
+      ['CC_LINKER_FEISHU_APP_SECRET', 'feishu_bot', 'app_secret'],
+      ['CC_LINKER_FEISHU_OWNER_OPEN_ID', 'feishu_bot', 'owner_open_id'],
+      ['CC_LINKER_FEISHU_DEFAULT_CWD', 'feishu_bot', 'default_cwd'],
+      ['CC_LINKER_MAX_CONCURRENT_SESSIONS', 'runtime', 'max_concurrent_sessions'],
+      ['CC_LINKER_SESSION_LOCK_TIMEOUT_MS', 'runtime', 'session_lock_timeout_ms'],
+      ['CC_LINKER_MAX_QUEUE_SIZE', 'queue', 'max_pending'],
+      ['CC_LINKER_CONFIRM_RISKY_ACTIONS', 'security', 'confirm_risky_actions'],
+      ['CC_LINKER_STREAM_ENABLED', 'stream', 'enabled'],
+      ['CC_LINKER_STREAM_THROTTLE_MS', 'stream', 'throttle_ms'],
+      ['CC_LINKER_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
+      ['CC_LINKER_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
+      ['CC_LINKER_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
     ];
 
     for (const [envKey, section, key] of mappings) {
@@ -214,7 +214,7 @@ export class ConfigManager {
       }
     }
 
-    const legacyOwner = process.env.CC_BRIDGE_FEISHU_OWNER_USER_ID;
+    const legacyOwner = process.env.CC_LINKER_FEISHU_OWNER_USER_ID;
     if (legacyOwner && !this.data.feishu_bot.owner_open_id) {
       this.data.feishu_bot.owner_open_id = legacyOwner;
     }

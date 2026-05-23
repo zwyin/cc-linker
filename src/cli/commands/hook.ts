@@ -17,7 +17,7 @@ function isHookInstalled(sessionStart: unknown): boolean {
   if (!Array.isArray(sessionStart)) return false;
   return sessionStart.some((matcher: any) => {
     if (!matcher?.hooks) return false;
-    return matcher.hooks.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'));
+    return matcher.hooks.some((h: any) => h?.command?.includes('cc-linker'));
   });
 }
 
@@ -44,12 +44,12 @@ export function hookInstall(): void {
   settings.hooks = settings.hooks ?? {};
 
   // Claude Code 要求的格式：SessionStart 是 matcher 数组
-  const ccBridgeMatcher: HookMatcher = {
+  const ccLinkerMatcher: HookMatcher = {
     matcher: 'startup|resume|clear|compact',
     hooks: [
       {
         type: 'command',
-        command: 'cc-link hook session-start',
+        command: 'cc-linker hook session-start',
         timeout: 10,
       },
     ],
@@ -59,20 +59,20 @@ export function hookInstall(): void {
     settings.hooks.SessionStart = [];
   }
 
-  // 检查是否已有 hook（cc-link 或 cc-bridge）
+  // 检查是否已有 hook（cc-link 或 cc-linker）
   const existingIndex = settings.hooks.SessionStart.findIndex((m: any) =>
-    m?.hooks?.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'))
+    m?.hooks?.some((h: any) => h?.command?.includes('cc-linker') || h?.command?.includes('cc-linker'))
   );
 
   if (existingIndex === -1) {
-    settings.hooks.SessionStart.push(ccBridgeMatcher);
+    settings.hooks.SessionStart.push(ccLinkerMatcher);
   }
 
   writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
 
   console.log(chalk.green('Hook 安装成功'));
   console.log(`已添加到 ${CLAUDE_SETTINGS_PATH}:`);
-  console.log(JSON.stringify({ hooks: { SessionStart: [ccBridgeMatcher] } }, null, 2));
+  console.log(JSON.stringify({ hooks: { SessionStart: [ccLinkerMatcher] } }, null, 2));
 }
 
 export function hookUninstall(): void {
@@ -94,8 +94,8 @@ export function hookUninstall(): void {
     if (Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = settings.hooks.SessionStart.filter((m: any) => {
         if (!m?.hooks) return true;
-        // 移除包含 cc-link 或 cc-bridge 的 matcher
-        return !m.hooks.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'));
+        // 移除包含 cc-link 或 cc-linker 的 matcher
+        return !m.hooks.some((h: any) => h?.command?.includes('cc-linker') || h?.command?.includes('cc-linker'));
       });
       if (settings.hooks.SessionStart.length === 0) {
         delete settings.hooks.SessionStart;

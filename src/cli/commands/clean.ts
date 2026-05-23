@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { RegistryManager } from '../../registry';
-import { CCBridgeError } from '../../utils/errors';
+import { CCLinkerError } from '../../utils/errors';
 import { StateCoordinator } from '../../runtime/state-coordinator';
 
 interface CleanOptions {
@@ -15,7 +15,7 @@ export async function clean(registry: RegistryManager, opts: CleanOptions = {}):
 
   const olderThanDays = opts.olderThan ? (() => {
     const n = parseInt(opts.olderThan, 10);
-    if (isNaN(n)) throw new CCBridgeError('E005', `无效的天数: ${opts.olderThan}`);
+    if (isNaN(n)) throw new CCLinkerError('E005', `无效的天数: ${opts.olderThan}`);
     return n;
   })() : undefined;
   const cutoff = olderThanDays

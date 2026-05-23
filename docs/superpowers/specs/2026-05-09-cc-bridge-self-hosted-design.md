@@ -1,4 +1,4 @@
-# cc-bridge 自建方案 Phase 1 实现设计
+# cc-linker 自建方案 Phase 1 实现设计
 
 > 版本：v1.2
 > 日期：2026-05-09
@@ -9,7 +9,7 @@
 
 ## 概述
 
-将 cc-bridge 从 cc-connect 方案迁移到自建飞书 Bot 方案，删除 cc-connect 依赖，在同一进程内实现完整的飞书 ↔ Claude Code 桥接能力。
+将 cc-linker 从 cc-connect 方案迁移到自建飞书 Bot 方案，删除 cc-connect 依赖，在同一进程内实现完整的飞书 ↔ Claude Code 桥接能力。
 
 **约束**：Phase 1 仅支持单用户私有部署（1 开发者 + 1 机器 + 1 飞书私聊 Bot）。
 
@@ -43,7 +43,7 @@
 
 - 移除 `[bridge]` 段
 - 新增段：`[feishu_bot]`、`[runtime]`、`[security]`、`[queue]`、`[cli_proxy]`
-- 环境变量覆盖：`CC_BRIDGE_FEISHU_APP_ID` 等
+- 环境变量覆盖：`CC_LINKER_FEISHU_APP_ID` 等
 
 ### 重构 `src/utils/paths.ts`
 
@@ -73,7 +73,7 @@
 ### 完成标准
 
 - `bun test` 全绿
-- `cc-bridge init/list/show/search/export/clean/status` 命令正常工作
+- `cc-linker init/list/show/search/export/clean/status` 命令正常工作
 
 ---
 
@@ -115,7 +115,7 @@ interface SessionManager {
 
 ### `src/feishu/mapping.ts`
 
-- 加载/保存 `~/.cc-bridge/user-mapping.json`
+- 加载/保存 `~/.cc-linker/user-mapping.json`
 - 三种 entry 类型：session、pending_new_session、pending_new_session_claimed
 - `compareAndSwap(openId, expectedEntry, newEntry)` — 原子 CAS 抢占
 - CAS 必须在独占文件锁内执行，基于 `mapping.version + entry.type + claimedByMessageId` 判定
@@ -188,7 +188,7 @@ interface SessionManager {
 - session-events 归并
 - 过期文件清理
 
-### `cc-bridge start` 命令
+### `cc-linker start` 命令
 
 - 获取 owner.lock → startupReconcile → 启动 WSClient → 启动 Dispatcher
 - SIGINT/SIGTERM 优雅停机
