@@ -116,7 +116,7 @@ export async function setup(registry: RegistryManager, opts: SetupOptions = {}):
         feishuResult = { configured: true, appId: existingAppId, started: isDaemonRunning(), autoStart: false };
         console.log(chalk.green('  ✅ 使用现有飞书配置'));
       } else {
-        feishuResult = await runFeishuWizard();
+        feishuResult = await runFeishuWizard(existingAppId, existingAppSecret);
       }
     } else {
       const { setupFeishu } = await inquirer.prompt([{
@@ -137,9 +137,10 @@ export async function setup(registry: RegistryManager, opts: SetupOptions = {}):
 
   // ===== Summary =====
   printSummary(sessionCount, hookInstalled, feishuResult);
+  process.exit(0);
 }
 
-async function runFeishuWizard(): Promise<FeishuWizardResult> {
+async function runFeishuWizard(existingAppId = '', existingAppSecret = ''): Promise<FeishuWizardResult> {
   const result: FeishuWizardResult = { configured: false, appId: '', started: false, autoStart: false };
 
   // Check if daemon is already running
@@ -181,6 +182,7 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
     type: 'input',
     name: 'appId',
     message: '飞书 App ID:',
+    default: existingAppId || undefined,
     validate: (v: string) => v.trim() ? true : 'App ID 不能为空',
   }]);
 
@@ -189,6 +191,7 @@ async function runFeishuWizard(): Promise<FeishuWizardResult> {
     type: 'input',
     name: 'appSecret',
     message: '飞书 App Secret:',
+    default: existingAppSecret || undefined,
     validate: (v: string) => v.trim() ? true : 'App Secret 不能为空',
   }]);
 
