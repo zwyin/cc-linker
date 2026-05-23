@@ -279,6 +279,16 @@ export class FeishuBot {
         await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
         return reply;
       }
+      case 'select_model': {
+        const reply = await this.doSelectModel(openId, sessionId, messageId);
+        await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+        return reply;
+      }
+      case 'clear_model': {
+        const reply = await this.doClearModel(openId, messageId);
+        await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+        return reply;
+      }
       case 'status': {
         const reply = await this.doStatus(openId);
         await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
@@ -756,6 +766,7 @@ export class FeishuBot {
         msg.openId,
         currentEntry ?? null,
         {
+          ...currentEntry,
           type: 'pending_new_session',
           sessionUuid: null,
           createdAt: currentEntry?.createdAt ?? new Date().toISOString(),
@@ -781,6 +792,7 @@ export class FeishuBot {
       msg.openId,
       currentEntry ?? null,
       {
+        ...currentEntry,
         type: 'pending_new_session_claimed',
         sessionUuid: null,
         createdAt: currentEntry?.createdAt ?? now,
@@ -849,36 +861,48 @@ export class FeishuBot {
     if (!target) {
       const entry = this.userManager.getEntry(msg.openId);
       const currentAlias = entry?.defaultProvider ?? null;
-      const lines: string[] = [];
+      const providers = this.providerManager.list();
 
-      if (currentAlias) {
-        const provider = this.providerManager.resolve(currentAlias);
-        lines.push(`当前默认模型: ${provider?.name ?? currentAlias}`);
-      } else {
-        lines.push('当前默认模型: 未设置（跟随 Claude 全局配置）');
+      if (providers.length === 0) {
+        const lines = [
+          '当前默认模型: 未设置（跟随 Claude 全局配置）',
+          '',
+          '未检测到可切换模型。',
+          '请安装 CC Switch 或手动创建 ~/.claude/providers/*.json',
+        ];
+        await this.replyAndFinalize(msg, lines.join('\n'));
+        return;
       }
 
-      const providers = this.providerManager.list();
-      if (providers.length > 0) {
+      const card = buildModelCard(providers, currentAlias);
+      const replyId = await this.cardReplyFn(card, { messageId: msg.messageId, openId: msg.openId });
+
+      if (replyId) {
+        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, replyId, 1);
+        this.spoolQueue.markReplied(msg.messageId, msg.serialKey, replyId);
+        this.spoolQueue.markDone(msg.messageId, msg.serialKey, replyId);
+      } else {
+        // Fallback to text
+        const lines: string[] = [];
+        if (currentAlias) {
+          const provider = this.providerManager.resolve(currentAlias);
+          lines.push(`当前默认模型: ${provider?.name ?? currentAlias}`);
+        } else {
+          lines.push('当前默认模型: 未设置（跟随 Claude 全局配置）');
+        }
         lines.push('');
         lines.push('可用模型:');
         providers.forEach((p, i) => {
           const marker = p.alias === currentAlias ? '●' : ' ';
           lines.push(`  ${marker} ${i + 1}. ${p.name}  (${p.alias})`);
         });
-      } else {
         lines.push('');
-        lines.push('未检测到可切换模型。');
-        lines.push('请安装 CC Switch 或手动创建 ~/.claude/providers/*.json');
+        lines.push('用法:');
+        lines.push('  /bridge model <序号|别名>        设置默认模型');
+        lines.push('  /bridge model --clear            清除默认设置');
+        lines.push('  /bridge new /path --model <别名>  创建会话时指定模型');
+        await this.replyAndFinalize(msg, lines.join('\n'));
       }
-
-      lines.push('');
-      lines.push('用法:');
-      lines.push('  /bridge model <序号|别名>        设置默认模型');
-      lines.push('  /bridge model --clear            清除默认设置');
-      lines.push('  /bridge new /path --model <别名>  创建会话时指定模型');
-
-      await this.replyAndFinalize(msg, lines.join('\n'));
       return;
     }
 
@@ -1159,6 +1183,7 @@ export class FeishuBot {
       openId,
       currentEntry ?? null,
       {
+        ...currentEntry,
         type: 'pending_new_session',
         sessionUuid: null,
         createdAt: currentEntry?.createdAt ?? new Date().toISOString(),
@@ -1187,6 +1212,7 @@ export class FeishuBot {
       openId,
       currentEntry ?? null,
       {
+        ...currentEntry,
         type: 'session',
         sessionUuid: uuid,
         createdAt: currentEntry?.createdAt ?? new Date().toISOString(),
@@ -1201,6 +1227,43 @@ export class FeishuBot {
     return reply;
   }
 
+  private async doSelectModel(openId: string, alias: string, messageId?: string): Promise<string> {
+    const provider = this.providerManager.resolve(alias);
+    if (!provider) {
+      return `未知模型: "${alias}"\n请使用 /bridge model 查看可用列表`;
+    }
+
+    const entry = this.userManager.getEntry(openId);
+    const newEntry = entry
+      ? { ...entry, defaultProvider: provider.alias }
+      : {
+          type: 'pending_new_session' as const,
+          sessionUuid: null,
+          createdAt: new Date().toISOString(),
+          defaultProvider: provider.alias,
+        };
+
+    const swapped = await this.userManager.compareAndSwap(openId, entry ?? null, newEntry);
+    if (!swapped) return '⚠️ 设置失败，请重试';
+
+    this.spoolQueue.recordReceipt(messageId ?? '');
+    return `✅ 默认模型已设置为 ${provider.name} (${provider.alias})`;
+  }
+
+  private async doClearModel(openId: string, messageId?: string): Promise<string> {
+    const entry = this.userManager.getEntry(openId);
+    if (!entry) {
+      this.spoolQueue.recordReceipt(messageId ?? '');
+      return '⚠️ 无当前会话状态，无需清除';
+    }
+    const swapped = await this.userManager.compareAndSwap(
+      openId, entry,
+      { ...entry, defaultProvider: undefined }
+    );
+    this.spoolQueue.recordReceipt(messageId ?? '');
+    return swapped ? '✅ 已清除默认模型设置' : '⚠️ 清除失败，请重试';
+  }
+
   private async doResume(openId: string, uuid: string, messageId?: string): Promise<string> {
     const entry = this.registry.get(uuid);
     if (!entry) return '未找到对应会话，请先执行 /bridge list。';
@@ -1208,7 +1271,7 @@ export class FeishuBot {
     if (entry.status === 'provisioning' || entry.status === 'degraded') {
       return `会话 ${uuid.slice(0, 8)} 状态为 ${entry.status}，建议先保持 cc-bridge 运行让系统自动修复。`;
     }
-    return `在终端执行: cc-bridge resume ${uuid.slice(0, 8)}`;
+    return `在终端执行: cc-link resume ${uuid.slice(0, 8)}`;
   }
 
   private async doResumeReply(openId: string, uuid: string, msg: SpoolMessage): Promise<void> {
@@ -1226,7 +1289,7 @@ export class FeishuBot {
       : null;
 
     return [
-      'cc-bridge 状态',
+      'cc-link 状态',
       '─'.repeat(30),
       `队列消息: ${queueSize}`,
       `总会话数: ${sessions.length}`,
@@ -1272,6 +1335,67 @@ function buildListCard(sessions: Array<[string, { title?: string; origin: string
     config: { wide_screen_mode: true },
     elements,
     header: { title: { tag: 'plain_text', content: `📋 我的会话（${sessions.length}/${total}）` }, template: 'blue' },
+  };
+}
+
+/** Build a model selection card with select/clear action buttons */
+function buildModelCard(
+  providers: Array<{ alias: string; name: string }>,
+  currentAlias: string | null,
+): Record<string, unknown> {
+  const elements: Array<Record<string, unknown>> = [];
+
+  if (currentAlias) {
+    const current = providers.find(p => p.alias === currentAlias);
+    elements.push({
+      tag: 'markdown',
+      content: `**当前默认:** ${current?.name ?? currentAlias} (\`${currentAlias}\`)`,
+    });
+    elements.push({ tag: 'hr' });
+  }
+
+  for (let i = 0; i < providers.length; i++) {
+    const p = providers[i];
+    const isCurrent = p.alias === currentAlias;
+    elements.push({
+      tag: 'markdown',
+      content: `${i + 1}. **${p.name}**  \`${p.alias}\`${isCurrent ? '  ✅' : ''}`,
+    });
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: isCurrent ? '✅ 已选择' : '🎯 选择' },
+          type: isCurrent ? 'default' : 'primary',
+          value: { tag: 'select_model', sessionId: p.alias },
+        },
+      ],
+    });
+    if (i < providers.length - 1) {
+      elements.push({ tag: 'hr' });
+    }
+  }
+
+  if (currentAlias) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🧹 清除默认' },
+          type: 'danger',
+          value: { tag: 'clear_model', sessionId: '' },
+        },
+      ],
+    });
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    elements,
+    header: { title: { tag: 'plain_text', content: '🤖 模型选择' }, template: 'blue' },
   };
 }
 

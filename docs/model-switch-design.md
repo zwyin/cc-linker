@@ -143,7 +143,6 @@ export interface ProviderConfig {
   name: string;          // 显示名称，如 "Kimi For Coding"
   path: string;          // settings 文件绝对路径
   isTemp: boolean;       // 是否自动生成的临时文件
-  model: string;         // settings 中的 model 字段
 }
 
 export class ProviderManager {
@@ -371,19 +370,7 @@ export const RegistrySchema = z.object({
 });
 ```
 
-**迁移函数：**
-
-```typescript
-// src/registry/registry.ts
-function migrateV2toV3(parsed: any): void {
-  if (parsed.version !== 2) return;
-  for (const entry of Object.values(parsed.sessions ?? {})) {
-    const e = entry as Record<string, unknown>;
-    e.lastKnownProvider = null;   // NEW field, default null
-  }
-  parsed.version = 3;
-}
-```
+> 注：由于 `lastKnownProvider` 为 `optional().nullable()`，旧数据无需显式迁移即可兼容 parse。`emptyRegistry()` 同步返回 `version: 3`。
 
 ### 6.4 命令层设计（飞书 Bot）
 
@@ -473,8 +460,8 @@ private async handleModel(msg: SpoolMessage, target: string): Promise<void> {
   }
 
   // 设置默认模型
-  const provider = this.providerManager.resolve(target)
-    ?? this.providerManager.resolveByIndex(parseInt(target, 10) - 1);
+  const provider = this.providerManager.resolve(target);
+  // resolve() 已内建支持序号解析（1-based），无需单独调用 resolveByIndex
 
   if (!provider) {
     await this.replyAndFinalize(msg, `未知模型: "${target}"\n请使用 /bridge model 查看可用列表`);
@@ -485,7 +472,7 @@ private async handleModel(msg: SpoolMessage, target: string): Promise<void> {
   const newEntry: MappingEntry = entry
     ? { ...entry, defaultProvider: provider.alias }
     : {
-        type: 'session',
+        type: 'pending_new_session',   // 无活跃会话时不应创建 session type
         sessionUuid: null,
         createdAt: new Date().toISOString(),
         defaultProvider: provider.alias,
@@ -617,19 +604,17 @@ const args: string[] = [claudeBin, '-p', text, '--output-format', 'json'];
 // AFTER
 const args: string[] = [claudeBin];
 
-// 根据用户当前的 defaultProvider 决定是否加 --settings
-const userEntry = await this.userManager.getEntry(openId);  // 需要传入 openId
-if (userEntry?.defaultProvider) {
-  const provider = this.providerManager.resolve(userEntry.defaultProvider);
-  if (provider) {
-    args.push('--settings', provider.path);
-  }
+// 根据传入的 settingsPath 决定是否加 --settings（由调用方解析用户配置）
+if (settingsPath && existsSync(settingsPath)) {
+  args.push('--settings', settingsPath);
+} else if (settingsPath) {
+  logger.warn(`Provider settings file not found: ${settingsPath}, using global config`);
 }
 
 args.push('-p', text, '--output-format', 'json');
 ```
 
-**注意：** `sendMessage()` 和 `sendStreamingMessage()` 目前不接收 `openId` 参数，需要新增。
+**注意：** `sendMessage()` 和 `sendStreamingMessage()` 通过新增的 `settingsPath` 参数注入 `--settings`，保持与 feishu 层解耦。调用方（`bot.ts`）通过 `getSettingsPathForUser(openId)` 查询后传入。
 
 #### 6.5.2 方法签名变更
 
@@ -648,13 +633,13 @@ async sendMessage(
   sessionId: string | null,
   text: string,
   cwd: string,
-  openId: string,           // NEW
   isNew?: boolean,
   lockKey?: string,
+  settingsPath?: string,    // NEW: provider settings 文件路径
 ): Promise<SendMessageResult>
 ```
 
-调用方（`src/feishu/bot.ts` 中的 `handleChat`）需要传入 `msg.openId`。
+调用方（`src/feishu/bot.ts` 中的 `handleChat`）在调用前通过 `getSettingsPathForUser(msg.openId)` 解析路径后传入。
 
 ### 6.6 `/bridge list` 显示模型信息
 

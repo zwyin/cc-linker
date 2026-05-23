@@ -1,17 +1,43 @@
 {
-  "name": "cc-bridge",
-  "version": "0.1.0",
-  "description": "Bridge cc-connect and Claude Code CLI sessions",
-  "main": "src/index.ts",
-  "bin": {
-    "cc-bridge": "src/index.ts"
+  "name": "cc-linker",
+  "version": "0.0.1",
+  "description": "Bridge Feishu IM and Claude Code CLI sessions — seamless session switching between terminal and chat",
+  "license": "MIT",
+  "author": "wuyujun",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yujuntea/cc-bridge.git"
   },
+  "homepage": "https://github.com/yujuntea/cc-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/yujuntea/cc-bridge/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "feishu",
+    "lark",
+    "session",
+    "bridge",
+    "cli"
+  ],
+  "bin": {
+    "cc-link": "./dist/cli.js"
+  },
+  "files": [
+    "dist/cli.js",
+    "dist/cli.js.map"
+  ],
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --compile --outfile dist/cc-bridge",
+    "build:npm": "bun build src/index.ts --outdir dist --target node --sourcemap && mv dist/index.js dist/cli.js && mv dist/index.js.map dist/cli.js.map 2>/dev/null; chmod +x dist/cli.js",
+    "prepublishOnly": "bun run build:npm",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "type": "module",
   "devDependencies": {

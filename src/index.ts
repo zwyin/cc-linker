@@ -17,12 +17,13 @@ import { search } from './cli/commands/search';
 import { clean } from './cli/commands/clean';
 import { start, stop } from './cli/commands/start';
 import { initFeishu } from './cli/commands/init-feishu';
+import { setup } from './cli/commands/setup';
 import { installDaemon, uninstallDaemon, daemonStatus as daemonServiceStatus } from './cli/commands/daemon';
 
 const program = new Command();
 
 program
-  .name('cc-bridge')
+  .name('cc-link')
   .description('飞书 ↔ Claude Code CLI 桥接工具')
   .version('0.2.0');
 
@@ -168,6 +169,15 @@ const daemonCmd = program.command('daemon').description('管理后台 Bot 服务
 daemonCmd.command('install').description('配置开机自动启动').action(() => installDaemon());
 daemonCmd.command('uninstall').description('移除开机自动启动').action(() => uninstallDaemon());
 daemonCmd.command('status').description('查看后台服务状态').action(() => daemonServiceStatus());
+
+program
+  .command('setup')
+  .description('一键配置向导（初始化 + 安装钩子 + 配置飞书 Bot）')
+  .option('--skip-feishu', '跳过飞书 Bot 配置')
+  .option('--skip-hook', '跳过 Claude Code 钩子安装')
+  .action((opts) => withSync(async (registry) => {
+    await setup(registry, opts);
+  }, true));
 
 program
   .command('init-feishu')

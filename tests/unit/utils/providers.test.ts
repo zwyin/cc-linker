@@ -69,7 +69,7 @@ describe('ProviderManager', () => {
     expect(byIndex).not.toBeNull();
   });
 
-  it('sanitizeName converts display names to aliases', async () => {
+  it('generateShortAlias strips stopwords and shortens long names', async () => {
     // Create providers with display names
     const claudeProviders = join(tmpDir, '.claude', 'providers');
     mkdirSync(claudeProviders, { recursive: true });
@@ -77,13 +77,22 @@ describe('ProviderManager', () => {
       join(claudeProviders, 'Kimi For Coding.json'),
       JSON.stringify({ model: 'opus', env: { ANTHROPIC_MODEL: 'kimi' } }),
     );
+    writeFileSync(
+      join(claudeProviders, 'bailian-qwen3.6-plus.json'),
+      JSON.stringify({ model: 'opus', env: { ANTHROPIC_MODEL: 'qwen' } }),
+    );
 
     await pm.scan();
 
-    // The alias should be sanitized: "Kimi For Coding" → "kimi-for-coding"
-    const kimi = pm.resolve('kimi-for-coding');
+    // "Kimi For Coding" → stopword "for" removed → "kimi-coding"
+    const kimi = pm.resolve('kimi-coding');
     expect(kimi).not.toBeNull();
     expect(kimi!.name).toBe('Kimi For Coding');
+
+    // "bailian-qwen3.6-plus" → suffix "plus" removed, platform "bailian" stripped, dot restored → "qwen3.6"
+    const qwen = pm.resolve('qwen3.6');
+    expect(qwen).not.toBeNull();
+    expect(qwen!.name).toBe('bailian-qwen3.6-plus');
   });
 
   it('handles invalid provider config gracefully', async () => {

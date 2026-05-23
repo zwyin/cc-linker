@@ -36,5 +36,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # superpowers
 .superpowers
 
+# claude
+.claude
+
 # worktrees
 .worktrees
+
+# security reports (cso)
+.gstack

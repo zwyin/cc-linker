@@ -15,8 +15,8 @@ function getExecutablePath(): string {
   // If running from compiled binary, use that path
   const exe = process.argv[0];
   if (exe.endsWith('cc-bridge')) return exe;
-  // Otherwise use 'cc-bridge' from PATH
-  return 'cc-bridge';
+  // npm installed: bin name is cc-link
+  return 'cc-link';
 }
 
 /** macOS: ~/Library/LaunchAgents/ */

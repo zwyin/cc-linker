@@ -174,9 +174,11 @@ export class ClaudeSessionManager {
     const claudeBin = config.get<string>('general.claude_bin', 'claude');
     const args: string[] = [claudeBin];
 
-    // Inject --settings if provider path given
-    if (settingsPath) {
+    // Inject --settings if provider path given and exists
+    if (settingsPath && existsSync(settingsPath)) {
       args.push('--settings', settingsPath);
+    } else if (settingsPath) {
+      logger.warn(`Provider settings file not found: ${settingsPath}, using global config`);
     }
 
     args.push('-p', text, '--output-format', 'json', '--verbose');
@@ -428,9 +430,11 @@ export class ClaudeSessionManager {
     const claudeBin = config.get<string>('general.claude_bin', 'claude');
     const args: string[] = [claudeBin];
 
-    // Inject --settings if provider path given
-    if (settingsPath) {
+    // Inject --settings if provider path given and exists
+    if (settingsPath && existsSync(settingsPath)) {
       args.push('--settings', settingsPath);
+    } else if (settingsPath) {
+      logger.warn(`Provider settings file not found: ${settingsPath}, using global config`);
     }
 
     args.push('-p', text, '--output-format', 'stream-json', '--verbose');

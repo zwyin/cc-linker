@@ -21,14 +21,14 @@ export function handleError(err: unknown): never {
     }
 
     const suggestions: Record<string, string[]> = {
-      'E001': ['运行 cc-bridge init 初始化 registry'],
-      'E002': ['会话已被清理，无法恢复', '运行 cc-bridge sync 重新扫描'],
+      'E001': ['运行 cc-link init 初始化 registry'],
+      'E002': ['会话已被清理，无法恢复', '运行 cc-link sync 重新扫描'],
       'E007': ['等待其他进程完成', '或删除 ~/.cc-bridge/registry.json.lock'],
       'E008': ['会话创建目录已被删除，使用 --cwd 指定替代目录'],
-      'E010': ['会话处于降级状态，执行 cc-bridge start 触发自动修复'],
+      'E010': ['会话处于降级状态，执行 cc-link start 触发自动修复'],
       'E011': ['会话仍在创建中，请稍后重试'],
       'E012': ['会话已损坏，请使用 /bridge switch 切换到其他会话'],
-      'E013': ['服务正在运行，请先执行 cc-bridge stop 后再执行此命令'],
+      'E013': ['服务正在运行，请先执行 cc-link stop 后再执行此命令'],
     };
 
     if (suggestions[err.code]) {

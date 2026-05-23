@@ -32,7 +32,7 @@ export const SessionEntrySchema = z.object({
 export type SessionEntry = z.infer<typeof SessionEntrySchema>;
 
 export const RegistrySchema = z.object({
-  version: z.literal(2),
+  version: z.literal(3),
   updated_at: z.string(),
   sessions: z.record(z.string(), SessionEntrySchema),
 });

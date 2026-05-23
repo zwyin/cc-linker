@@ -122,7 +122,7 @@ export class RegistryManager {
 
   private emptyRegistry(): Registry {
     return {
-      version: 2,
+      version: 3,
       updated_at: new Date().toISOString(),
       sessions: {},
     };

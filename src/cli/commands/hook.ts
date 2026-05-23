@@ -17,7 +17,7 @@ function isHookInstalled(sessionStart: unknown): boolean {
   if (!Array.isArray(sessionStart)) return false;
   return sessionStart.some((matcher: any) => {
     if (!matcher?.hooks) return false;
-    return matcher.hooks.some((h: any) => h?.command?.includes('cc-bridge'));
+    return matcher.hooks.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'));
   });
 }
 
@@ -49,7 +49,7 @@ export function hookInstall(): void {
     hooks: [
       {
         type: 'command',
-        command: 'cc-bridge hook session-start',
+        command: 'cc-link hook session-start',
         timeout: 10,
       },
     ],
@@ -59,9 +59,9 @@ export function hookInstall(): void {
     settings.hooks.SessionStart = [];
   }
 
-  // 检查是否已有 cc-bridge hook
+  // 检查是否已有 hook（cc-link 或 cc-bridge）
   const existingIndex = settings.hooks.SessionStart.findIndex((m: any) =>
-    m?.hooks?.some((h: any) => h?.command?.includes('cc-bridge'))
+    m?.hooks?.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'))
   );
 
   if (existingIndex === -1) {
@@ -94,8 +94,8 @@ export function hookUninstall(): void {
     if (Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = settings.hooks.SessionStart.filter((m: any) => {
         if (!m?.hooks) return true;
-        // 移除包含 cc-bridge 的 matcher
-        return !m.hooks.some((h: any) => h?.command?.includes('cc-bridge'));
+        // 移除包含 cc-link 或 cc-bridge 的 matcher
+        return !m.hooks.some((h: any) => h?.command?.includes('cc-link') || h?.command?.includes('cc-bridge'));
       });
       if (settings.hooks.SessionStart.length === 0) {
         delete settings.hooks.SessionStart;

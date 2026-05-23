@@ -560,7 +560,7 @@ describe('FeishuBot cards', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-bridge resume');
+    expect(textReplies[0]).toContain('cc-link resume');
   });
 
   it('handleCardAction routes resume with corrupted session', async () => {
@@ -592,7 +592,7 @@ describe('FeishuBot cards', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-bridge 状态');
+    expect(textReplies[0]).toContain('cc-link 状态');
     expect(textReplies[0]).toContain('队列消息');
   });
 

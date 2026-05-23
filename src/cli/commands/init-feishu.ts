@@ -20,7 +20,7 @@ function getLinuxServicePath(): string {
 }
 
 /** Check if daemon is currently running */
-function isDaemonRunning(): boolean {
+export function isDaemonRunning(): boolean {
   if (!existsSync(RUNTIME_PID_FILE)) return false;
   try {
     const pid = parseInt(readFileSync(RUNTIME_PID_FILE, 'utf8').trim(), 10);
@@ -50,7 +50,7 @@ function disableAutoStartTemporarily(): void {
   }
 }
 
-async function getTenantToken(appId: string, appSecret: string): Promise<string | null> {
+export async function getTenantToken(appId: string, appSecret: string): Promise<string | null> {
   try {
     const resp = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
       method: 'POST',
@@ -64,7 +64,7 @@ async function getTenantToken(appId: string, appSecret: string): Promise<string 
   }
 }
 
-async function getBotName(token: string): Promise<string | null> {
+export async function getBotName(token: string): Promise<string | null> {
   try {
     const resp = await fetch('https://open.feishu.cn/open-apis/bot/v3/info', {
       headers: { Authorization: `Bearer ${token}` },
@@ -76,7 +76,7 @@ async function getBotName(token: string): Promise<string | null> {
   }
 }
 
-async function captureOpenId(appId: string, appSecret: string): Promise<string | null> {
+export async function captureOpenId(appId: string, appSecret: string): Promise<string | null> {
   const Lark = await import('@larksuiteoapi/node-sdk');
   const { WSClient, EventDispatcher, Domain, LoggerLevel } = Lark;
 
@@ -127,7 +127,7 @@ async function captureOpenId(appId: string, appSecret: string): Promise<string |
   });
 }
 
-function loadExistingConfig(): Record<string, any> {
+export function loadExistingConfig(): Record<string, any> {
   if (!existsSync(CONFIG_PATH)) return {};
   try {
     return parse(readFileSync(CONFIG_PATH, 'utf8')) as Record<string, any>;
@@ -146,7 +146,7 @@ function formatTomlValue(v: any): string {
   return JSON.stringify(v);
 }
 
-function saveConfig(config: Record<string, any>): void {
+export function saveConfig(config: Record<string, any>): void {
   const dir = dirname(CONFIG_PATH);
   mkdirSync(dir, { recursive: true });
 
@@ -361,9 +361,9 @@ export async function initFeishu(): Promise<void> {
     });
     if (result.status === 0) {
       botStarted = true;
-      console.log(chalk.gray('运行 cc-bridge list 可查看会话'));
+      console.log(chalk.gray('运行 cc-link list 可查看会话'));
     } else {
-      console.log(chalk.yellow('⚠️ 自动启动失败，请手动执行: cc-bridge start --daemon'));
+      console.log(chalk.yellow('⚠️ 自动启动失败，请手动执行: cc-link start --daemon'));
     }
   }
 
@@ -387,10 +387,10 @@ export async function initFeishu(): Promise<void> {
   console.log(chalk.gray(`  开机自启:    ${autoStart ? '已配置' : '未配置'}`));
 
   console.log(chalk.cyan('\n常用命令:'));
-  console.log(chalk.white('  cc-bridge list              — 查看会话'));
-  console.log(chalk.white('  cc-bridge daemon status     — 查看服务状态'));
-  console.log(chalk.white('  cc-bridge daemon uninstall  — 移除开机自启'));
-  console.log(chalk.white('  cc-bridge stop              — 停止 Bot 服务'));
+  console.log(chalk.white('  cc-link list              — 查看会话'));
+  console.log(chalk.white('  cc-link daemon status     — 查看服务状态'));
+  console.log(chalk.white('  cc-link daemon uninstall  — 移除开机自启'));
+  console.log(chalk.white('  cc-link stop              — 停止 Bot 服务'));
 
   process.exit(0);
 }

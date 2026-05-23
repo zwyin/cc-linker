@@ -43,6 +43,7 @@ export async function startupReconcile(opts: {
   userManager: UserManager;
   listSnapshotManager: ListSnapshotManager;
   spoolQueue: SpoolQueue;
+  eventsDir?: string; // injectable for testing
 }): Promise<ReconcileResult> {
   const result: ReconcileResult = {
     recoveredProcessing: 0,
@@ -68,7 +69,7 @@ export async function startupReconcile(opts: {
   result.rolledBackClaims = await opts.userManager.rollbackTimedOutClaims();
 
   // 4. Merge session-events into registry
-  result.mergedEvents = await mergeSessionEvents(opts.registry);
+  result.mergedEvents = await mergeSessionEvents(opts.registry, opts.eventsDir);
 
   // 5. Clean expired snapshots
   result.expiredSnapshots = cleanExpiredSnapshots(opts.listSnapshotManager);
@@ -96,16 +97,17 @@ export async function startupReconcile(opts: {
  * Merge session discovery events into the registry.
  * Events are written by the session-start hook.
  */
-async function mergeSessionEvents(registry: RegistryManager): Promise<number> {
-  if (!existsSync(RUNTIME_SESSION_EVENTS_DIR)) return 0;
+async function mergeSessionEvents(registry: RegistryManager, eventsDir?: string): Promise<number> {
+  const dir = eventsDir ?? RUNTIME_SESSION_EVENTS_DIR;
+  if (!existsSync(dir)) return 0;
 
   let merged = 0;
 
   // S8: Sort events by discoveredAt to ensure chronological processing
   const files: Array<{ file: string; discoveredAt: string }> = [];
-  for (const file of readdirSync(RUNTIME_SESSION_EVENTS_DIR)) {
+  for (const file of readdirSync(dir)) {
     if (!file.endsWith('.json')) continue;
-    const path = join(RUNTIME_SESSION_EVENTS_DIR, file);
+    const path = join(dir, file);
     try {
       const raw = readFileSync(path, 'utf8');
       const event = JSON.parse(raw) as { sessionId: string; cwd: string; discoveredAt: string };
@@ -118,7 +120,7 @@ async function mergeSessionEvents(registry: RegistryManager): Promise<number> {
   files.sort((a, b) => a.discoveredAt.localeCompare(b.discoveredAt));
 
   for (const { file } of files) {
-    const path = join(RUNTIME_SESSION_EVENTS_DIR, file);
+    const path = join(dir, file);
     try {
       const raw = readFileSync(path, 'utf8');
       const event = JSON.parse(raw) as { sessionId: string; cwd: string; discoveredAt: string };

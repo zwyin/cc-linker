@@ -3,7 +3,8 @@
     "allow": [
       "mcp__mcp-fetch__fetch",
       "mcp__MiniMax__understand_image",
-      "mcp__MiniMax__web_search"
+      "mcp__MiniMax__web_search",
+      "mcp__plugin_superpowers-chrome_chrome__use_browser"
     ]
   }
 }

@@ -28,5 +28,5 @@ export async function show(registry: RegistryManager, target: string): Promise<v
   console.log(`消息数:      ${s.message_count}`);
   console.log(`\nJSONL 文件: ${s.jsonl_path}`);
   console.log(`\n操作:`);
-  console.log(`  cc-bridge resume ${uuid.slice(0, 8)}   恢复此会话`);
+  console.log(`  cc-link resume ${uuid.slice(0, 8)}   恢复此会话`);
 }

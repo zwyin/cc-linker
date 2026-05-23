@@ -59,8 +59,10 @@ export class ProviderManager {
     const manualDir = expandPath('~/.claude/providers');
     if (await dirExists(manualDir)) {
       await this.scanDirectory(manualDir, false);
-      this.source = 'manual';
-      return;
+      if (this.providers.size > 0) {
+        this.source = 'manual';
+        return;
+      }
     }
 
     const ccSwitchDb = expandPath('~/.cc-switch/cc-switch.db');
@@ -80,10 +82,21 @@ export class ProviderManager {
     for (const file of files) {
       const path = join(dir, file);
       const rawAlias = basename(file, '.json');
-      const alias = this.sanitizeName(rawAlias);
       try {
         const content = JSON.parse(readFileSync(path, 'utf8'));
+        // Prefer user-defined alias; otherwise generate short alias from filename
+        // For temp files (CC Switch generated), the filename is already the short alias
+        const baseAlias = content.alias
+          ? this.sanitizeName(content.alias)
+          : isTemp
+            ? rawAlias
+            : this.generateShortAlias(rawAlias);
+        const alias = this.resolveAliasConflict(baseAlias);
         const name = content.name ?? rawAlias;
+        if (this.providers.has(alias)) {
+          const existing = this.providers.get(alias)!;
+          logger.warn(`Provider alias conflict: "${alias}" from ${path} overrides existing from ${existing.path}`);
+        }
         this.providers.set(alias, { alias, name, path, isTemp });
       } catch (err) {
         logger.warn(`Skipping invalid provider config: ${path}`);
@@ -108,12 +121,23 @@ export class ProviderManager {
       for (const row of rows) {
         try {
           const cleanConfig = this.sanitizeSettingsConfig(row.settings_config);
-          const alias = this.sanitizeName(row.name);
-          const filePath = join(this.autoProviderDir, `${alias}.json`);
+          const baseAlias = cleanConfig.alias
+            ? this.sanitizeName(cleanConfig.alias)
+            : this.generateShortAlias(row.name);
+          // Ensure unique file path to avoid overwriting
+          let alias = baseAlias;
+          let filePath = join(this.autoProviderDir, `${alias}.json`);
+          let counter = 2;
+          while (existsSync(filePath)) {
+            alias = `${baseAlias}-${counter}`;
+            filePath = join(this.autoProviderDir, `${alias}.json`);
+            counter++;
+          }
           const tmpPath = filePath + '.tmp';
-          writeFileSync(tmpPath, JSON.stringify(cleanConfig, null, 2), { mode: 0o600 });
+          // Include name for display; Claude CLI ignores unknown fields in settings files
+          const configWithName = { ...cleanConfig, name: row.name, alias: cleanConfig.alias };
+          writeFileSync(tmpPath, JSON.stringify(configWithName, null, 2), { mode: 0o600 });
           renameSync(tmpPath, filePath);
-          this.providers.set(alias, { alias, name: row.name, path: filePath, isTemp: true });
         } catch (err) {
           logger.warn(`Skipping CC Switch provider "${row.name}": ${err}`);
         }
@@ -123,7 +147,7 @@ export class ProviderManager {
     }
   }
 
-  private sanitizeSettingsConfig(raw: string): object {
+  private sanitizeSettingsConfig(raw: string): { model: string; alias?: string; env: Record<string, string> } {
     const parsed = JSON.parse(raw);
     const env = parsed.env ?? {};
 
@@ -148,6 +172,7 @@ export class ProviderManager {
 
     return {
       model: parsed.model ?? 'opus',
+      alias: parsed.alias,
       env: filteredEnv,
     };
   }
@@ -156,6 +181,70 @@ export class ProviderManager {
     return name.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+  }
+
+  /**
+   * Generate a short alias from filename for better UX.
+   * Rules:
+   * 1. Strip common suffixes (plus, pro, max, latest, etc.)
+   * 2. Strip platform/brand prefixes (bailian, aliyun, etc.)
+   * 3. Remove stopwords (for, with, and, etc.)
+   * 4. If still long (>10 chars), take the first segment
+   */
+  private generateShortAlias(filename: string): string {
+    let name = this.sanitizeName(filename);
+
+    // Step 1: Strip common suffixes
+    const suffixes = ['plus', 'pro', 'max', 'latest', 'default', 'standard', 'preview', 'beta', 'alpha', 'lite', 'tiny'];
+    for (const suffix of suffixes) {
+      if (name.endsWith(`-${suffix}`)) {
+        name = name.slice(0, -(suffix.length + 1));
+        break;
+      }
+    }
+
+    let parts = name.split('-').filter(p => p.length > 0);
+
+    // Step 2: Strip platform/brand prefixes
+    const platforms = ['bailian', 'aliyun', 'tencent', 'baidu', 'volcano', 'doubao', 'aws', 'azure', 'gcp'];
+    if (platforms.includes(parts[0]) && parts.length > 2) {
+      parts = parts.slice(1);
+    }
+
+    // Step 3: Remove stopwords
+    const stopwords = ['for', 'with', 'and', 'the', 'a', 'an'];
+    parts = parts.filter(p => !stopwords.includes(p));
+
+    // Step 4: Rejoin
+    name = parts.join('-');
+
+    // Step 5: If still long AND more than 2 segments, take first segment
+    // For 2 segments, keep as-is (brand + model/version usually)
+    if (name.length > 12 && parts.length > 2) {
+      name = parts[0];
+    }
+
+    // Step 6: Restore dots in version numbers (e.g., qwen3-6 → qwen3.6, m2-7 → m2.7)
+    name = name.replace(/(\d)-(\d)/g, '$1.$2');
+
+    return name;
+  }
+
+  /**
+   * Resolve alias conflicts by appending numeric suffixes.
+   * Returns a unique alias not present in this.providers.
+   */
+  private resolveAliasConflict(baseAlias: string): string {
+    if (!this.providers.has(baseAlias)) return baseAlias;
+
+    let counter = 2;
+    let candidate = `${baseAlias}-${counter}`;
+    while (this.providers.has(candidate)) {
+      counter++;
+      candidate = `${baseAlias}-${counter}`;
+    }
+    logger.warn(`Provider alias "${baseAlias}" 冲突，自动调整为 "${candidate}"`);
+    return candidate;
   }
 }
 

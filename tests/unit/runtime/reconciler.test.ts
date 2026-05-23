@@ -25,12 +25,15 @@ describe('startupReconcile', () => {
     const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
     const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
     const spoolQueue = new SpoolQueue(tmpDir);
+    const eventsDir = join(tmpDir, 'session-events');
+    mkdirSync(eventsDir, { recursive: true });
 
     const result = await startupReconcile({
       registry,
       userManager,
       listSnapshotManager,
       spoolQueue,
+      eventsDir,
     });
 
     expect(result.recoveredProcessing).toBe(0);
@@ -68,13 +71,16 @@ describe('startupReconcile', () => {
       userManager,
       listSnapshotManager,
       spoolQueue,
+      eventsDir,
     });
 
-    // Result should be 0 since we can't easily override the constant
-    expect(result.mergedEvents).toBe(0);
+    expect(result.mergedEvents).toBe(1);
+    expect(registry.get('new-session-uuid')?.cwd).toBe('/Users/test/project');
   });
 
   it('recovers processing messages from spool', async () => {
+    const eventsDir = join(tmpDir, 'session-events');
+    mkdirSync(eventsDir, { recursive: true });
     const spoolQueue = new SpoolQueue(tmpDir);
 
     // Simulate a crashed processing message
@@ -99,6 +105,7 @@ describe('startupReconcile', () => {
       userManager,
       listSnapshotManager,
       spoolQueue,
+      eventsDir,
     });
 
     expect(result.recoveredProcessing).toBe(1);
@@ -126,12 +133,15 @@ describe('startupReconcile', () => {
     const registry = new RegistryManager(tmpDir);
     const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
     const spoolQueue = new SpoolQueue(tmpDir);
+    const eventsDir = join(tmpDir, 'session-events');
+    mkdirSync(eventsDir, { recursive: true });
 
     const result = await startupReconcile({
       registry,
       userManager,
       listSnapshotManager,
       spoolQueue,
+      eventsDir,
     });
 
     expect(result.rolledBackClaims).toBe(1);

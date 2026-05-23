@@ -140,7 +140,7 @@ describe('CLI Commands Integration', () => {
   it('status shows registry info', () => {
     run('init');
     const output = run('status');
-    expect(output).toContain('cc-bridge Status');
+    expect(output).toContain('cc-link Status');
     expect(output).toContain('Total sessions');
   });
 
@@ -469,7 +469,7 @@ describe('CLI Commands Integration', () => {
         SessionStart: [
           {
             matcher: 'startup|resume|clear|compact',
-            hooks: [{ type: 'command', command: 'cc-bridge hook session-start', timeout: 10 }],
+            hooks: [{ type: 'command', command: 'cc-link hook session-start', timeout: 10 }],
           },
         ],
       },

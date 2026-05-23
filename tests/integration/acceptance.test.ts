@@ -79,7 +79,7 @@ describe('Acceptance Tests', () => {
   describe('1. 安装验收', () => {
     it('CLI 帮助信息显示完整', () => {
       const output = runOk('--help');
-      expect(output).toContain('cc-bridge');
+      expect(output).toContain('cc-link');
       expect(output).toContain('init');
       expect(output).toContain('list');
       expect(output).toContain('resume');
@@ -125,7 +125,7 @@ describe('Acceptance Tests', () => {
     it('registry.json 格式正确', () => {
       runOk('init');
       const registry = JSON.parse(readFileSync(join(ccBridgeDir, 'registry.json'), 'utf8'));
-      expect(registry.version).toBe(2);
+      expect(registry.version).toBe(3);
       expect(registry.updated_at).toBeDefined();
       expect(registry.sessions).toBeDefined();
       expect(Object.keys(registry.sessions).length).toBe(2);
@@ -153,7 +153,7 @@ describe('Acceptance Tests', () => {
       mkdirSync(claudeSettingsDir, { recursive: true });
       writeFileSync(join(claudeSettingsDir, 'settings.json'), JSON.stringify({
         hooks: {
-          SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'cc-bridge hook session-start', timeout: 10 }] }],
+          SessionStart: [{ matcher: 'startup|resume', hooks: [{ type: 'command', command: 'cc-link hook session-start', timeout: 10 }] }],
         },
       }, null, 2));
 
@@ -273,7 +273,7 @@ describe('Acceptance Tests', () => {
     describe('4.8 status', () => {
       it('显示完整状态信息', () => {
         const output = runOk('status');
-        expect(output).toContain('cc-bridge Status');
+        expect(output).toContain('cc-link Status');
         expect(output).toContain('Total sessions:');
       });
     });

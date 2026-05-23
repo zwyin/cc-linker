@@ -229,6 +229,7 @@ export class UserManager {
       }
 
       mapping.entries[openId] = {
+        ...current,
         type: 'session',
         sessionUuid,
         cwd,
