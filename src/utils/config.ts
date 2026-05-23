@@ -18,13 +18,16 @@ interface ConfigData {
   feishu_bot: {
     app_id: string;
     app_secret: string;
-    owner_user_id: string;
+    owner_open_id: string;
+    allow_auto_bind_owner: boolean;
+    default_cwd: string;
   };
   runtime: {
     stale_timeout_ms: number;
     hard_timeout_ms: number;
     max_concurrent_sessions: number;
     idle_timeout_ms: number;
+    session_lock_timeout_ms: number;
   };
   security: {
     allowed_roots: string[];
@@ -32,9 +35,15 @@ interface ConfigData {
     confirm_risky_actions: boolean;
   };
   queue: {
-    max_queue_size: number;
-    archive_done_after_hours: number;
-    archive_failed_after_days: number;
+    max_pending: number;
+    worker_concurrency: number;
+    done_retention_hours: number;
+    done_max_files: number;
+    failed_retention_days: number;
+    failed_max_files: number;
+    delivery_retention_days: number;
+    receipt_retention_days: number;
+    list_snapshot_ttl_minutes: number;
   };
   cli_proxy: {
     enabled: boolean;
@@ -42,6 +51,13 @@ interface ConfigData {
   hook: {
     log_path: string;
     timeout: number;
+  };
+  stream: {
+    enabled: boolean;
+    throttle_ms: number;
+    show_thinking: boolean;
+    max_card_bytes: number;
+    fallback_to_text: boolean;
   };
 }
 
@@ -59,13 +75,16 @@ const DEFAULTS: ConfigData = {
   feishu_bot: {
     app_id: '',
     app_secret: '',
-    owner_user_id: '',
+    owner_open_id: '',
+    allow_auto_bind_owner: false,
+    default_cwd: '',
   },
   runtime: {
     stale_timeout_ms: 5 * 60 * 1000,
     hard_timeout_ms: 30 * 60 * 1000,
-    max_concurrent_sessions: 2,
+    max_concurrent_sessions: 5,
     idle_timeout_ms: 30 * 60 * 1000,
+    session_lock_timeout_ms: 10 * 60 * 1000,
   },
   security: {
     allowed_roots: [],
@@ -73,9 +92,15 @@ const DEFAULTS: ConfigData = {
     confirm_risky_actions: true,
   },
   queue: {
-    max_queue_size: 100,
-    archive_done_after_hours: 24,
-    archive_failed_after_days: 7,
+    max_pending: 100,
+    worker_concurrency: 5,
+    done_retention_hours: 24,
+    done_max_files: 1000,
+    failed_retention_days: 7,
+    failed_max_files: 200,
+    delivery_retention_days: 7,
+    receipt_retention_days: 7,
+    list_snapshot_ttl_minutes: 10,
   },
   cli_proxy: {
     enabled: false,
@@ -83,6 +108,13 @@ const DEFAULTS: ConfigData = {
   hook: {
     log_path: '~/.cc-bridge/hook.log',
     timeout: 10,
+  },
+  stream: {
+    enabled: true,
+    throttle_ms: 1500,
+    show_thinking: true,
+    max_card_bytes: 25000,
+    fallback_to_text: true,
   },
 };
 
@@ -96,6 +128,7 @@ function cloneDefaults(): ConfigData {
     queue: { ...DEFAULTS.queue },
     cli_proxy: { ...DEFAULTS.cli_proxy },
     hook: { ...DEFAULTS.hook },
+    stream: { ...DEFAULTS.stream },
   };
 }
 
@@ -111,6 +144,7 @@ export class ConfigManager {
       try {
         const fileData = parse(readFileSync(this.configPath, 'utf8'));
         this.merge(fileData);
+        this.normalizeCompatKeys(fileData);
       } catch (err) {
         console.warn(`配置文件解析失败: ${err}`);
       }
@@ -127,6 +161,24 @@ export class ConfigManager {
     }
   }
 
+  private normalizeCompatKeys(data?: any): void {
+    const rawFeishu = data?.feishu_bot ?? {};
+    if (!this.data.feishu_bot.owner_open_id && typeof rawFeishu.owner_user_id === 'string') {
+      this.data.feishu_bot.owner_open_id = rawFeishu.owner_user_id;
+    }
+
+    const rawQueue = data?.queue ?? {};
+    if (rawQueue.max_queue_size !== undefined && this.data.queue.max_pending === DEFAULTS.queue.max_pending) {
+      this.data.queue.max_pending = Number(rawQueue.max_queue_size);
+    }
+    if (rawQueue.archive_done_after_hours !== undefined && this.data.queue.done_retention_hours === DEFAULTS.queue.done_retention_hours) {
+      this.data.queue.done_retention_hours = Number(rawQueue.archive_done_after_hours);
+    }
+    if (rawQueue.archive_failed_after_days !== undefined && this.data.queue.failed_retention_days === DEFAULTS.queue.failed_retention_days) {
+      this.data.queue.failed_retention_days = Number(rawQueue.archive_failed_after_days);
+    }
+  }
+
   private loadEnv(): void {
     const mappings: [string, keyof ConfigData, string][] = [
       ['CC_BRIDGE_REGISTRY_PATH', 'general', 'registry_path'],
@@ -134,10 +186,17 @@ export class ConfigManager {
       ['CC_BRIDGE_LOG_PATH', 'general', 'log_path'],
       ['CC_BRIDGE_FEISHU_APP_ID', 'feishu_bot', 'app_id'],
       ['CC_BRIDGE_FEISHU_APP_SECRET', 'feishu_bot', 'app_secret'],
-      ['CC_BRIDGE_FEISHU_OWNER_USER_ID', 'feishu_bot', 'owner_user_id'],
+      ['CC_BRIDGE_FEISHU_OWNER_OPEN_ID', 'feishu_bot', 'owner_open_id'],
+      ['CC_BRIDGE_FEISHU_DEFAULT_CWD', 'feishu_bot', 'default_cwd'],
       ['CC_BRIDGE_MAX_CONCURRENT_SESSIONS', 'runtime', 'max_concurrent_sessions'],
-      ['CC_BRIDGE_MAX_QUEUE_SIZE', 'queue', 'max_queue_size'],
+      ['CC_BRIDGE_SESSION_LOCK_TIMEOUT_MS', 'runtime', 'session_lock_timeout_ms'],
+      ['CC_BRIDGE_MAX_QUEUE_SIZE', 'queue', 'max_pending'],
       ['CC_BRIDGE_CONFIRM_RISKY_ACTIONS', 'security', 'confirm_risky_actions'],
+      ['CC_BRIDGE_STREAM_ENABLED', 'stream', 'enabled'],
+      ['CC_BRIDGE_STREAM_THROTTLE_MS', 'stream', 'throttle_ms'],
+      ['CC_BRIDGE_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
+      ['CC_BRIDGE_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
+      ['CC_BRIDGE_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
     ];
 
     for (const [envKey, section, key] of mappings) {
@@ -153,6 +212,11 @@ export class ConfigManager {
           target[key] = value;
         }
       }
+    }
+
+    const legacyOwner = process.env.CC_BRIDGE_FEISHU_OWNER_USER_ID;
+    if (legacyOwner && !this.data.feishu_bot.owner_open_id) {
+      this.data.feishu_bot.owner_open_id = legacyOwner;
     }
   }
 
