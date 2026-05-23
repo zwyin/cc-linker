@@ -3,6 +3,7 @@ import { join } from 'path';
 import { CLAUDE_PROJECTS_DIR } from '../utils/paths';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
+import { StreamParser, StreamChunk, ResultChunk } from './stream-parser';
 
 export interface ClaudeSession {
   sessionId: string;
@@ -20,6 +21,7 @@ export interface SendMessageResult {
   sessionId: string;
   jsonlPath: string | null;
   sessionStatus: 'active' | 'provisioning' | 'degraded';
+  error?: string;
 }
 
 /**
@@ -75,7 +77,8 @@ export function cleanupOrphanProcesses(): void {
   try {
     // Filter to current user only and exclude our own process
     const uid = process.getuid?.() ?? 0;
-    const result = Bun.spawnSync(['pgrep', '-u', String(uid), '-f', 'claude -p.*--output-format json'], {
+    // Anchor to start of command line to avoid matching user message content
+    const result = Bun.spawnSync(['pgrep', '-u', String(uid), '-f', '^claude -p.*--output-format json'], {
       stdio: ['inherit', 'pipe', 'inherit'],
     });
     if (result.exitCode === 0) {
@@ -101,23 +104,15 @@ function expandPath(p: string): string {
   return p;
 }
 
-/** Parse a single JSONL line, returning null if not valid JSON */
-function parseJsonlLine(line: string): Record<string, unknown> | null {
-  if (!line.trim()) return null;
-  try {
-    return JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-/** Extract assistant text from a parsed JSONL entry */
-function extractAssistantText(entry: Record<string, unknown>): string | null {
-  if (entry.type !== 'assistant') return null;
-  const content = entry.message as Record<string, unknown> | undefined;
-  if (!content || !Array.isArray(content.content)) return null;
-  const textBlock = (content.content as Array<Record<string, unknown>>).find(b => b.type === 'text');
-  return textBlock?.text as string | null;
+interface ClaudeJsonOutput {
+  type?: string;
+  subtype?: string;
+  result?: string;
+  session_id?: string;
+  total_cost_usd?: number;
+  duration_ms?: number;
+  is_error?: boolean;
+  errors?: string[];
 }
 
 interface SessionLock {
@@ -144,10 +139,11 @@ export class ClaudeSessionManager {
     sessionId: string | null,
     text: string,
     cwd: string,
-    isNew?: boolean
+    isNew?: boolean,
+    lockKey?: string,
   ): Promise<SendMessageResult> {
-    const lockKey = sessionId ?? '__new__';
-    await this.acquireSessionLock(lockKey);
+    const resolvedLockKey = lockKey ?? sessionId ?? '__new__';
+    await this.acquireSessionLock(resolvedLockKey);
 
     try {
       await this.acquireSlot();
@@ -158,7 +154,7 @@ export class ClaudeSessionManager {
         this.releaseSlot();
       }
     } finally {
-      this.releaseSessionLock(lockKey);
+      this.releaseSessionLock(resolvedLockKey);
     }
   }
 
@@ -188,11 +184,25 @@ export class ClaudeSessionManager {
       };
     }
 
+    // Resolve full path to Claude binary to avoid PATH issues in daemon/env
+    const resolvedBin = Bun.which(args[0]);
+    if (!resolvedBin) {
+      const currentPath = process.env.PATH ?? '(未设置)';
+      return {
+        response: `Claude CLI 未找到: "${args[0]}" 不在 PATH 中。当前 PATH: ${currentPath.slice(0, 500)}`,
+        costUsd: 0,
+        durationMs: 0,
+        sessionId: sessionId ?? '',
+        jsonlPath: null,
+        sessionStatus: 'degraded',
+      };
+    }
+    args[0] = resolvedBin;
+
     const startTime = Date.now();
     let lastOutputAt = startTime;
-    let responseLines: string[] = [];
-    let currentSessionId: string | null = null;
-    let costUsd = 0;
+    let stdoutText = '';
+    let stderrText = '';
 
     const staleTimeout = config.get<number>('runtime.stale_timeout_ms', 5 * 60 * 1000);
     const hardTimeout = config.get<number>('runtime.hard_timeout_ms', 30 * 60 * 1000);
@@ -203,13 +213,31 @@ export class ClaudeSessionManager {
         cwd: expandedCwd,
         stdin: 'ignore',
         stdout: 'pipe',
-        stderr: 'ignore', // I4: ignore stderr to prevent backpressure hang
+        stderr: 'pipe',
         // C2: Create detached process group for proper process tree killing
         detached: true,
       });
     } catch (err: any) {
+      const isENOENT = err.code === 'ENOENT' || err.message?.includes('ENOENT');
+      let diag = `Failed to start Claude process: ${err.message}`;
+      if (isENOENT) {
+        try {
+          const f = Bun.file(args[0]);
+          const exists = await f.exists();
+          const stat = exists ? await f.stat() : null;
+          const isSym = stat && (stat as any).mode !== undefined ? ((stat.mode ?? 0) & 0o170000) === 0o120000 : false;
+          diag += ` [诊断: path=${args[0]}, exists=${exists}`;
+          if (stat) {
+            diag += `, size=${stat.size}, mode=${(stat.mode ?? 0).toString(8)}`;
+          }
+          diag += `, cwd=${expandedCwd}, PATH=${(process.env.PATH ?? '').slice(0, 200)}]`;
+        } catch (derr: any) {
+          diag += ` [诊断失败: ${derr.message}]`;
+        }
+        diag += ' (提示: 请确认 Claude CLI 已安装，或在 config.toml 中设置 general.claude_bin 为正确路径)';
+      }
       return {
-        response: `Failed to start Claude process: ${err.message}`,
+        response: diag,
         costUsd: 0,
         durationMs: Date.now() - startTime,
         sessionId: sessionId ?? '',
@@ -232,49 +260,31 @@ export class ClaudeSessionManager {
     };
     this.activeProcesses.set(trackKey, session);
 
-    // Read stdout line by line
-    const reader = proc.stdout.getReader();
+    const stdoutReader = proc.stdout.getReader();
+    const stderrReader = proc.stderr.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-
-    // I9: readPromise is awaited after exit to ensure stream is fully consumed
-    const readPromise = (async () => {
+    const readStream = async (
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      onChunk: (chunk: string) => void,
+    ) => {
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            responseLines.push(line);
-            lastOutputAt = Date.now();
-            session.lastOutputAt = lastOutputAt;
-
-            const parsed = parseJsonlLine(line);
-            if (!parsed) continue;
-
-            if (parsed.type === 'session_update' && parsed.session_id) {
-              currentSessionId = parsed.session_id as string;
-              // C2: Update tracking key once session_id is resolved
-              if (trackKey.startsWith('pid:')) {
-                this.activeProcesses.delete(trackKey);
-                session.sessionId = currentSessionId;
-                this.activeProcesses.set(currentSessionId, session);
-              }
-            }
-            if (parsed.type === 'result' && parsed.cost_usd !== undefined) {
-              costUsd = parsed.cost_usd as number;
-            }
-          }
+          const chunk = decoder.decode(value, { stream: true });
+          onChunk(chunk);
+          lastOutputAt = Date.now();
+          session.lastOutputAt = lastOutputAt;
         }
       } catch (err) {
         logger.warn(`会话 ${sessionId ?? 'new'} 读取流失败: ${err}`);
       }
-    })();
+    };
+
+    const readPromise = Promise.all([
+      readStream(stdoutReader, (chunk) => { stdoutText += chunk; }),
+      readStream(stderrReader, (chunk) => { stderrText += chunk; }),
+    ]);
 
     let exitCode: number | null = null;
     const exitPromise = (async () => {
@@ -303,7 +313,6 @@ export class ClaudeSessionManager {
     await Promise.race([exitPromise, sleep(hardTimeout + 5000)]);
     clearInterval(timeoutCheck);
 
-    // I9: Ensure read stream is fully consumed before extracting response
     await readPromise;
 
     // C3: Only SIGKILL if process is still alive (exitCode is still null)
@@ -318,46 +327,268 @@ export class ClaudeSessionManager {
 
     // Remove from active processes
     this.activeProcesses.delete(trackKey);
-    if (currentSessionId && trackKey !== currentSessionId) {
-      this.activeProcesses.delete(currentSessionId);
-    }
-
-    // I8: Extract response text in a single pass
-    const finalResponse = responseLines
-      .flatMap(line => {
-        const parsed = parseJsonlLine(line);
-        if (!parsed) return [line]; // non-JSON line, keep as-is
-        const text = extractAssistantText(parsed);
-        return text ? [text] : [];
-      })
-      .join('\n');
 
     const durationMs = Date.now() - startTime;
-    const resolvedSessionId = currentSessionId ?? sessionId ?? '';
+    let parsed: ClaudeJsonOutput | null = null;
 
-    let sessionStatus: 'active' | 'provisioning' | 'degraded' = 'active';
-    if (exitCode !== 0 && exitCode !== null) {
-      sessionStatus = 'degraded';
+    try {
+      parsed = JSON.parse(stdoutText.trim()) as ClaudeJsonOutput;
+    } catch {
+      parsed = null;
     }
 
+    const resolvedSessionId = parsed?.session_id ?? sessionId ?? '';
+    const finalResponse = parsed?.result?.trim() || '';
+    const baseError = parsed?.errors?.join('; ') || stderrText.trim();
+    const hasExecutionError = Boolean(parsed?.is_error) || (exitCode !== 0 && exitCode !== null);
+
     let jsonlPath: string | null = null;
+    let sessionStatus: 'active' | 'provisioning' | 'degraded' = hasExecutionError ? 'degraded' : 'active';
+
     if (isNew && resolvedSessionId) {
       jsonlPath = await resolveJsonlPath(resolvedSessionId);
+      if (!jsonlPath && sessionStatus === 'active') {
+        sessionStatus = 'provisioning';
+      }
+    }
+
+    let error: string | undefined;
+    if (hasExecutionError) {
+      error = baseError || 'unknown_error';
+    } else if (isNew && !resolvedSessionId) {
+      const stdoutPreview = stdoutText.trim().slice(0, 300);
+      const stderrPreview = stderrText.trim().slice(0, 300);
+      error = `Claude 未返回 session_id。exitCode=${exitCode}, stdout=${stdoutPreview || '(空)'}, stderr=${stderrPreview || '(空)'}`;
     }
 
     return {
-      response: finalResponse,
-      costUsd,
-      durationMs,
+      response: finalResponse || (hasExecutionError ? `Claude 执行失败: ${baseError || '未知错误'}` : '(空回复)'),
+      costUsd: parsed?.total_cost_usd ?? 0,
+      durationMs: parsed?.duration_ms ?? durationMs,
       sessionId: resolvedSessionId,
       jsonlPath,
       sessionStatus,
+      error,
+    };
+  }
+
+  /**
+   * Send a message to a Claude session with streaming output.
+   * Uses --output-format stream-json and calls onProgress for each chunk.
+   */
+  async sendStreamingMessage(
+    sessionId: string | null,
+    text: string,
+    cwd: string,
+    onProgress: (chunk: StreamChunk) => void,
+    isNew?: boolean,
+    lockKey?: string,
+  ): Promise<SendMessageResult> {
+    const resolvedLockKey = lockKey ?? sessionId ?? '__new__';
+    await this.acquireSessionLock(resolvedLockKey);
+
+    try {
+      await this.acquireSlot();
+
+      try {
+        return await this._doStreamingMessage(sessionId, text, cwd, onProgress, isNew ?? false);
+      } finally {
+        this.releaseSlot();
+      }
+    } finally {
+      this.releaseSessionLock(resolvedLockKey);
+    }
+  }
+
+  /** Core streaming message sending logic */
+  private async _doStreamingMessage(
+    sessionId: string | null,
+    text: string,
+    cwd: string,
+    onProgress: (chunk: StreamChunk) => void,
+    isNew: boolean,
+  ): Promise<SendMessageResult> {
+    const claudeBin = config.get<string>('general.claude_bin', 'claude');
+    const args: string[] = [claudeBin, '--print', '-p', text, '--output-format', 'stream-json', '--verbose'];
+
+    if (sessionId && !isNew) {
+      args.push('--resume', sessionId);
+    }
+
+    const expandedCwd = expandPath(cwd);
+    if (!expandedCwd) return this._errorResult('cwd is empty', sessionId);
+
+    const resolvedBin = Bun.which(args[0]);
+    if (!resolvedBin) return this._errorResult(`Claude CLI 未找到: "${args[0]}" 不在 PATH 中`, sessionId);
+    args[0] = resolvedBin;
+
+    const startTime = Date.now();
+    let lastOutputAt = startTime;
+    let stderrText = '';
+
+    const staleTimeout = config.get<number>('runtime.stale_timeout_ms', 5 * 60 * 1000);
+    const hardTimeout = config.get<number>('runtime.hard_timeout_ms', 30 * 60 * 1000);
+
+    let proc;
+    try {
+      proc = Bun.spawn(args, {
+        cwd: expandedCwd,
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+        detached: true,
+      });
+    } catch (err: any) {
+      return this._errorResult(`Failed to start Claude process: ${err.message}`, sessionId);
+    }
+
+    const procPid = proc.pid;
+    const trackKey = sessionId ?? `pid:${procPid}`;
+    this.activeProcesses.set(trackKey, {
+      sessionId: sessionId ?? '',
+      pid: procPid,
+      cwd: expandedCwd,
+      createdAt: startTime,
+      lastOutputAt: startTime,
+      isNew,
+    });
+
+    const parser = new StreamParser();
+    const decoder = new TextDecoder();
+    let stdoutBuffer = '';
+    let lastResult: ResultChunk | null = null;
+
+    const stdoutPromise = (async () => {
+      const reader = proc.stdout.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          stdoutBuffer += decoder.decode(value, { stream: true });
+          lastOutputAt = Date.now();
+          const lines = stdoutBuffer.split('\n');
+          stdoutBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const parsed = parser.parseLine(line);
+            if (parsed) {
+              if (parsed.type === 'result') lastResult = parsed as ResultChunk;
+              else onProgress(parsed);
+            }
+          }
+        }
+        // Handle remaining buffer
+        if (stdoutBuffer.trim()) {
+          const parsed = parser.parseLine(stdoutBuffer);
+          if (parsed) {
+            if (parsed.type === 'result') lastResult = parsed as ResultChunk;
+            else onProgress(parsed);
+          }
+        }
+      } catch (err) {
+        logger.warn(`Stream: read失败: ${err}`);
+      }
+    })();
+
+    const stderrPromise = (async () => {
+      const reader = proc.stderr.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          stderrText += decoder.decode(value, { stream: true });
+          lastOutputAt = Date.now();
+        }
+      } catch (err) {
+        logger.warn(`Stream: stderr 读取失败: ${err}`);
+      }
+    })();
+
+    let exitCode: number | null = null;
+    const exitPromise = (async () => { exitCode = await proc.exited; })();
+
+    const timeoutCheck = setInterval(() => {
+      const now = Date.now();
+      if (now - startTime >= hardTimeout || now - lastOutputAt >= staleTimeout) {
+        terminateProcessTree(procPid);
+        clearInterval(timeoutCheck);
+      }
+    }, 1000);
+
+    await Promise.race([exitPromise, stdoutPromise, stderrPromise, sleep(hardTimeout + 5000)]);
+    clearInterval(timeoutCheck);
+    await Promise.allSettled([stdoutPromise, stderrPromise]);
+
+    if (exitCode === null) {
+      try { process.kill(procPid, 'SIGKILL'); } catch {}
+    }
+    this.activeProcesses.delete(trackKey);
+
+    const durationMs = Date.now() - startTime;
+    return this._buildStreamingResult(lastResult, exitCode, stderrText, sessionId, startTime, durationMs, isNew);
+  }
+
+  private _errorResult(message: string, sessionId: string | null): SendMessageResult {
+    return {
+      response: message,
+      costUsd: 0,
+      durationMs: 0,
+      sessionId: sessionId ?? '',
+      jsonlPath: null,
+      sessionStatus: 'degraded',
+    };
+  }
+
+  private async _buildStreamingResult(
+    lastResult: ResultChunk | null,
+    exitCode: number | null,
+    stderrText: string,
+    sessionId: string | null,
+    startTime: number,
+    durationMs: number,
+    isNew: boolean,
+  ): Promise<SendMessageResult> {
+    let response = '';
+    let resolvedSessionId = sessionId ?? '';
+    let costUsd = 0;
+    let hasError = false;
+    let baseError = '';
+
+    if (lastResult) {
+      response = lastResult.result ?? '';
+      resolvedSessionId = lastResult.session_id || resolvedSessionId;
+      costUsd = lastResult.total_cost_usd ?? 0;
+      hasError = Boolean(lastResult.is_error) || lastResult.subtype !== 'success';
+      baseError = lastResult.errors?.join('; ') ?? '';
+    }
+
+    if (!response && exitCode !== 0) {
+      response = `Claude 执行失败: ${baseError || stderrText.trim() || '未知错误'}`;
+      hasError = true;
+    }
+    if (!response) response = '(空回复)';
+
+    let jsonlPath: string | null = null;
+    let sessionStatus: 'active' | 'provisioning' | 'degraded' = hasError ? 'degraded' : 'active';
+
+    if (isNew && resolvedSessionId) {
+      jsonlPath = await resolveJsonlPath(resolvedSessionId);
+      if (!jsonlPath && sessionStatus === 'active') sessionStatus = 'provisioning';
+    }
+
+    return {
+      response,
+      costUsd,
+      durationMs: lastResult?.duration_ms ?? durationMs,
+      sessionId: resolvedSessionId,
+      jsonlPath,
+      sessionStatus,
+      error: hasError ? (baseError || 'unknown_error') : undefined,
     };
   }
 
   /** Acquire per-session lock to prevent concurrent messages to same session */
   private async acquireSessionLock(key: string): Promise<void> {
-    const hardTimeout = config.get<number>('runtime.hard_timeout_ms', 30 * 60 * 1000);
+    const lockTimeout = config.get<number>('runtime.session_lock_timeout_ms', 10 * 60 * 1000);
     while (true) {
       const existing = this.sessionLocks.get(key);
       if (!existing) break;
@@ -366,7 +597,7 @@ export class ClaudeSessionManager {
         await Promise.race([
           existing.promise,
           new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error(`session lock timeout for ${key}`)), hardTimeout)
+            setTimeout(() => reject(new Error(`session lock timeout for ${key}`)), lockTimeout)
           ),
         ]);
       } catch {
