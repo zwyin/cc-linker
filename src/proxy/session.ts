@@ -78,7 +78,7 @@ export function cleanupOrphanProcesses(): void {
     // Filter to current user only and exclude our own process
     const uid = process.getuid?.() ?? 0;
     // Anchor to start of command line to avoid matching user message content
-    const result = Bun.spawnSync(['pgrep', '-u', String(uid), '-f', '^claude -p.*--output-format json'], {
+    const result = Bun.spawnSync(['pgrep', '-u', String(uid), '-f', '^claude -p.*--output-format (json|stream-json)'], {
       stdio: ['inherit', 'pipe', 'inherit'],
     });
     if (result.exitCode === 0) {
@@ -141,6 +141,7 @@ export class ClaudeSessionManager {
     cwd: string,
     isNew?: boolean,
     lockKey?: string,
+    settingsPath?: string,
   ): Promise<SendMessageResult> {
     const resolvedLockKey = lockKey ?? sessionId ?? '__new__';
     await this.acquireSessionLock(resolvedLockKey);
@@ -149,7 +150,7 @@ export class ClaudeSessionManager {
       await this.acquireSlot();
 
       try {
-        return await this._doSendMessage(sessionId, text, cwd, isNew ?? false);
+        return await this._doSendMessage(sessionId, text, cwd, isNew ?? false, settingsPath);
       } finally {
         this.releaseSlot();
       }
@@ -163,10 +164,18 @@ export class ClaudeSessionManager {
     sessionId: string | null,
     text: string,
     cwd: string,
-    isNew: boolean
+    isNew: boolean,
+    settingsPath?: string,
   ): Promise<SendMessageResult> {
     const claudeBin = config.get<string>('general.claude_bin', 'claude');
-    const args: string[] = [claudeBin, '-p', text, '--output-format', 'json'];
+    const args: string[] = [claudeBin];
+
+    // Inject --settings if provider path given
+    if (settingsPath) {
+      args.push('--settings', settingsPath);
+    }
+
+    args.push('-p', text, '--output-format', 'json');
 
     if (sessionId && !isNew) {
       args.push('--resume', sessionId);
@@ -383,6 +392,7 @@ export class ClaudeSessionManager {
     onProgress: (chunk: StreamChunk) => void,
     isNew?: boolean,
     lockKey?: string,
+    settingsPath?: string,
   ): Promise<SendMessageResult> {
     const resolvedLockKey = lockKey ?? sessionId ?? '__new__';
     await this.acquireSessionLock(resolvedLockKey);
@@ -391,7 +401,7 @@ export class ClaudeSessionManager {
       await this.acquireSlot();
 
       try {
-        return await this._doStreamingMessage(sessionId, text, cwd, onProgress, isNew ?? false);
+        return await this._doStreamingMessage(sessionId, text, cwd, onProgress, isNew ?? false, settingsPath);
       } finally {
         this.releaseSlot();
       }
@@ -407,9 +417,17 @@ export class ClaudeSessionManager {
     cwd: string,
     onProgress: (chunk: StreamChunk) => void,
     isNew: boolean,
+    settingsPath?: string,
   ): Promise<SendMessageResult> {
     const claudeBin = config.get<string>('general.claude_bin', 'claude');
-    const args: string[] = [claudeBin, '--print', '-p', text, '--output-format', 'stream-json', '--verbose'];
+    const args: string[] = [claudeBin];
+
+    // Inject --settings if provider path given
+    if (settingsPath) {
+      args.push('--settings', settingsPath);
+    }
+
+    args.push('-p', text, '--output-format', 'stream-json', '--verbose');
 
     if (sessionId && !isNew) {
       args.push('--resume', sessionId);
@@ -514,7 +532,7 @@ export class ClaudeSessionManager {
       }
     }, 1000);
 
-    await Promise.race([exitPromise, stdoutPromise, stderrPromise, sleep(hardTimeout + 5000)]);
+    await Promise.race([exitPromise, sleep(hardTimeout + 5000)]);
     clearInterval(timeoutCheck);
     await Promise.allSettled([stdoutPromise, stderrPromise]);
 
