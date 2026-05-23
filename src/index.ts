@@ -165,6 +165,14 @@ program
   .description('停止后台运行的 Bot 服务')
   .action(() => stop());
 
+program
+  .command('restart')
+  .description('重启 Bot 服务（先 stop 再 start --daemon）')
+  .action(() => withSync(async (registry) => {
+    const { restart } = await import('./cli/commands/restart');
+    await restart(registry);
+  }, true));
+
 const daemonCmd = program.command('daemon').description('管理后台 Bot 服务（开机自启）');
 daemonCmd.command('install').description('配置开机自动启动').action(() => installDaemon());
 daemonCmd.command('uninstall').description('移除开机自动启动').action(() => uninstallDaemon());

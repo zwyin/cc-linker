@@ -126,6 +126,7 @@ cc-linker status                    # 查看桥接状态
 | `cc-linker start` | 前台启动（阻塞终端） |
 | `cc-linker start --daemon` | 后台守护进程模式 |
 | `cc-linker stop` | 停止后台 Bot |
+| `cc-linker restart` | 重启 Bot 服务（先 stop 再 start --daemon） |
 | `cc-linker daemon install` | 配置开机自动启动 |
 | `cc-linker daemon uninstall` | 移除开机自启 |
 | `cc-linker daemon status` | 查看后台服务状态 |
