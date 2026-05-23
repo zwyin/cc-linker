@@ -1,7 +1,7 @@
 {
   "name": "cc-linker",
-  "version": "0.0.1",
-  "description": "Bridge Feishu IM and Claude Code CLI sessions — seamless session switching between terminal and chat",
+  "version": "0.0.2",
+  "description": "Bridge mobile chat apps and Claude Code CLI sessions — seamless conversation switching between terminal and IM",
   "license": "MIT",
   "author": "wuyujun",
   "repository": {
@@ -18,7 +18,9 @@
     "lark",
     "session",
     "bridge",
-    "cli"
+    "cli",
+    "chat-app",
+    "cross-platform"
   ],
   "bin": {
     "cc-linker": "./dist/cli.js"
