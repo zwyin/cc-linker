@@ -69,6 +69,8 @@ export class CardUpdater {
 
   private async flushPending(): Promise<void> {
     if (!this.pendingUpdate || !this.cardMessageId) return;
+    // Clear any pending timer — we're flushing now, no need for deferred call
+    if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = null; }
     const { thinking, text, elapsed } = this.pendingUpdate;
     await this.patchCard(this.buildStreamingCard(thinking, text, elapsed));
     this.pendingUpdate = null;
@@ -132,11 +134,14 @@ export class CardUpdater {
   private buildStreamingCard(thinking: string, text: string, elapsedMs: number): Record<string, unknown> {
     const elapsedSec = Math.floor(elapsedMs / 1000);
     const elements: Array<Record<string, unknown>> = [];
+    // Show full content but enforce byte limit to stay within Feishu's 30KB card body
+    const maxThinkingBytes = Math.min(2000, this.maxCardBytes);
+    const maxTextBytes = Math.min(8000, this.maxCardBytes);
     if (this.showThinking && thinking) {
-      elements.push({ tag: 'markdown', content: `**思考过程：**\n> ${esc(thinking.slice(-500))}` });
+      elements.push({ tag: 'markdown', content: `**思考过程：**\n> ${esc(truncateBytes(thinking, maxThinkingBytes))}` });
     }
     if (text) {
-      elements.push({ tag: 'markdown', content: `**回复：**\n${esc(text.slice(-2000))}` });
+      elements.push({ tag: 'markdown', content: `**回复：**\n${esc(truncateBytes(text, maxTextBytes))}` });
     }
     elements.push({ tag: 'markdown', content: `⏱ 已用时 ${elapsedSec}s` });
     return {
@@ -174,4 +179,18 @@ export class CardUpdater {
 
 function esc(text: string): string {
   return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function truncateBytes(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  const decoder = new TextDecoder();
+  let low = 0, high = bytes.length;
+  while (low < high) {
+    const mid = Math.floor((low + high + 1) / 2);
+    if (decoder.decode(bytes.slice(0, mid)).length <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  return decoder.decode(bytes.slice(0, low)) + '...';
 }

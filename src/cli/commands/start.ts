@@ -297,7 +297,8 @@ async function startForeground(registry: RegistryManager, opts: StartOptions): P
     };
     bot.setCardReplyFn(cardReplyFn);
 
-    // Create event handler for im.message.receive_v1 (messages) and card.action.trigger (card buttons)
+    // Set the Feishu client for streaming card updates
+    bot.setFeishuClient(client);
     const eventDispatcher = new EventDispatcher({}).register({
       'im.message.receive_v1': async (data: any) => {
         try {
@@ -590,6 +591,9 @@ async function startDaemonChild(registry: RegistryManager, opts: StartOptions): 
       }
     };
     bot.setCardReplyFn(cardReplyFn);
+
+    // Set the Feishu client for streaming card updates
+    bot.setFeishuClient(client);
 
     const eventDispatcher = new EventDispatcher({}).register({
       'im.message.receive_v1': async (data: any) => {

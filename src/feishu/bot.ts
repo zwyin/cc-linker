@@ -219,6 +219,10 @@ export class FeishuBot {
     this.cardReplyFn = fn;
   }
 
+  setFeishuClient(client: any): void {
+    this.feishuClient = client;
+  }
+
   isRunning(): boolean {
     return this.running || this.activeWorkers.size > 0;
   }
