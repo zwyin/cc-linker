@@ -6,6 +6,7 @@ import { StateCoordinator } from '../../runtime/state-coordinator';
 import { startupReconcile } from '../../runtime/reconciler';
 import { logger } from '../../utils/logger';
 import { config } from '../../utils/config';
+import { ProviderManager } from '../../utils/providers';
 import { cleanupOrphanProcesses } from '../../proxy/session';
 import { RUNTIME_PID_FILE, RUNTIME_LOG_FILE } from '../../utils/paths';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'fs';
@@ -181,6 +182,17 @@ async function createBotRuntime(
   let replyFn: FeishuReplyFn = async () => null;
   let cardReplyFn: FeishuBotCardReplyFn = async () => null;
 
+  const providerManager = new ProviderManager();
+
+  try {
+    await providerManager.scan();
+    const count = providerManager.list().length;
+    const source = providerManager.getSource();
+    log('INFO', `Provider scan complete: ${count} models found (source: ${source})`);
+  } catch (err) {
+    log('WARN', `Provider scan failed: ${err}`);
+  }
+
   cleanupOrphanProcesses();
 
   if (!stateCoordinator.tryAcquire()) {
@@ -213,6 +225,7 @@ async function createBotRuntime(
     listSnapshotManager,
     spoolQueue,
     registry,
+    providerManager,
     replyFn,
     cardReplyFn,
     feishuClient: client,
