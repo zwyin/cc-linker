@@ -81,9 +81,9 @@ export class CardUpdater {
     this.state = 'streaming';
   }
 
-  async complete(response: string, costUsd: number, durationMs: number, numTurns: number): Promise<void> {
+  async complete(response: string, tokensIn: number, tokensOut: number, durationMs: number, numTurns: number): Promise<void> {
     await this.flushPending();
-    await this.patchCard(this.buildCompleteCard(response, costUsd, durationMs, numTurns));
+    await this.patchCard(this.buildCompleteCard(response, tokensIn, tokensOut, durationMs, numTurns));
     this.state = 'complete';
   }
 
@@ -145,10 +145,11 @@ export class CardUpdater {
     };
   }
 
-  private buildCompleteCard(response: string, costUsd: number, durationMs: number, numTurns: number): Record<string, unknown> {
+  private buildCompleteCard(response: string, tokensIn: number, tokensOut: number, durationMs: number, numTurns: number): Record<string, unknown> {
     const display = this.truncateContent(response);
     const footer: string[] = [];
-    if (costUsd > 0) footer.push(`💰 费用: **$${costUsd.toFixed(2)}**`);
+    const totalTokens = tokensIn + tokensOut;
+    if (totalTokens > 0) footer.push(`🪙 ${formatTokenCount(totalTokens)} tokens`);
     footer.push(`⏱ 耗时: **${Math.floor(durationMs / 1000)}s**`);
     if (numTurns > 0) footer.push(`📊 轮数: **${numTurns}**`);
     return {
@@ -186,4 +187,10 @@ function truncateBytes(text: string, maxBytes: number): string {
     else high = mid - 1;
   }
   return text.slice(0, low) + '...';
+}
+
+function formatTokenCount(n: number): string {
+  if (n < 1000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 }

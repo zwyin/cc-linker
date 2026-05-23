@@ -12,6 +12,13 @@ export interface TextChunk {
   content: string;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export interface ResultChunk {
   type: 'result';
   result: string;
@@ -22,6 +29,7 @@ export interface ResultChunk {
   subtype?: string;
   is_error?: boolean;
   errors?: string[];
+  usage?: TokenUsage;
 }
 
 export type StreamChunk = ThinkingChunk | TextChunk | ResultChunk;
@@ -77,6 +85,7 @@ export class StreamParser {
       subtype: obj.subtype as string | undefined,
       is_error: obj.is_error as boolean | undefined,
       errors: obj.errors as string[] | undefined,
+      usage: obj.usage as TokenUsage | undefined,
     };
   }
 }
