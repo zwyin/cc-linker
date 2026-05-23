@@ -515,7 +515,7 @@ export class FeishuBot {
       if (cardUpdater) {
         if (cardUpdater.shouldFallbackToText(text)) {
           const truncated = cardUpdater.truncateContent(text);
-          await cardUpdater.complete(truncated, result.costUsd, result.durationMs, 1);
+          await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = text.slice(truncated.length);
           if (remainder && config.get<boolean>('stream.fallback_to_text', true)) {
             for (const chunk of splitReplyText(remainder, 3900)) {
@@ -523,7 +523,7 @@ export class FeishuBot {
             }
           }
         } else {
-          await cardUpdater.complete(text, result.costUsd, result.durationMs, 1);
+          await cardUpdater.complete(text, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
         }
         cardMessageId = cardUpdater.getCardMessageId();
         cardUpdater.dispose();
@@ -637,7 +637,7 @@ export class FeishuBot {
       if (cardUpdater) {
         if (cardUpdater.shouldFallbackToText(text)) {
           const truncated = cardUpdater.truncateContent(text);
-          await cardUpdater.complete(truncated, result.costUsd, result.durationMs, 1);
+          await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = text.slice(truncated.length);
           if (remainder && config.get<boolean>('stream.fallback_to_text', true)) {
             for (const chunk of splitReplyText(remainder, 3900)) {
@@ -645,7 +645,7 @@ export class FeishuBot {
             }
           }
         } else {
-          await cardUpdater.complete(text, result.costUsd, result.durationMs, 1);
+          await cardUpdater.complete(text, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
         }
         cardMessageId = cardUpdater.getCardMessageId();
         cardUpdater.dispose();
@@ -909,7 +909,7 @@ export class FeishuBot {
     const newEntry = entry
       ? { ...entry, defaultProvider: provider.alias }
       : {
-          type: 'session' as const,
+          type: 'pending_new_session' as const,
           sessionUuid: null,
           createdAt: new Date().toISOString(),
           defaultProvider: provider.alias,
@@ -1117,13 +1117,13 @@ export class FeishuBot {
     } else {
       // Fallback to text
       const lines = [`📋 我的会话（最近 ${sessions.length} 个，共 ${allSessions.length} 个）`, ''];
-      for (const [index, [uuid, entry]] of sessions.entries()) {
-        const providerTag = (entry as any).lastKnownProvider
-          ? ` [${(entry as any).lastKnownProvider}]`
+      for (const [index, [uuid, session]] of sessions.entries()) {
+        const providerTag = session.lastKnownProvider
+          ? ` [${session.lastKnownProvider}]`
           : '';
-        lines.push(`${index + 1}. ${entry.title ?? 'Untitled'}${providerTag}`);
+        lines.push(`${index + 1}. ${session.title ?? 'Untitled'}${providerTag}`);
         lines.push(`   ID: ${uuid.slice(0, 8)}`);
-        lines.push(`   ${formatOrigin(entry.origin, entry.status)} | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${entry.project_name ?? basename(entry.cwd)}`);
+        lines.push(`   ${formatOrigin(session.origin, session.status)} | ${session.message_count}条 | ${formatTimeAgo(session.last_active)} | ${session.project_name ?? basename(session.cwd)}`);
         lines.push('');
       }
       if (hasMore) lines.push(`... 还有 ${allSessions.length - MAX_LIST_ITEMS} 个更早的会话未显示`);

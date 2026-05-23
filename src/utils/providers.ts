@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'fs';
 import { join, basename } from 'path';
-import { CC_BRIDGE_DIR } from './paths';
+import { CC_BRIDGE_DIR, expandPath } from './paths';
 import { logger } from './logger';
 import { Database } from 'bun:sqlite';
 
@@ -11,12 +11,6 @@ export interface ProviderConfig {
   name: string;
   path: string;
   isTemp: boolean;
-}
-
-function expandPath(p: string): string {
-  if (p === '~') return process.env.HOME ?? '';
-  if (p.startsWith('~/')) return join(process.env.HOME ?? '', p.slice(2));
-  return p;
 }
 
 async function dirExists(path: string): Promise<boolean> {
@@ -147,7 +141,7 @@ export class ProviderManager {
 
     const filteredEnv: Record<string, string> = {};
     for (const key of allowedEnvKeys) {
-      if (env[key] !== undefined) {
+      if (env[key] !== undefined && env[key] !== null) {
         filteredEnv[key] = String(env[key]);
       }
     }

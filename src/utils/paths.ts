@@ -33,6 +33,13 @@ export const SPOOL_FAILED_DIR = join(SPOOL_DIR, 'failed');
 export const SPOOL_RECEIPTS_DIR = join(SPOOL_DIR, 'receipts');
 export const SPOOL_DELIVERIES_DIR = join(SPOOL_DIR, 'deliveries');
 
+/** Expand ~/ to absolute path */
+export function expandPath(p: string): string {
+  if (p === '~') return process.env.HOME ?? '';
+  if (p.startsWith('~/')) return join(process.env.HOME ?? '', p.slice(2));
+  return p;
+}
+
 // Claude paths
 export const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
 export const CLAUDE_SETTINGS_PATH = join(HOME, '.claude', 'settings.json');

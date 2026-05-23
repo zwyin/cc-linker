@@ -1,6 +1,6 @@
 import { readdirSync, existsSync } from 'fs';
 import { join } from 'path';
-import { CLAUDE_PROJECTS_DIR } from '../utils/paths';
+import { CLAUDE_PROJECTS_DIR, expandPath } from '../utils/paths';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
 import { StreamParser, StreamChunk, ResultChunk } from './stream-parser';
@@ -22,6 +22,8 @@ export interface SendMessageResult {
   jsonlPath: string | null;
   sessionStatus: 'active' | 'provisioning' | 'degraded';
   error?: string;
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 /**
@@ -97,11 +99,12 @@ export function cleanupOrphanProcesses(): void {
   }
 }
 
-/** Expand ~/ to absolute path */
-function expandPath(p: string): string {
-  if (p === '~') return process.env.HOME ?? '';
-  if (p.startsWith('~/')) return join(process.env.HOME ?? '', p.slice(2));
-  return p;
+
+interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 interface ClaudeJsonOutput {
@@ -113,6 +116,7 @@ interface ClaudeJsonOutput {
   duration_ms?: number;
   is_error?: boolean;
   errors?: string[];
+  usage?: TokenUsage;
 }
 
 interface SessionLock {
@@ -175,7 +179,7 @@ export class ClaudeSessionManager {
       args.push('--settings', settingsPath);
     }
 
-    args.push('-p', text, '--output-format', 'json');
+    args.push('-p', text, '--output-format', 'json', '--verbose');
 
     if (sessionId && !isNew) {
       args.push('--resume', sessionId);
@@ -378,6 +382,8 @@ export class ClaudeSessionManager {
       jsonlPath,
       sessionStatus,
       error,
+      tokensIn: parsed?.usage?.input_tokens,
+      tokensOut: parsed?.usage?.output_tokens,
     };
   }
 
@@ -601,6 +607,8 @@ export class ClaudeSessionManager {
       jsonlPath,
       sessionStatus,
       error: hasError ? (baseError || 'unknown_error') : undefined,
+      tokensIn: lastResult?.usage?.input_tokens,
+      tokensOut: lastResult?.usage?.output_tokens,
     };
   }
 
