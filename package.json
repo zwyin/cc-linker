@@ -1,6 +1,6 @@
 {
   "name": "cc-linker",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Bridge mobile chat apps and Claude Code CLI sessions — seamless conversation switching between terminal and IM",
   "license": "MIT",
   "author": "wuyujun",
@@ -32,7 +32,7 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --compile --outfile dist/cc-linker",
-    "build:npm": "bun build src/index.ts --outdir dist --target node --sourcemap && mv dist/index.js dist/cli.js && mv dist/index.js.map dist/cli.js.map 2>/dev/null; chmod +x dist/cli.js",
+    "build:npm": "bun build src/index.ts --outdir dist --target bun --sourcemap && mv dist/index.js dist/cli.js && mv dist/index.js.map dist/cli.js.map 2>/dev/null; chmod +x dist/cli.js",
     "prepublishOnly": "bun run build:npm",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
