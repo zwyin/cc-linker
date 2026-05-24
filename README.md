@@ -225,7 +225,16 @@ permission_mode = "acceptEdits"
 # 默认空数组，表示遵从 Claude Code 本地设置
 # 若配置此项，会覆盖本地设置。示例：["Bash", "Write"]
 # disallowed_tools = []
+
+[sdk]
+# 启用 Agent SDK 模式（支持飞书卡片上的交互式权限确认）
+# enabled = false              # 默认关闭，设为 true 启用 SDK 模式
+# permission_mode = "acceptEdits"  # SDK 基础权限模式
+# timeout_ms = 600000          # 权限确认超时（10分钟）
+# claude_executable = "claude" # Claude 可执行文件路径
 ```
+
+**注意：** SDK 模式需要系统已安装 `claude` 命令行工具（`npm install -g @anthropic-ai/claude-code`）。编译后的二进制文件使用 `pathToClaudeCodeExecutable` 指向系统安装的 claude。
 
 **环境变量覆盖**：
 
@@ -239,6 +248,10 @@ permission_mode = "acceptEdits"
 | `CC_LINKER_CLAUDE_PERMISSION_MODE` | Claude Code 权限模式 |
 | `CC_LINKER_CLAUDE_ALLOWED_TOOLS` | 允许的工具列表（逗号分隔） |
 | `CC_LINKER_CLAUDE_DISALLOWED_TOOLS` | 禁止的工具列表（逗号分隔） |
+| `CC_LINKER_SDK_ENABLED` | 启用 Agent SDK 模式（true/false） |
+| `CC_LINKER_SDK_PERMISSION_MODE` | SDK 权限模式 |
+| `CC_LINKER_SDK_TIMEOUT_MS` | 权限确认超时（毫秒） |
+| `CC_LINKER_SDK_CLAUDE_EXECUTABLE` | Claude 可执行文件路径 |
 
 ## 🏗 架构概览
 
