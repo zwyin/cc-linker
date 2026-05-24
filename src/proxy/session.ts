@@ -183,6 +183,21 @@ export class ClaudeSessionManager {
 
     args.push('-p', text, '--output-format', 'json', '--verbose');
 
+    const permissionMode = config.get<string>('claude.permission_mode', 'acceptEdits');
+    if (permissionMode) {
+      args.push('--permission-mode', permissionMode);
+    }
+
+    const allowedTools = config.get<string[]>('claude.allowed_tools', []);
+    if (allowedTools.length > 0) {
+      args.push('--allowedTools', allowedTools.join(','));
+    }
+
+    const disallowedTools = config.get<string[]>('claude.disallowed_tools', []);
+    if (disallowedTools.length > 0) {
+      args.push('--disallowedTools', disallowedTools.join(','));
+    }
+
     if (sessionId && !isNew) {
       args.push('--resume', sessionId);
     }
@@ -438,6 +453,21 @@ export class ClaudeSessionManager {
     }
 
     args.push('-p', text, '--output-format', 'stream-json', '--verbose');
+
+    const permissionMode = config.get<string>('claude.permission_mode', 'acceptEdits');
+    if (permissionMode) {
+      args.push('--permission-mode', permissionMode);
+    }
+
+    const allowedTools = config.get<string[]>('claude.allowed_tools', []);
+    if (allowedTools.length > 0) {
+      args.push('--allowedTools', allowedTools.join(','));
+    }
+
+    const disallowedTools = config.get<string[]>('claude.disallowed_tools', []);
+    if (disallowedTools.length > 0) {
+      args.push('--disallowedTools', disallowedTools.join(','));
+    }
 
     if (sessionId && !isNew) {
       args.push('--resume', sessionId);

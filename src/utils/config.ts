@@ -59,6 +59,11 @@ interface ConfigData {
     max_card_bytes: number;
     fallback_to_text: boolean;
   };
+  claude: {
+    permission_mode: string;
+    allowed_tools: string[];
+    disallowed_tools: string[];
+  };
 }
 
 const DEFAULTS: ConfigData = {
@@ -116,6 +121,11 @@ const DEFAULTS: ConfigData = {
     max_card_bytes: 25000,
     fallback_to_text: true,
   },
+  claude: {
+    permission_mode: 'acceptEdits',
+    allowed_tools: [],
+    disallowed_tools: [],
+  },
 };
 
 function cloneDefaults(): ConfigData {
@@ -129,6 +139,7 @@ function cloneDefaults(): ConfigData {
     cli_proxy: { ...DEFAULTS.cli_proxy },
     hook: { ...DEFAULTS.hook },
     stream: { ...DEFAULTS.stream },
+    claude: { ...DEFAULTS.claude },
   };
 }
 
@@ -197,7 +208,18 @@ export class ConfigManager {
       ['CC_LINKER_STREAM_SHOW_THINKING', 'stream', 'show_thinking'],
       ['CC_LINKER_STREAM_MAX_CARD_BYTES', 'stream', 'max_card_bytes'],
       ['CC_LINKER_STREAM_FALLBACK_TO_TEXT', 'stream', 'fallback_to_text'],
+      ['CC_LINKER_CLAUDE_PERMISSION_MODE', 'claude', 'permission_mode'],
     ];
+
+    // Parse array env vars for Claude tools
+    const allowedToolsEnv = process.env.CC_LINKER_CLAUDE_ALLOWED_TOOLS;
+    if (allowedToolsEnv !== undefined) {
+      this.data.claude.allowed_tools = allowedToolsEnv.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    const disallowedToolsEnv = process.env.CC_LINKER_CLAUDE_DISALLOWED_TOOLS;
+    if (disallowedToolsEnv !== undefined) {
+      this.data.claude.disallowed_tools = disallowedToolsEnv.split(',').map(s => s.trim()).filter(Boolean);
+    }
 
     for (const [envKey, section, key] of mappings) {
       const value = process.env[envKey];

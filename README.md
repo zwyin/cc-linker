@@ -82,7 +82,7 @@
 
 ```bash
 # npm 全局安装
-npm install -g cc-linker
+npm install -g cc-linker@latest
 
 # 或 bun 全局安装
 bun add -g cc-linker
@@ -209,6 +209,22 @@ throttle_ms = 1500
 show_thinking = true
 max_card_bytes = 25000
 fallback_to_text = true
+
+[claude]
+# 权限模式：控制 Claude Code 执行操作时的交互确认行为
+# 由于飞书端无法完成终端式交互确认，默认自动接受文件编辑
+# 可选值：acceptEdits / auto / bypassPermissions / default / dontAsk / plan
+permission_mode = "acceptEdits"
+
+# 工具白名单（可选）：显式允许的工具列表
+# 默认空数组，表示遵从 Claude Code 本地设置（~/.claude/settings.json）
+# 若配置此项，会覆盖本地设置。示例：["Read", "Edit", "Bash(git *)"]
+# allowed_tools = []
+
+# 工具黑名单（可选）：显式禁止的工具列表
+# 默认空数组，表示遵从 Claude Code 本地设置
+# 若配置此项，会覆盖本地设置。示例：["Bash", "Write"]
+# disallowed_tools = []
 ```
 
 **环境变量覆盖**：
@@ -220,6 +236,9 @@ fallback_to_text = true
 | `CC_LINKER_FEISHU_OWNER_OPEN_ID` | 限制仅指定用户使用 |
 | `CC_LINKER_STREAM_ENABLED` | 流式响应开关 |
 | `CC_LINKER_LOG_LEVEL` | 日志级别 |
+| `CC_LINKER_CLAUDE_PERMISSION_MODE` | Claude Code 权限模式 |
+| `CC_LINKER_CLAUDE_ALLOWED_TOOLS` | 允许的工具列表（逗号分隔） |
+| `CC_LINKER_CLAUDE_DISALLOWED_TOOLS` | 禁止的工具列表（逗号分隔） |
 
 ## 🏗 架构概览
 
