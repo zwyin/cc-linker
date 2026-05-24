@@ -6,7 +6,8 @@
       "mcp__MiniMax__web_search",
       "mcp__plugin_superpowers-chrome_chrome__use_browser",
       "Bash(git *)",
-      "Bash(bun run *)"
+      "Bash(bun run *)",
+      "Bash(npm version *)"
     ]
   }
 }
