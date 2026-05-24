@@ -79,9 +79,19 @@ if [ -n "$BRIDGE_TOKEN" ]; then
   # 创建或更新 cc-linker 配置
   if [ -f "$CC_LINKER_CONFIG" ]; then
     # 更新现有配置
-    if grep -q '\[bridge\]' "$CC_LINKER_CONFIG"; then
-      # 更新 token
-      sed -i.bak "s/token = .*/token = \"${BRIDGE_TOKEN}\"/" "$CC_LINKER_CONFIG"
+    if grep -q '^\[bridge\]' "$CC_LINKER_CONFIG"; then
+      # 只在 [bridge] 段内替换 token，避免误改其他段的 token
+      awk -v token="$BRIDGE_TOKEN" '
+        BEGIN { in_bridge = 0 }
+        /^\[bridge\]/ { in_bridge = 1 }
+        /^\[/ && !/^\[bridge\]/ { in_bridge = 0 }
+        in_bridge && /^[[:space:]]*token[[:space:]]*=/ {
+          print "token = \"" token "\""
+          next
+        }
+        { print }
+      ' "$CC_LINKER_CONFIG" > "${CC_LINKER_CONFIG}.tmp"
+      mv "${CC_LINKER_CONFIG}.tmp" "$CC_LINKER_CONFIG"
     else
       # 添加 bridge 段
       cat >> "$CC_LINKER_CONFIG" << EOF

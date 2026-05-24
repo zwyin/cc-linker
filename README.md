@@ -270,17 +270,63 @@ bun run dev <命令>        # 开发模式
 bun run typecheck         # 类型检查
 bun test                  # 运行测试
 bun test --coverage       # 带覆盖率
-bun run build             # 编译为独立二进制文件
 ```
 
-### 编译和发布
+### 两种构建产物
+
+cc-linker 支持两种分发形式，构建脚本不同：
+
+| 产物 | 构建命令 | 输出 | 用途 |
+|------|----------|------|------|
+| **独立二进制** | `bun run build` | `dist/cc-linker` | 单机使用，无需依赖 |
+| **npm 包** | `bun run build:npm` | `dist/cli.js` | `npm install -g` 全局安装 |
+
+### npm 包本地测试
+
+正式发布前，建议先在本地打包安装验证，确保 `files` 字段和 `bin` 入口正确。
+
+**方法 1：pack + install（最接近真实发布）**
+
+```bash
+# 1. 构建并打包
+bun run build:npm         # 生成 dist/cli.js
+npm pack                  # → cc-linker-x.y.z.tgz
+
+# 2. 在干净环境安装测试
+mkdir -p /tmp/test-cc-linker && cd /tmp/test-cc-linker
+npm install /path/to/cc-linker-0.2.0.tgz
+npx cc-linker --version   # 验证命令可用
+cc-linker list            # 验证功能正常
+
+# 3. 特别验证 daemon install 生成的 plist/service 中可执行路径正确
+cc-linker daemon install  # 检查生成的配置文件中 ProgramArguments/ExecStart
+```
+
+**方法 2：bun link（开发迭代最快）**
+
+```bash
+# 创建全局符号链接，修改代码后重新 build:npm 立即生效
+bun run build:npm
+bun link                  # 或 npm link
+
+# 全局任意位置测试
+cc-linker list
+cc-linker daemon install
+
+# 解除链接
+bun unlink cc-linker
+```
+
+> ⚠️ `bun link` 是符号链接到源码目录，不经过 `files` 字段过滤。发布前**务必用方法 1 验证一次**，避免 `files` 遗漏必要文件。
+
+### 发布
 
 ```bash
 # 独立二进制（本地分发）
 bun run build             # → dist/cc-linker
 
 # npm 发布
-npm version minor
+npm version minor         # 或 patch / major
 npm publish               # prepublishOnly 自动触发 build:npm
 git push --tags
 ```

@@ -279,7 +279,6 @@ async function runFeishuWizard(existingAppId = '', existingAppSecret = ''): Prom
     console.log(chalk.cyan('  启动 Bot 服务...'));
     const { spawnSync } = await import('child_process');
     const { join } = await import('path');
-    const { existsSync } = await import('fs');
 
     // Detect cc-linker executable (supports compiled binary + dev mode)
     let exePath = 'cc-linker';
@@ -292,7 +291,22 @@ async function runFeishuWizard(existingAppId = '', existingAppSecret = ''): Prom
     }
 
     const cmdResult = spawnSync(exePath, ['start', '--daemon'], { stdio: 'inherit' });
-    result.started = cmdResult.status === 0;
+
+    // Verify daemon actually started by checking PID file and process liveness
+    await new Promise(r => setTimeout(r, 2000));
+    const { RUNTIME_PID_FILE } = await import('../../utils/paths');
+    let verified = false;
+    if (existsSync(RUNTIME_PID_FILE)) {
+      try {
+        const pid = parseInt(readFileSync(RUNTIME_PID_FILE, 'utf8').trim(), 10);
+        process.kill(pid, 0);
+        verified = true;
+      } catch {
+        // PID file exists but process is dead
+      }
+    }
+
+    result.started = cmdResult.status === 0 && verified;
     if (result.started) {
       console.log(chalk.green('  ✅ Bot 已启动'));
     } else {

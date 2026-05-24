@@ -15,7 +15,26 @@ function getExecutablePath(): string {
   // If running from compiled binary, use that path
   const exe = process.argv[0];
   if (exe.endsWith('cc-linker')) return exe;
-  // npm installed: bin name is cc-linker
+
+  // Try to find in PATH via 'which'
+  const whichResult = spawnSync('which', ['cc-linker']);
+  if (whichResult.status === 0) {
+    const found = whichResult.stdout.toString().trim();
+    if (found) return found;
+  }
+
+  // Common install paths
+  const candidates = [
+    join(HOME, '.local', 'bin', 'cc-linker'),
+    '/usr/local/bin/cc-linker',
+    '/opt/homebrew/bin/cc-linker',
+    '/usr/bin/cc-linker',
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+
+  // Final fallback: assume 'cc-linker' is in PATH
   return 'cc-linker';
 }
 
@@ -32,7 +51,6 @@ function getLinuxServicePath(): string {
 /** Generate macOS launchd plist */
 function generateMacOSPlist(): string {
   const exe = getExecutablePath();
-  const cwd = dirname(exe) === '.' ? process.cwd() : dirname(exe);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -44,22 +62,21 @@ function generateMacOSPlist(): string {
   <array>
     <string>${exe}</string>
     <string>start</string>
-    <string>--daemon</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${cwd}</string>
+  <string>${HOME}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
-  <key>StandardOutPath</key>
-  <string>${RUNTIME_LOG_FILE}</string>
-  <key>StandardErrorPath</key>
-  <string>${RUNTIME_LOG_FILE}</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>CC_LINKER_DAEMON</key>
+    <string>1</string>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}</string>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}</string>
   </dict>
 </dict>
 </plist>`;
@@ -68,22 +85,21 @@ function generateMacOSPlist(): string {
 /** Generate Linux systemd service file */
 function generateLinuxService(): string {
   const exe = getExecutablePath();
-  const cwd = dirname(exe) === '.' ? process.cwd() : dirname(exe);
 
   return `[Unit]
 Description=cc-linker Feishu Bot Daemon
 After=network.target
 
 [Service]
-Type=forking
-ExecStart=${exe} start --daemon
+Type=simple
+ExecStart=${exe} start
 ExecStop=${exe} stop
-WorkingDirectory=${cwd}
+WorkingDirectory=${HOME}
 Restart=always
 RestartSec=10
-StandardOutput=append:${RUNTIME_LOG_FILE}
-StandardError=append:${RUNTIME_LOG_FILE}
-Environment=PATH=/usr/local/bin:/usr/bin:${process.env.PATH || ''}
+PIDFile=${RUNTIME_PID_FILE}
+Environment="CC_LINKER_DAEMON=1"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}"
 
 [Install]
 WantedBy=default.target`;
@@ -119,6 +135,12 @@ async function installMacOS(): Promise<void> {
       console.log(chalk.gray('已取消'));
       return;
     }
+
+    // Stop any running instance and unload existing config before overwriting
+    const exe = getExecutablePath();
+    spawnSync(exe, ['stop']);
+    spawnSync('launchctl', ['stop', 'com.cclinker.daemon']);
+    spawnSync('launchctl', ['unload', plistPath]);
   }
 
   mkdirSync(dirname(plistPath), { recursive: true });
@@ -132,6 +154,10 @@ async function installMacOS(): Promise<void> {
 
   // Also start immediately
   const startResult = spawnSync('launchctl', ['start', 'com.cclinker.daemon']);
+  if (startResult.status !== 0) {
+    const err = startResult.stderr.toString().trim();
+    if (err) console.log(chalk.yellow(`⚠️ launchctl start 警告: ${err}`));
+  }
 
   console.log(chalk.green('✅ 开机自启已配置'));
   console.log(chalk.cyan(`   配置: ${plistPath}`));
@@ -158,6 +184,12 @@ async function installLinux(): Promise<void> {
       console.log(chalk.gray('已取消'));
       return;
     }
+
+    // Stop any running instance and disable existing service before overwriting
+    const exe = getExecutablePath();
+    spawnSync(exe, ['stop']);
+    spawnSync('systemctl', ['--user', 'stop', 'cc-linker.service']);
+    spawnSync('systemctl', ['--user', 'disable', 'cc-linker.service']);
   }
 
   mkdirSync(dirname(servicePath), { recursive: true });
@@ -166,17 +198,23 @@ async function installLinux(): Promise<void> {
   // Reload systemd
   const reloadResult = spawnSync('systemctl', ['--user', 'daemon-reload']);
   if (reloadResult.status !== 0) {
-    console.log(chalk.yellow(`⚠️ systemctl daemon-reload 警告: ${reloadResult.stderr.toString().trim()}`));
+    const err = reloadResult.stderr.toString().trim();
+    if (err) console.log(chalk.yellow(`⚠️ systemctl daemon-reload 警告: ${err}`));
   }
 
   // Enable for autostart
   const enableResult = spawnSync('systemctl', ['--user', 'enable', 'cc-linker.service']);
   if (enableResult.status !== 0) {
-    console.log(chalk.yellow(`⚠️ systemctl enable 警告: ${enableResult.stderr.toString().trim()}`));
+    const err = enableResult.stderr.toString().trim();
+    if (err) console.log(chalk.yellow(`⚠️ systemctl enable 警告: ${err}`));
   }
 
   // Start immediately
   const startResult = spawnSync('systemctl', ['--user', 'start', 'cc-linker.service']);
+  if (startResult.status !== 0) {
+    const err = startResult.stderr.toString().trim();
+    if (err) console.log(chalk.yellow(`⚠️ systemctl start 警告: ${err}`));
+  }
 
   console.log(chalk.green('✅ 开机自启已配置'));
   console.log(chalk.cyan(`   配置: ${servicePath}`));
@@ -208,7 +246,8 @@ async function uninstallMacOS(): Promise<void> {
     return;
   }
 
-  // Unload
+  // Stop first, then unload
+  spawnSync('launchctl', ['stop', 'com.cclinker.daemon']);
   spawnSync('launchctl', ['unload', plistPath]);
 
   // Remove file
@@ -273,15 +312,21 @@ export async function daemonStatus(): Promise<void> {
     }
   }
 
-  // Show recent logs
+  // Show recent logs (tail last 10 lines to avoid loading large files)
   if (existsSync(RUNTIME_LOG_FILE)) {
-    const log = readFileSync(RUNTIME_LOG_FILE, 'utf8');
-    const lines = log.trim().split('\n').filter(Boolean).slice(-5);
-    if (lines.length > 0) {
-      console.log(chalk.cyan('\n最近日志:'));
-      for (const line of lines) {
-        console.log(chalk.gray(`   ${line}`));
+    try {
+      const tailResult = spawnSync('tail', ['-n', '10', RUNTIME_LOG_FILE]);
+      if (tailResult.status === 0) {
+        const lines = tailResult.stdout.toString().trim().split('\n').filter(Boolean).slice(-5);
+        if (lines.length > 0) {
+          console.log(chalk.cyan('\n最近日志:'));
+          for (const line of lines) {
+            console.log(chalk.gray(`   ${line}`));
+          }
+        }
       }
+    } catch {
+      // Ignore tail errors
     }
   }
 }
