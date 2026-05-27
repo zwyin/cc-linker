@@ -1,4 +1,4 @@
-import { basename, dirname, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { UserManager } from './mapping';
 import { ListSnapshotManager, ListSnapshotEntry } from './list-snapshot';
@@ -1713,15 +1713,22 @@ export class FeishuBot {
 
   private async doSelectDir(openId: string, path: string, messageId?: string): Promise<string> {
     if (!path) {
-      return '参数错误：缺少目录路径';
+      const reply = '参数错误：缺少目录路径';
+      await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+      return reply;
     }
 
     const normalized = normalizeCwd(path);
     const validationError = validateCwd(normalized);
-    if (validationError) return validationError;
+    if (validationError) {
+      await this.replyFn(validationError, { messageId, openId, requestUuid: uniqueUuid() });
+      return validationError;
+    }
 
     if (!existsSync(normalized)) {
-      return `❌ 目录 ${normalized} 不存在`;
+      const reply = `❌ 目录 ${normalized} 不存在`;
+      await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+      return reply;
     }
 
     const currentEntry = this.userManager.getEntry(openId);
@@ -1737,10 +1744,16 @@ export class FeishuBot {
       },
     );
 
-    if (!swapped) return '⚠️ 操作冲突，请重试';
+    if (!swapped) {
+      const reply = '⚠️ 操作冲突，请重试';
+      await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+      return reply;
+    }
 
     this.spoolQueue.recordReceipt(messageId ?? '');
-    return `✅ 已切换到 ${normalized}\n发送消息即可在该目录创建新会话。`;
+    const reply = `✅ 已切换到 ${normalized}\n发送消息即可在该目录创建新会话。`;
+    await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+    return reply;
   }
 
   private async doResume(openId: string, uuid: string, messageId?: string): Promise<string> {
@@ -1917,7 +1930,7 @@ function buildDirListCard(
           tag: 'button',
           text: { tag: 'plain_text', content: `📁 ${dir}` },
           type: 'primary',
-          value: { tag: 'select_dir', sessionId: `${cwd}/${dir}` },
+          value: { tag: 'select_dir', sessionId: join(cwd, dir) },
         }],
       });
     }

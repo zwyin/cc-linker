@@ -878,6 +878,7 @@ describe('FeishuBot /listDir', () => {
 
   it('handleCardAction routes select_dir', async () => {
     const targetDir = join(tmpDir, 'project-a');
+    const repliesBefore = textReplies.length;
 
     const result = await bot.handleCardAction({
       open_id: 'ou_user1',
@@ -887,6 +888,10 @@ describe('FeishuBot /listDir', () => {
 
     expect(result).toContain('已切换到');
     expect(result).toContain(targetDir);
+
+    // Verify reply was actually sent to user
+    expect(textReplies.length).toBe(repliesBefore + 1);
+    expect(textReplies[textReplies.length - 1]).toContain('已切换到');
 
     const entry = userManager.getEntry('ou_user1');
     expect(entry?.type).toBe('pending_new_session');
