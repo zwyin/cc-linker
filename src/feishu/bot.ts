@@ -930,7 +930,7 @@ export class FeishuBot {
 
     try {
       const settingsPath = this.getSettingsPathForUser(msg.openId);
-      const promptText = buildPromptWithImages(msg.text, msg.imagePaths ?? []);
+      const promptText = buildPromptWithImages(prompt, msg.imagePaths ?? []);
       const result = await this.sessionManager.sendStreamingMessage(
         null, promptText, cwd,
         (chunk: StreamChunk) => {
@@ -994,7 +994,7 @@ export class FeishuBot {
         message_count: Math.max(this.registry.get(result.sessionId)?.message_count ?? 0, 1),
         created_at: this.registry.get(result.sessionId)?.created_at ?? now,
         last_active: now,
-        last_message_preview: preview(msg.text) || (msg.imagePaths?.length ? '[图片]' : ''),
+        last_message_preview: preview(prompt) || (msg.imagePaths?.length ? '[图片]' : ''),
         status: result.sessionStatus,
         jsonl_path: result.jsonlPath,
         pending_jsonl_resolve: !result.jsonlPath,
@@ -1070,7 +1070,7 @@ export class FeishuBot {
 
     try {
       const settingsPath = this.getSettingsPathForUser(msg.openId);
-      const promptText = buildPromptWithImages(msg.text, msg.imagePaths ?? []);
+      const promptText = buildPromptWithImages(prompt, msg.imagePaths ?? []);
       const { result, handler } = await this.sessionManager.sendSDKMessage(
         null, promptText, cwd,
         (chunk: StreamChunk) => {
@@ -1161,7 +1161,7 @@ export class FeishuBot {
         message_count: Math.max(this.registry.get(result.sessionId)?.message_count ?? 0, 1),
         created_at: this.registry.get(result.sessionId)?.created_at ?? now,
         last_active: now,
-        last_message_preview: preview(msg.text) || (msg.imagePaths?.length ? '[图片]' : ''),
+        last_message_preview: preview(prompt) || (msg.imagePaths?.length ? '[图片]' : ''),
         status: result.sessionStatus,
         jsonl_path: result.jsonlPath,
         pending_jsonl_resolve: !result.jsonlPath,
@@ -1520,7 +1520,7 @@ export class FeishuBot {
     prompt = msg.text,
   ): Promise<void> {
     const settingsPath = this.getSettingsPathForUser(msg.openId);
-    const promptText = buildPromptWithImages(msg.text, msg.imagePaths ?? []);
+    const promptText = buildPromptWithImages(prompt, msg.imagePaths ?? []);
     const result = await this.sessionManager.sendMessage(null, promptText, cwd, true, `new:${msg.openId}`, settingsPath);
 
     if (!result.sessionId) {
@@ -1553,7 +1553,7 @@ export class FeishuBot {
       message_count: Math.max(this.registry.get(result.sessionId)?.message_count ?? 0, 1),
       created_at: this.registry.get(result.sessionId)?.created_at ?? now,
       last_active: now,
-      last_message_preview: preview(msg.text) || (msg.imagePaths?.length ? '[图片]' : ''),
+      last_message_preview: preview(prompt) || (msg.imagePaths?.length ? '[图片]' : ''),
       status: result.sessionStatus,
       jsonl_path: result.jsonlPath,
       pending_jsonl_resolve: !result.jsonlPath,

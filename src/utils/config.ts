@@ -237,6 +237,9 @@ export class ConfigManager {
       ['CC_LINKER_SDK_PERMISSION_MODE', 'sdk', 'permission_mode'],
       ['CC_LINKER_SDK_TIMEOUT_MS', 'sdk', 'timeout_ms'],
       ['CC_LINKER_SDK_CLAUDE_EXECUTABLE', 'sdk', 'claude_executable'],
+      ['CC_LINKER_IMAGES_ENABLED', 'images', 'enabled'],
+      ['CC_LINKER_IMAGES_MAX_SIZE', 'images', 'max_size_bytes'],
+      ['CC_LINKER_IMAGES_CLEANUP_HOURS', 'images', 'cleanup_max_age_hours'],
     ];
 
     // Parse array env vars for Claude tools
