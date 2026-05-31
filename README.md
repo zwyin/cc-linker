@@ -71,18 +71,11 @@
   <tr>
     <td align="center"><b>目录浏览</b><br><code>/listDir</code> 交互式浏览文件系统</td>
     <td align="center"><b>SDK 权限确认</b><br>交互式允许/拒绝 Claude 的工具调用</td>
+    <td align="center"><b>图片消息</b><br>飞书发送图片，Claude 自动分析</td>
   </tr>
   <tr>
     <td align="center"><img src="docs/images/feishu-listdir.png" alt="目录浏览" width="280"></td>
     <td align="center"><img src="docs/images/feishu-sdk-permission-card.png" alt="SDK 权限确认" width="280"></td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td align="center"><b>图片消息</b><br>飞书发送图片，Claude 自动分析</td>
-  </tr>
-  <tr>
     <td align="center"><img src="docs/images/feishu-image-analysis.png" alt="图片消息分析" width="280"></td>
   </tr>
 </table>
