@@ -10,6 +10,8 @@ import { CLAUDE_PROJECTS_DIR } from '../../utils/paths';
 import { StateCoordinator } from '../../runtime/state-coordinator';
 import { config } from '../../utils/config';
 import { repairJsonlLastPrompt } from '../../utils/jsonl-repair';
+import { isSessionActive, SessionActivityCache } from '../../utils/session-activity';
+import { logger } from '../../utils/logger';
 
 interface ResumeOptions {
   search?: string;
@@ -84,6 +86,39 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
   } else if (StateCoordinator.isLocked()) {
     // Bot is running but not processing this session — safe to resume
     console.log(chalk.dim('Bot 正在运行，但未处理此会话，可安全恢复'));
+  }
+
+  // 2. 新增检测：飞书侧是否活跃（通过 marker）
+  // 注意：复用 --force 选项语义
+  if (!opts.force) {
+    const activityCache = new SessionActivityCache();
+    try {
+      const currentEntry = registry.get(uuid);
+      if (currentEntry) {
+        const status = await isSessionActive(
+          { sessionUuid: uuid, cwd: currentEntry.cwd, jsonl_path: currentEntry.jsonl_path },
+          activityCache,
+          'cli-detects-feishu'
+        );
+        if (status.isProcessing) {
+          const strengthText = status.confidence === 'high' ? '正在' : '可能';
+          console.log(chalk.yellow(`⚠️  该会话${strengthText}被飞书侧处理中。`));
+          console.log(chalk.yellow(`   原因: ${status.reason}`));
+          console.log(chalk.yellow('   继续 resume 可能会打断飞书侧的任务。'));
+
+          const { confirmed } = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'confirmed',
+            message: '是否强制继续？',
+            default: false,
+          }]);
+          if (!confirmed) return;
+        }
+      }
+    } catch (err) {
+      logger.warn(`飞书侧活跃检测失败: ${err}`);
+      // 降级：继续
+    }
   }
 
   // Verify JSONL exists
