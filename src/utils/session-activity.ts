@@ -188,3 +188,23 @@ export async function getInstantCPU(pid: number, durationMs: number = 1000): Pro
   const cores = 1;  // macOS 容器/CI 可能不可靠
   return Math.max(0, Math.min(100 * cores, (cpuSec / wallClockSec) * 100));
 }
+
+export function findClaudeProcessByCwd(targetCwd: string): { pid: number; cwd: string } | null {
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(targetCwd);
+  } catch (err) {
+    logger.debug(`realpath 失败: ${targetCwd}: ${err}`);
+    realTarget = targetCwd;
+  }
+
+  // getClaudeProcessesByCwd 已按 cwd 过滤，直接取第一个
+  const candidates = getClaudeProcessesByCwd(realTarget);
+  if (candidates.length === 0) {
+    // 退一步：尝试原路径（realpath 可能因为权限失败但路径确实存在）
+    const fallback = getClaudeProcessesByCwd(targetCwd);
+    if (fallback.length === 0) return null;
+    return { pid: fallback[0].pid, cwd: fallback[0].cwd };
+  }
+  return { pid: candidates[0].pid, cwd: candidates[0].cwd };
+}
