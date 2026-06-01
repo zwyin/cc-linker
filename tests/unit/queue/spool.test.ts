@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SpoolQueue } from '../../../src/queue/spool';
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -224,5 +224,48 @@ describe('SpoolQueue', () => {
 
     expect(spool.finalizeDeliveredMessages()).toBe(0);
     expect(spool.listProcessing()).toHaveLength(1);
+  });
+});
+
+describe('SpoolQueue.updateMessageFlags', () => {
+  let spool: any;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'spool-test-'));
+    spool = new SpoolQueue(tmpDir);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('持久化 skipActivityCheck', async () => {
+    // 1. 手动写入 processing 目录（模拟 worker claim）
+    const msg = {
+      messageId: 'msg-1',
+      openId: 'ou_1',
+      text: 'test',
+      target: { type: 'session', sessionUuid: 's1' },
+      serialKey: 's1',
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    mkdirSync(join(tmpDir, 'processing'), { recursive: true });
+    writeFileSync(join(tmpDir, 'processing', 's1:msg-1.json'), JSON.stringify(msg));
+
+    // 2. 调用 updateMessageFlags
+    const ok = await spool.updateMessageFlags('msg-1', 's1', { skipActivityCheck: true });
+    expect(ok).toBe(true);
+
+    // 3. 读回验证
+    const updated = JSON.parse(readFileSync(join(tmpDir, 'processing', 's1:msg-1.json'), 'utf8'));
+    expect(updated.skipActivityCheck).toBe(true);
+  });
+
+  test('处理中消息不存在时返回 false', async () => {
+    const ok = await spool.updateMessageFlags('nonexistent', 's1', { skipActivityCheck: true });
+    expect(ok).toBe(false);
   });
 });
