@@ -52,3 +52,58 @@ export function getLinuxClaudeProcesses(uid: number): ProcessInfo[] {
   }
   return result;
 }
+
+export function getDarwinClaudeProcesses(uid: number): ProcessInfo[] {
+  try {
+    // 1. 单次 lsof 拿所有 claude 进程的 cwd
+    const lsofResult = Bun.spawnSync([
+      'lsof', '-u', String(uid), '-c', 'claude', '-a', '-d', 'cwd', '-Fn'
+    ]);
+    if (lsofResult.exitCode !== 0) return [];
+
+    const lines = new TextDecoder().decode(lsofResult.stdout).split('\n');
+    const pidToCwd = new Map<number, string>();
+    let currentPid: number | null = null;
+    for (const line of lines) {
+      if (line.startsWith('p')) {
+        currentPid = parseInt(line.slice(1), 10);
+      } else if (line.startsWith('n') && currentPid !== null) {
+        pidToCwd.set(currentPid, line.slice(1));
+        currentPid = null;
+      }
+    }
+
+    // 2. 单独取 command（再开一个 ps 调用）
+    const psResult = Bun.spawnSync(['ps', '-u', String(uid), '-o', 'pid=,command=']);
+    const pidToCommand = new Map<number, string>();
+    if (psResult.exitCode === 0) {
+      for (const line of new TextDecoder().decode(psResult.stdout).split('\n')) {
+        const m = line.match(/^\s*(\d+)\s+(.*)$/);
+        if (m) pidToCommand.set(parseInt(m[1], 10), m[2].trim());
+      }
+    }
+
+    // 3. 合并 + 过滤
+    const out: ProcessInfo[] = [];
+    for (const [pid, cwd] of pidToCwd) {
+      const command = pidToCommand.get(pid) ?? '';
+      if (command.includes(' -p ') || command.includes('--output-format')) continue;
+      if (command.includes('/sdk/') || command.includes('claude-agent-sdk')) continue;
+      out.push({ pid, cwd, command });
+    }
+    return out;
+  } catch {
+    // 权限不足（macOS 上 lsof 看其他用户需要 root）
+    return [];
+  }
+}
+
+export function getClaudeProcessesByCwd(targetCwd: string): ProcessInfo[] {
+  const uid = process.getuid?.() ?? 0;
+  const procs = process.platform === 'linux'
+    ? getLinuxClaudeProcesses(uid)
+    : process.platform === 'darwin'
+      ? getDarwinClaudeProcesses(uid)
+      : [];
+  return procs.filter(p => p.cwd === targetCwd);
+}
