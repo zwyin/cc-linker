@@ -107,3 +107,65 @@ export function getClaudeProcessesByCwd(targetCwd: string): ProcessInfo[] {
       : [];
   return procs.filter(p => p.cwd === targetCwd);
 }
+
+export function getProcessCPUTimeSeconds(pid: number): Promise<number> {
+  if (process.platform === 'linux') {
+    return Promise.resolve(getLinuxCPUTime(pid));
+  }
+  if (process.platform === 'darwin') {
+    return Promise.resolve(getDarwinCPUTime(pid));
+  }
+  return Promise.reject(new Error(`Unsupported platform: ${process.platform}`));
+}
+
+function getLinuxCPUTime(pid: number): number {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const lastParen = stat.lastIndexOf(')');
+    const after = stat.slice(lastParen + 2);
+    const parts = after.split(' ');
+    const utime = parseInt(parts[11], 10);
+    const stime = parseInt(parts[12], 10);
+    let clkTck = 100;
+    try {
+      const t = readFileSync('/proc/sys/kernel/clk_tck', 'utf8').trim();
+      clkTck = parseInt(t, 10) || 100;
+    } catch {}
+    return (utime + stime) / clkTck;
+  } catch {
+    return 0;
+  }
+}
+
+function getDarwinCPUTime(pid: number): number {
+  try {
+    const result = Bun.spawnSync(['ps', '-o', 'time=', '-p', String(pid)]);
+    if (result.exitCode !== 0) return 0;
+    const timeStr = new TextDecoder().decode(result.stdout).trim();
+    return parsePsTimeToSeconds(timeStr);
+  } catch {
+    return 0;
+  }
+}
+
+export function parsePsTimeToSeconds(timeStr: string): number {
+  if (!timeStr) return 0;
+  let days = 0;
+  let rest = timeStr;
+  if (rest.includes('-')) {
+    const dashIdx = rest.indexOf('-');
+    days = parseInt(rest.slice(0, dashIdx), 10) || 0;
+    rest = rest.slice(dashIdx + 1);
+  }
+  const parts = rest.split(':');
+  if (parts.length === 3) {
+    return days * 86400
+      + parseInt(parts[0], 10) * 3600
+      + parseInt(parts[1], 10) * 60
+      + parseFloat(parts[2]);
+  }
+  if (parts.length === 2) {
+    return days * 86400 + parseInt(parts[0], 10) * 60 + parseFloat(parts[1]);
+  }
+  return parseFloat(rest);
+}
