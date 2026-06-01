@@ -208,3 +208,59 @@ export function findClaudeProcessByCwd(targetCwd: string): { pid: number; cwd: s
   }
   return { pid: candidates[0].pid, cwd: candidates[0].cwd };
 }
+
+// === 子进程检测（递归深度 3） ===
+
+export async function hasActiveChildProcesses(pid: number): Promise<ChildResult> {
+  try {
+    const result = Bun.spawnSync(['pgrep', '-P', String(pid)]);
+    if (result.exitCode !== 0) {
+      return { hasChildren: false, children: [] };
+    }
+
+    const childPids = new TextDecoder().decode(result.stdout)
+      .split('\n').filter(Boolean).map(Number);
+
+    const children = childPids
+      .map(childPid => ({ pid: childPid, command: getProcessCommand(childPid) }))
+      .filter(child =>
+        !child.command.includes('shell-snapshot') &&
+        !child.command.includes('zsh -c source') &&
+        child.command.trim() !== ''
+      );
+
+    return { hasChildren: children.length > 0, children };
+  } catch (err) {
+    logger.debug(`子进程检测失败: pid=${pid}: ${err}`);
+    return { hasChildren: false, children: [] };
+  }
+}
+
+function getProcessCommand(pid: number): string {
+  try {
+    const result = Bun.spawnSync(['ps', '-p', String(pid), '-o', 'command=']);
+    return new TextDecoder().decode(result.stdout).trim();
+  } catch (err) {
+    logger.debug(`获取进程命令失败: pid=${pid}: ${err}`);
+    return '';
+  }
+}
+
+export async function hasActiveDescendants(rootPid: number, depth: number = 3): Promise<ChildResult> {
+  const all: Array<{ pid: number; command: string }> = [];
+  const visited = new Set<number>([rootPid]);
+
+  async function walk(pid: number, currentDepth: number) {
+    if (currentDepth > depth) return;
+    const result = await hasActiveChildProcesses(pid);
+    for (const child of result.children) {
+      if (visited.has(child.pid)) continue;
+      visited.add(child.pid);
+      all.push(child);
+      await walk(child.pid, currentDepth + 1);
+    }
+  }
+
+  await walk(rootPid, 0);
+  return { hasChildren: all.length > 0, children: all };
+}
