@@ -317,6 +317,31 @@ permission_mode = "acceptEdits"
 | `CC_LINKER_IMAGES_MAX_SIZE` | 图片大小限制（字节） |
 | `CC_LINKER_IMAGES_CLEANUP_HOURS` | 图片清理周期（小时） |
 
+### 启用 CLI 端 activity marker（可选）
+
+cc-linker 默认通过 OS 信号检测 CLI 端活跃度。如需更精确的检测，可在 `~/.claude/settings.json` 中配置 hooks（Claude Code 通过 stdin 传入 JSON 事件，`session_id` 字段需自行用 `jq` 提取）：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "SESSION_ID=$(jq -r '.session_id' </dev/stdin); cc-linker activity-hook --platform=cli --action=start --session=\"$SESSION_ID\""
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "SESSION_ID=$(jq -r '.session_id' </dev/stdin); cc-linker activity-hook --platform=cli --action=end --session=\"$SESSION_ID\""
+      }]
+    }]
+  }
+}
+```
+
+这样 cc-linker 可以 100% 准确检测 CLI 侧活跃状态，而不是依赖 CPU/子进程采样。
+
 ## 🏗 架构概览
 
 ```
