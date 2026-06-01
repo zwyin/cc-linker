@@ -202,9 +202,12 @@ Go to "Event Subscriptions", add:
 | Event | Purpose |
 |-------|---------|
 | `im.message.receive_v1` | Receive messages sent to the Bot |
+| `card.action.trigger` | Receive card button clicks (`/list` session switching, model switching, SDK permission confirmation, etc.) |
 | `im.chat.member.bot.added_v1` | Triggered when Bot is invited to a group (optional) |
 
 > **Important**: Choose **WebSocket** (not HTTP callback) for event subscription method.
+>
+> **Note**: `card.action.trigger` is required for all card interactions. Without it, buttons in `/list`, `/model`, and SDK permission cards will not respond.
 
 ### Publish the App
 
