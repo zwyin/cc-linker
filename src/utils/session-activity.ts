@@ -48,6 +48,11 @@ export type DetectionDirection =
   | 'feishu-detects-cli'
   | 'cli-detects-feishu';
 
+// === Rotate 阈值 ===
+
+const MAX_ACTIVITY_LOG_BYTES = 64 * 1024;
+const ROTATE_KEEP_RATIO = 0.5;
+
 // === Sidecar 文件路径 ===
 
 export function activityLogPath(sessionUuid: string): string {
@@ -81,6 +86,7 @@ export function writeActivityMarker(
   };
 
   try {
+    maybeRotateActivityLog(sessionUuid);
     appendFileSync(activityLogPath(sessionUuid), JSON.stringify(marker) + '\n', { mode: 0o600 });
   } catch (err) {
     logger.warn(`写入 activity marker 失败: ${sessionUuid}: ${err}`);
@@ -121,4 +127,46 @@ export function readLastActivityMarker(sessionUuid: string): ActivityMarker | nu
     logger.warn(`读取 activity marker 失败: ${sessionUuid}: ${err}`);
     return null;
   }
+}
+
+// === Rotate + Cleanup ===
+
+function maybeRotateActivityLog(sessionUuid: string): void {
+  const path = activityLogPath(sessionUuid);
+  try {
+    const stat = statSync(path);
+    if (stat.size <= MAX_ACTIVITY_LOG_BYTES) return;
+
+    const content = readFileSync(path, 'utf8');
+    const keepBytes = Math.floor(MAX_ACTIVITY_LOG_BYTES * ROTATE_KEEP_RATIO);
+    const tail = content.slice(-keepBytes);
+    const firstNewline = tail.indexOf('\n');
+    const trimmed = firstNewline >= 0 ? tail.slice(firstNewline + 1) : tail;
+
+    writeFileSync(path, trimmed, { mode: 0o600 });
+    logger.debug(`activity log 轮转: ${sessionUuid}, 保留 ${trimmed.length} bytes`);
+  } catch (err) {
+    logger.debug(`activity log 轮转失败: ${sessionUuid}: ${err}`);
+  }
+}
+
+export function cleanupOldActivityLogs(maxAgeHours: number = 24): number {
+  if (!existsSync(ACTIVITY_DIR)) return 0;
+  const cutoff = Date.now() - maxAgeHours * 60 * 60 * 1000;
+  let cleaned = 0;
+  try {
+    for (const file of readdirSync(ACTIVITY_DIR)) {
+      const path = join(ACTIVITY_DIR, file);
+      try {
+        const stat = statSync(path);
+        if (stat.mtimeMs < cutoff) {
+          unlinkSync(path);
+          cleaned++;
+        }
+      } catch {}
+    }
+  } catch (err) {
+    logger.warn(`清理 activity 日志失败: ${err}`);
+  }
+  return cleaned;
 }
