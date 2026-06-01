@@ -8,6 +8,8 @@ import { logger } from '../../utils/logger';
 import { config } from '../../utils/config';
 import { ProviderManager } from '../../utils/providers';
 import { cleanupOrphanProcesses } from '../../proxy/session';
+import { SessionActivityCache, cleanupOldActivityLogs } from '../../utils/session-activity';
+import { getClaudeProcessesByCwd } from '../../utils/process-info';
 import { RUNTIME_PID_FILE, RUNTIME_LOG_FILE } from '../../utils/paths';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
@@ -170,6 +172,25 @@ interface BotRuntime {
   wsClient: any;
   stateCoordinator: StateCoordinator;
   shutdown: (signal: string) => Promise<void>;
+}
+
+/**
+ * Probe whether CLI process detection (via lsof) is permitted on this host.
+ *
+ * macOS often blocks `lsof` against other users' processes unless Full Disk
+ * Access is granted to the running terminal/binary. When the probe fails we
+ * fall back to marker + JSONL mtime detection only.
+ *
+ * Linux/other platforms: always returns true (procfs-based, no extra permissions).
+ */
+function probeCliProcessDetection(): boolean {
+  if (process.platform !== 'darwin') return true;
+  try {
+    const procs = getClaudeProcessesByCwd(process.cwd());
+    return procs.length > 0; // 能列出说明 lsof 没权限错
+  } catch {
+    return false;
+  }
 }
 
 async function createBotRuntime(
@@ -424,6 +445,24 @@ async function createBotRuntime(
 
 async function startForeground(registry: RegistryManager, opts: StartOptions): Promise<void> {
   console.log(chalk.blue('🚀 启动 cc-linker...'));
+
+  // Step 1: 探测 CLI 进程检测可用性
+  const cliDetectionOk = probeCliProcessDetection();
+  if (!cliDetectionOk) {
+    logger.warn('CLI 进程检测不可用（macOS 权限），将只使用 marker + mtime 检测');
+    config.setRuntimeOverride('runtime.cli_process_detection_enabled', false);
+  }
+
+  // Step 2: 清理过期 activity 日志
+  const cleaned = cleanupOldActivityLogs(24);
+  logger.info(`清理过期 activity 日志: ${cleaned} 个文件`);
+
+  // Step 3-5: 创建 cache + sessionManager + bot 在 createBotRuntime / Task 6.2 中接入
+  // (SessionActivityCache 由 Task 6.2 注入到 sessionManager / FeishuBot)
+
+  // Step 6: Grace period（避免升级期间老 daemon 残留导致误判）
+  logger.info('活跃检测 grace period: 30 秒');
+  await new Promise<void>(resolve => setTimeout(resolve, 30_000));
 
   const { bot, stateCoordinator, shutdown } = await createBotRuntime(registry, (level, msg) => {
     if (level === 'ERROR') {
