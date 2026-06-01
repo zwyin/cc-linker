@@ -7,6 +7,7 @@ import { StreamParser, StreamChunk, ResultChunk } from './stream-parser';
 import { StreamAdapter, type SDKStreamChunk } from './stream-adapter';
 import { PermissionHandler, type PermissionPrompt } from './permission-handler';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { writeActivityMarker, SessionActivityCache } from '../utils/session-activity';
 
 export interface ClaudeSession {
   sessionId: string;
@@ -133,9 +134,14 @@ export class ClaudeSessionManager {
   private runningProcesses = 0;
   private processWaiters: Array<() => void> = [];
   private readonly maxConcurrent: number;
+  activityCache?: SessionActivityCache;
 
   constructor() {
     this.maxConcurrent = Math.max(1, config.get<number>('runtime.max_concurrent_sessions', 2));
+  }
+
+  setActivityCache(cache: SessionActivityCache): void {
+    this.activityCache = cache;
   }
 
   /**
