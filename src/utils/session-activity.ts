@@ -50,6 +50,12 @@ export type DetectionDirection =
   | 'feishu-detects-cli'
   | 'cli-detects-feishu';
 
+export interface ActivityEntry {
+  sessionUuid?: string | null;
+  cwd: string;
+  jsonl_path: string | null;
+}
+
 // === Rotate 阈值 ===
 
 const MAX_ACTIVITY_LOG_BYTES = 64 * 1024;
@@ -315,4 +321,171 @@ export class SessionActivityCache {
   clear(): void {
     this.cache.clear();
   }
+}
+
+// === Marker 年龄判定 ===
+
+function judgeMarkerAge(ageMs: number): { active: boolean; confidence: ActivityConfidence } {
+  if (ageMs < 3 * 60 * 1000) {
+    return { active: true, confidence: 'high' };
+  }
+  if (ageMs < 10 * 60 * 1000) {
+    return { active: true, confidence: 'medium' };
+  }
+  const ttl = config.get<number>('runtime.activity_marker_ttl_ms', 30 * 60 * 1000);
+  if (ageMs < ttl) {
+    return { active: true, confidence: 'low' };
+  }
+  return { active: false, confidence: 'high' };
+}
+
+// === CPU 采样 ===
+
+export interface CpuResult {
+  isProcessing: boolean;
+  confidence: ActivityConfidence;
+  cpuPercent: number;
+  reason: string;
+}
+
+export async function sampleCPU(cwd: string, timeoutMs: number = 3000): Promise<CpuResult> {
+  return withTimeout(
+    sampleCPUImpl(cwd),
+    timeoutMs,
+    { isProcessing: false, confidence: 'low' as ActivityConfidence, cpuPercent: 0, reason: 'sample_timeout' }
+  );
+}
+
+async function sampleCPUImpl(cwd: string): Promise<CpuResult> {
+  const proc = findClaudeProcessByCwd(cwd);
+  if (!proc) {
+    return { isProcessing: false, confidence: 'high', cpuPercent: 0, reason: 'no_process' };
+  }
+
+  const cpuPercent = await getInstantCPU(proc.pid, 1000);
+
+  if (cpuPercent > 10) {
+    return { isProcessing: true, confidence: 'high', cpuPercent, reason: `cpu_${cpuPercent.toFixed(1)}%` };
+  }
+  if (cpuPercent > 2) {
+    return { isProcessing: true, confidence: 'medium', cpuPercent, reason: `cpu_${cpuPercent.toFixed(1)}%` };
+  }
+  return { isProcessing: false, confidence: 'high', cpuPercent, reason: `cpu_idle_${cpuPercent.toFixed(1)}%` };
+}
+
+// === 方向性检测 ===
+
+async function detectCliActivity(entry: ActivityEntry): Promise<ActivityResult> {
+  if (config.get<boolean>('runtime.cli_process_detection_enabled', true)) {
+    const proc = findClaudeProcessByCwd(entry.cwd);
+    if (proc) {
+      const childCheck = await hasActiveDescendants(proc.pid);
+      if (childCheck.hasChildren) {
+        const childNames = childCheck.children
+          .map(c => c.command.split(' ')[0])
+          .slice(0, 3)
+          .join(', ');
+        return {
+          isProcessing: true,
+          confidence: 'high',
+          reason: `executing: ${childNames}`,
+          source: 'child',
+        };
+      }
+
+      const cpuResult = await sampleCPU(entry.cwd);
+      if (cpuResult.isProcessing) {
+        return {
+          isProcessing: true,
+          confidence: cpuResult.confidence,
+          reason: cpuResult.reason,
+          source: 'cpu',
+        };
+      }
+
+      return {
+        isProcessing: false,
+        confidence: 'high',
+        reason: 'cli_process_idle',
+        source: 'cpu',
+      };
+    }
+  }
+
+  if (entry.jsonl_path) {
+    const mtimeResult = await isJSONLWrittenSince(entry.jsonl_path, 0);
+    if (mtimeResult.written) {
+      return {
+        isProcessing: true,
+        confidence: 'medium',
+        reason: 'jsonl_writing',
+        source: 'mtime',
+      };
+    }
+  }
+
+  return { isProcessing: false, confidence: 'medium', reason: 'no_signals', source: 'none' };
+}
+
+async function detectFeishuActivity(entry: ActivityEntry): Promise<ActivityResult> {
+  if (!entry.sessionUuid) {
+    return { isProcessing: false, confidence: 'low', reason: 'no_session_uuid', source: 'none' };
+  }
+
+  const marker = readLastActivityMarker(entry.sessionUuid);
+  if (!marker) {
+    return { isProcessing: false, confidence: 'medium', reason: 'no_marker', source: 'none' };
+  }
+
+  if (marker.action === 'end') {
+    return { isProcessing: false, confidence: 'high', reason: 'marker_end', source: 'marker' };
+  }
+
+  const ageMs = Date.now() - new Date(marker.timestamp).getTime();
+  const judgment = judgeMarkerAge(ageMs);
+  return {
+    isProcessing: judgment.active,
+    confidence: judgment.confidence,
+    reason: judgment.active
+      ? `marker_${marker.action}_${Math.floor(ageMs / 1000)}s_ago`
+      : `marker_stale_${Math.floor(ageMs / 1000)}s_ago`,
+    source: 'marker',
+  };
+}
+
+// === 主入口 ===
+
+const DETECTION_TIMEOUT_MS = 3000;
+
+export async function isSessionActive(
+  entry: ActivityEntry,
+  cache: SessionActivityCache,
+  direction: DetectionDirection,
+  timeoutMs: number = DETECTION_TIMEOUT_MS
+): Promise<ActivityResult> {
+  const cacheKey = `${direction}:${entry.sessionUuid ?? entry.cwd}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const result = await withTimeout(
+    detectActivity(entry, direction),
+    timeoutMs,
+    { isProcessing: false, confidence: 'low' as ActivityConfidence, reason: 'detection_timeout', source: 'none' as ActivitySource }
+  );
+
+  cache.set(cacheKey, result);
+  return result;
+}
+
+async function detectActivity(
+  entry: ActivityEntry,
+  direction: DetectionDirection
+): Promise<ActivityResult> {
+  if (direction === 'feishu-detects-cli') {
+    return detectCliActivity(entry);
+  }
+  if (direction === 'cli-detects-feishu') {
+    return detectFeishuActivity(entry);
+  }
+  return { isProcessing: false, confidence: 'low', reason: 'unknown_direction', source: 'none' };
 }
