@@ -73,9 +73,11 @@
 - [ ] **Step 1: 创建 `src/version.ts`**
 
 ```typescript
-import pkg from '../package.json' with { type: 'json' };
+import pkg from '../package.json';
 export const PKG_VERSION: string = pkg.version;
 ```
+
+> 注：项目 tsconfig 是 `module: "ES2022"` + `moduleResolution: "bundler"`，不支持 `with { type: 'json' }` 导入属性语法。`resolveJsonModule: true` 已开启，直接用裸 import 即可。
 
 - [ ] **Step 2: 验证 typecheck**
 
