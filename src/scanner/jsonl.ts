@@ -221,6 +221,7 @@ export class JSONLScanner {
         for (let i = tailLines.length - 1; i >= 0; i--) {
           try {
             const entry = JSON.parse(tailLines[i]);
+            if (NON_MESSAGE_TYPES.has(entry.type)) continue;
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
             }
@@ -243,6 +244,7 @@ export class JSONLScanner {
         for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
           try {
             const entry = JSON.parse(lines[i]);
+            if (NON_MESSAGE_TYPES.has(entry.type)) continue;
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
             }
