@@ -15,7 +15,7 @@
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
-| command 队列策略 | command 走独立 serialKey `cmd:${openId}` | 改动 1 行即修复根因；不破坏 `acquireSessionLock` 语义 |
+| command 队列策略 | command 走独立 serialKey `cmd:${openId}:${messageId}` | **每个命令独立队列**；不破坏 `acquireSessionLock` 语义；连续 /list 也能并行 |
 | `/new` 内部 Claude lockKey | 保持 `new:${openId}` | 同一 openId 的 new 会话创建仍需互斥，避免映射竞争 |
 | 概览卡片形式 | Feishu interactive card | 移动端体感好；可按钮交互；复用现有 `cardReplyFn` |
 | 概览内容 | 用户最后提问 80 字符 + AI 最后回复 80 字符 + 元信息 | 信息密度够用；不需实时读完整 JSONL |
@@ -31,11 +31,11 @@
                        Feishu onMessage
                               │
                               ▼
-            ┌─────────────────────────────────┐
-            │ isCommand ?                     │
-            │   yes → serialKey = "cmd:"+oid  │
-            │   no  → resolveChatTarget()     │
-            └─────────────────────────────────┘
+            ┌──────────────────────────────────────────────┐
+            │ isCommand ?                                  │
+            │   yes → serialKey = "cmd:"+oid+":"+msgId     │
+            │   no  → resolveChatTarget()                  │
+            └──────────────────────────────────────────────┘
                               │
                               ▼
                       SpoolQueue.enqueue
@@ -45,15 +45,20 @@
                               │
               ┌───────────────┴───────────────┐
               ▼                               ▼
-   cmd:openId 在 processing?        new:openId 在 processing?
-        yes → 跳过                       yes → 跳过
-        no  → claim                     no  → claim
+   cmd:openId:msgId 在 processing?    new:openId 在 processing?
+        yes → 跳过                          yes → 跳过
+        no  → claim                        no  → claim
 ```
 
-**关键点**：
-- `/list` / `/status` / `/model` / `/switch` / `/resume` / `/new`（command 部分）都用 `cmd:openId`。
-- 进入 `handleNew` / `createSessionFromPromptSDK` 后，内部 `lockKey` 仍用 `new:openId`（互斥）。
-- 用户连续发两个 `/new -- prompt`：第一条用 `cmd:openId` claim 成功 → handleNew 内部用 `new:openId` 拿 Claude lock；处理完释放后，第二条 `cmd:openId` claim 成功 → 又尝试拿 `new:openId` lock，**正常互斥等待**，符合预期。
+**关键点**（review 后修正）：
+- **`messageId` 必须拼进 serialKey**。`messageId` 是飞书侧全局唯一（来自 `event.message_id`），用它做后缀保证**每个 command 独立**。
+- 错误反例：`cmd:${openId}` 会让 `/new -- p1` 和 `/list` 共享同一 serialKey，前者占用 processing 期间后者还是被卡。
+- 正确反例：`cmd:${openId}:${msgId}` 让两个 command serialKey 不一样，`claimNext` 的 `startsWith(serialKey+":")` 匹配不上，**真正并行**。
+- 所有 command（`/list` / `/status` / `/model` / `/switch` / `/resume` / `/new` / `/whoami` / `/help`）都用 `cmd:${openId}:${msgId}`。
+- 进入 `handleNew` / `createSessionFromPromptSDK` 后，内部 `lockKey` 仍用 `new:${openId}`（互斥 Claude 进程）。
+- 用户连续发两个 `/new -- p1` / `/new -- p2`：第一条 `cmd:oid:msg1` claim 成功 → handleNew 内部 `new:oid` 拿 lock；处理完释放后，第二条 `cmd:oid:msg2` claim 成功（不同 serialKey）→ 又尝试 `new:oid` lock，**互斥等待**，符合预期。
+- **副作用**：用户连发两次 /list 会**并行处理**（doCardList 是只读，两次结果一致，可接受）。
+- 文件名变成 `cmd:openId:msgId:msgId.json`（冗余但无害，spool 文件命名是 `${serialKey}:${messageId}.json`）。
 
 ### 改动 2：scanner 维护 last_user/last_assistant preview
 
@@ -103,7 +108,7 @@ const serialKey = target.type === 'session' && target.sessionUuid
 **修改后**：
 ```typescript
 const serialKey = isCommand
-  ? `cmd:${event.open_id}`
+  ? `cmd:${event.open_id}:${event.message_id}`  // ← 每个 command 独立
   : target.type === 'session' && target.sessionUuid
     ? target.sessionUuid
     : `new:${event.open_id}`;
@@ -111,17 +116,20 @@ const serialKey = isCommand
 
 **派生改动**：
 - `resolveChatTarget` 不变（chat 路径需要 target）。
-- `handleCommand` 内部 `createSessionFromPromptSDK` 的 `lockKey` 仍用 `new:${openId}`。
-- `claimNext` 实现不变（按 serialKey 文件名前缀判断）。
+- `handleCommand` 内部 `createSessionFromPromptSDK` 的 `lockKey` 仍用 `new:${openId}`（在 `sendSDKMessage` 调用处 line 1110）。
+- `claimNext` 实现不变（按 serialKey 文件名前缀 `cmd:openId:msgId:` 判断）。
 
 ### 2. `src/registry/types.ts` —— schema v3 → v4
+
+**review 后明确**：`last_message_preview` 字段**保留不变**（仍由 scanner 写 assistant 末条 100 字符，被 CLI list、bot.ts:625,709,850 等多处复用）。本次**新增**独立字段，不替换。
 
 **新增 optional 字段**：
 ```typescript
 export const SessionEntrySchema = z.object({
   // ... 现有字段 ...
-  last_user_preview: z.string().optional(),       // 用户最后提问 80 字符
-  last_assistant_preview: z.string().optional(),  // AI 最后回复 80 字符
+  last_user_preview: z.string().optional(),       // 用户最后提问 80 字符（新）
+  last_assistant_preview: z.string().optional(),  // AI 最后回复 80 字符（新）
+  // last_message_preview 保留，被 CLI / bot 多处复用
 });
 ```
 
@@ -141,9 +149,15 @@ export const RegistrySchema = z.object({
 
 ### 3. `src/scanner/jsonl.ts` —— 抓 user + assistant 末条
 
-**位置**：`parseTail`（line 181-243）
+**位置**：`parseTail`（line 181-243）和 `parseFull`（line 101-179）
 
-**修改**：在原有 `preview` 提取基础上，加 `lastUserPreview`：
+**review 后补强**（user 消息 content 可能是两种形态）：
+- 形态 A：`{"type":"user","message":{"content":"帮我做X"}}`（content 是字符串）
+- 形态 B：`{"type":"user","message":{"content":[{"type":"text","text":"帮我做X"}]}}`（content 是数组）
+
+**`last_message_preview` 字段保留**（仍写 assistant 末条 100 字符），向后兼容 CLI list 和 bot 多处使用；本设计**新增** `last_user_preview` / `last_assistant_preview` 两个独立字段（80 字符），互不替代。
+
+**修改**：在原有 `preview` 提取基础上，加 `lastUserPreview`（**两种 content 形态都要覆盖**）：
 
 ```typescript
 let lastUserPreview = '';
@@ -296,14 +310,19 @@ const card = buildListCard(sessions, allSessions.length, hasMore, runningUuids);
 ### 7. 测试
 
 **新增单测** `tests/unit/feishu/bot-serial-key.test.ts`：
-- 验证 command 消息的 serialKey 形如 `cmd:openId-xxx`
+- 验证 command 消息的 serialKey 形如 `cmd:openId:msgId`（带 messageId）
 - 验证非 command session 消息 serialKey 是 sessionUuid
 - 验证非 command 无目标消息 serialKey 是 `new:openId`
+- **关键**：验证两个不同 messageId 的 command 不会互相阻塞（通过 SpoolQueue 模拟）
 
 **新增单测** `tests/unit/scanner/jsonl-preview.test.ts`：
 - 给定 JSONL 内容（含 assistant text + user prompt），验证 parseTail 返回 `last_user_preview` / `last_assistant_preview` 各 80 字符
+- 验证 user content 是字符串形态（形态 A）时正确提取
+- 验证 user content 是数组形态（形态 B）时正确提取
+- 验证 assistant content 是数组形态时正确提取（已有逻辑）
 - 验证空文件 / 损坏行不抛错
 - 验证只有 user 没有 assistant 时 `last_assistant_preview` 为 undefined
+- 验证 `last_message_preview` 仍然保留（不被本次改动破坏）
 
 **新增单测** `tests/unit/feishu/bot-do-switch.test.ts`：
 - 验证 doSwitch 在 session 正在 listSessions() 中时，isRunning=true
@@ -335,13 +354,13 @@ const card = buildListCard(sessions, allSessions.length, hasMore, runningUuids);
 ### 场景 A：session A streaming 中，用户发 /list
 
 ```
-T0: WSClient → onMessage({ text: "/list", ... })
+T0: WSClient → onMessage({ text: "/list", messageId: "m_list" })
     isCommand = true
-    serialKey = "cmd:openId"
-    spoolQueue.enqueue → pending/
+    serialKey = "cmd:openId:m_list"
+    spoolQueue.enqueue → pending/cmd:openId:m_list:m_list.json
 
-T1: dispatch() 轮询 → claimNext("cmd:openId")
-    processing 目录没有 cmd:* → claim 成功 → processing/cmd:openId:msg.json
+T1: dispatch() 轮询 → claimNext("cmd:openId:m_list")
+    processing 目录没有 cmd:openId:m_list:* → claim 成功
     activeWorkers 启动 handleClaimed → handleCommand → handleList → doCardList
 
 T2: doCardList 读 registry (syncBeforeCommand) → 列表卡片
@@ -354,23 +373,26 @@ T3: 飞书收到新卡片（包含 🔴 标记表示 session A 在跑）
 ### 场景 B：/new -- prompt + /list
 
 ```
-T0: /new -- prompt 入队 → pending/new:openId:msg1.json
-T1: claim → handleNew → createSessionFromPromptSDK
-    内调 sendSDKMessage，lockKey = "new:openId"
-    acquireSessionLock 成功 → spawn Claude
-T2: /list 入队 → pending/cmd:openId:msg2.json
+T0: /new -- p1 入队 → pending/cmd:openId:m_new1:m_new1.json
+T1: claim "cmd:openId:m_new1" → handleNew → createSessionFromPromptSDK
+    sendSDKMessage(lockKey="new:openId") → acquireSessionLock 成功 → spawn Claude
+T2: /list 入队 → pending/cmd:openId:m_list:m_list.json
 T3: claimOne 遍历 pending:
-      - msg1.serialKey = "new:openId" → claimNext("new:openId") → processing 中 → null
-      - msg2.serialKey = "cmd:openId" → claimNext("cmd:openId") → 没有 → claim 成功
+      - msg_new1.serialKey = "cmd:openId:m_new1" → claimNext("cmd:openId:m_new1")
+        → 检查 processing 目录是否有 "cmd:openId:m_new1:" 前缀
+        → 有 → 返回 null
+      - msg_list.serialKey = "cmd:openId:m_list" → claimNext("cmd:openId:m_list")
+        → 检查 processing 目录是否有 "cmd:openId:m_list:" 前缀
+        → 没有 → claim 成功 ✓
 T4: handleList 并行启动，不等 /new
 ```
 
 ### 场景 C：连续两个 /new -- prompt
 
 ```
-T0: /new -- p1 → claim 成功 → handleNew → createSessionFromPromptSDK
+T0: /new -- p1 → claim "cmd:openId:m_new1" 成功 → handleNew → createSessionFromPromptSDK
     sendSDKMessage(lockKey="new:openId") → acquireSessionLock OK → spawn Claude p1
-T1: /new -- p2 → claim "cmd:openId" 成功（不是同 serialKey）
+T1: /new -- p2 → claim "cmd:openId:m_new2" 成功（不同 serialKey）
     handleNew → createSessionFromPromptSDK
     sendSDKMessage(lockKey="new:openId") → acquireSessionLock BLOCKED（等 p1）
 T2: p1 完成 → releaseSessionLock → p2 接着跑
@@ -396,22 +418,27 @@ T2: p1 完成 → releaseSessionLock → p2 接着跑
 
 - 飞书侧用户体验：✅ 修复阻塞，✅ 切换时看到进展
 - CLI 侧：零影响（serialKey 计算在 FeishuBot.onMessage 内）
-- Scanner：新增两个字段，旧数据不丢
-- 兼容性：v3 registry 自动升级 v4，向后兼容
+- Scanner：新增两个字段，旧数据不丢；`last_message_preview` 字段保留不破坏
+- 兼容性：v3 registry 必须通过 `migrateV3toV4` 升级 v4（`version` bump）
 - 性能：scanner 每次 parseTail 多读 1 个字段，O(1) 开销
 - 存储：registry.json 每条 entry 多 2 个 80 字符字段，约 +200B/entry
+- 文件系统：spool 目录里会出现 `cmd:openId:msgId:msgId.json` 这种文件名（仅命名冗余，不影响 logic）
 
 ## 风险与缓解
 
 | 风险 | 缓解 |
 |------|------|
+| **command serialKey 用 `cmd:openId` 不带 messageId**（review 发现的初版错误）会让 `/new -- p1` 期间 `/list` 仍被同 serialKey 卡住 | 改用 `cmd:${openId}:${messageId}`，每个 command 独立；单元测试覆盖 5 个并发场景 |
 | command serialKey 改了后有遗漏的串行化点 | 单元测试覆盖 + e2e 场景 C |
-| v3 → v4 migration 缺字段导致 Zod 解析失败 | 字段都设 `optional()`，缺省 undefined 即可 |
+| v3 → v4 migration 缺函数导致 Zod 解析失败 → 走 `restoreFromBackup` 丢数据 | 实现 `migrateV3toV4(parsed)`：只 bump `parsed.version = 4`，新字段 optional 缺省 undefined |
 | list 卡片加运行中标记导致卡片过大 | preview 截断 60 字符（list 用），overview 截断 80 字符 |
 | `listSessions()` 不包含 waiting-in-spool 的 session | 这类不算"运行中"，本来就不应该标 🔴 |
 | `last_user_preview` 把用户的敏感命令也抓出来 | 已经是 80 字符 preview，没全量；用户自己用飞书发出去的自己能看到 |
+| user content 是字符串形态（不是数组）时 preview 抓不到 | scanner 同时覆盖两种 content 形态（review 补强） |
+| `last_message_preview` 被破坏 | scanner 同时**保留**对 `last_message_preview` 的写入（不改原逻辑），新字段独立 |
 | overview 卡片降级到 text 路径里 reply 消息体积过大 | 已有 splitReplyText，兜底路径不再变 |
 | `runningUuids` 跟 card title 重复导致 list 卡片字符超限 | list 元素不超 4KB，10 条 + 标记应该没问题；e2e 跑一遍确认 |
+| spool 文件名 `cmd:openId:msgId:msgId.json` 重复了 messageId | 仅文件名冗余，不影响 prefix 匹配逻辑（`startsWith` 仍工作） |
 
 ## 不做的事（YAGNI）
 
