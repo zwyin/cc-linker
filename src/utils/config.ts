@@ -28,6 +28,11 @@ interface ConfigData {
     max_concurrent_sessions: number;
     idle_timeout_ms: number;
     session_lock_timeout_ms: number;
+    // Session activity sync (v1.2)
+    cli_process_detection_enabled: boolean;
+    activity_cache_ttl_ms: number;
+    activity_marker_ttl_ms: number;
+    activity_detection_timeout_ms: number;
   };
   security: {
     allowed_roots: string[];
@@ -101,6 +106,10 @@ const DEFAULTS: ConfigData = {
     max_concurrent_sessions: 5,
     idle_timeout_ms: 30 * 60 * 1000,
     session_lock_timeout_ms: 10 * 60 * 1000,
+    cli_process_detection_enabled: true,
+    activity_cache_ttl_ms: 10_000,
+    activity_marker_ttl_ms: 30 * 60 * 1000,
+    activity_detection_timeout_ms: 3_000,
   },
   security: {
     allowed_roots: [],
