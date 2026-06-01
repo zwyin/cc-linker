@@ -150,6 +150,7 @@ export class JSONLScanner {
     for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
       try {
         const entry = JSON.parse(lines[i]);
+        if (NON_MESSAGE_TYPES.has(entry.type)) continue;
         if ((entry.type === 'assistant' || entry.type === 'user') && !lastActive) {
           lastActive = entry.timestamp;
         }
@@ -176,13 +177,22 @@ export class JSONLScanner {
     const projectDirMatch = jsonlPath.match(/\/([^/]+)\/[^/]+\.jsonl$/);
     const project_dir = projectDirMatch ? projectDirMatch[1] : null;
 
+    const messageLines = lines.filter(line => {
+      try {
+        const entry = JSON.parse(line);
+        return !NON_MESSAGE_TYPES.has(entry.type);
+      } catch {
+        return true; // 解析失败保留（兼容旧数据）
+      }
+    });
+
     return {
       origin,
       cwd: cwd ?? (process.env.HOME ?? homedir()),
       project_name: this.inferProjectName(cwd ?? (process.env.HOME ?? homedir())),
       project_dir,
       title,
-      message_count: lines.length,
+      message_count: messageLines.length,
       created_at: createdAt ?? new Date().toISOString(),
       last_active: lastActive ?? new Date().toISOString(),
       last_message_preview: preview || lastPrompt?.slice(0, 100) || '[无内容]',
