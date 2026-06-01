@@ -7,7 +7,7 @@ import { startupReconcile } from '../../runtime/reconciler';
 import { logger } from '../../utils/logger';
 import { config } from '../../utils/config';
 import { ProviderManager } from '../../utils/providers';
-import { cleanupOrphanProcesses } from '../../proxy/session';
+import { ClaudeSessionManager, cleanupOrphanProcesses } from '../../proxy/session';
 import { SessionActivityCache, cleanupOldActivityLogs } from '../../utils/session-activity';
 import { getClaudeProcessesByCwd } from '../../utils/process-info';
 import { RUNTIME_PID_FILE, RUNTIME_LOG_FILE } from '../../utils/paths';
@@ -216,6 +216,13 @@ async function createBotRuntime(
 
   cleanupOrphanProcesses();
 
+  // Step 3-5 (Task 6.2): create sessionManager + activityCache, inject cache, hand the
+  // same sessionManager instance to FeishuBot so it does not fall back to the
+  // module-level singleton (which would be missing the cache).
+  const sessionManager = new ClaudeSessionManager();
+  const activityCache = new SessionActivityCache();
+  sessionManager.setActivityCache(activityCache);
+
   if (!stateCoordinator.tryAcquire()) {
     log('ERROR', '获取 owner.lock 失败，可能有其他实例正在运行');
     process.exit(1);
@@ -252,6 +259,7 @@ async function createBotRuntime(
     spoolQueue,
     registry,
     providerManager,
+    sessionManager,
     replyFn,
     cardReplyFn,
     feishuClient: client,
