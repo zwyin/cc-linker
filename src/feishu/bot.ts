@@ -15,6 +15,7 @@ import { logger } from '../utils/logger';
 import { repairJsonlLastPrompt } from '../utils/jsonl-repair';
 import { formatTimeAgo } from '../cli/output';
 import { ProviderManager } from '../utils/providers';
+import { isSessionActive, SessionActivityCache, type ActivityResult } from '../utils/session-activity';
 import {
   extractImageKey,
   downloadMessageImage,
@@ -554,6 +555,25 @@ export class FeishuBot {
         const currentEntry = this.registry.get(sessionUuid);
         const cwd = msg.target.cwd || currentEntry?.cwd || process.env.HOME || '/';
 
+        if (!msg.skipActivityCheck && currentEntry) {
+          try {
+            const status = await isSessionActive(
+              currentEntry,
+              this.sessionManager.activityCache ?? new SessionActivityCache(),
+              'feishu-detects-cli'
+            );
+            if (status.isProcessing && status.confidence !== 'low') {
+              await this.sendCLIBusyCard(msg, currentEntry, status);
+              this.spoolQueue.markReplied(msg.messageId, msg.serialKey);
+              this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+              return;
+            }
+          } catch (err) {
+            logger.warn(`会话活跃检测失败: ${err}`);
+            // 降级：允许发送
+          }
+        }
+
         const useSDK = config.get<boolean>('sdk.enabled', true);
         if (useSDK) {
           await this.handleChatSDK(msg, sessionUuid, cwd, currentEntry);
@@ -605,6 +625,18 @@ export class FeishuBot {
         ].join('\n'));
         return;
     }
+  }
+
+  /**
+   * Stub — full implementation added in Task 5.6.
+   * Will use CardUpdater.createCLIBusyCard (Task 5.5) once that method exists.
+   */
+  private async sendCLIBusyCard(
+    _msg: SpoolMessage,
+    _entry: any,
+    status: ActivityResult,
+  ): Promise<void> {
+    logger.debug(`[stub] sendCLIBusyCard: ${status.reason}`);
   }
 
   /** Non-streaming path for existing session messages (extracted from original handleChat session case) */
