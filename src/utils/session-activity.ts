@@ -58,6 +58,10 @@ export interface ActivityEntry {
 
 // === Rotate 阈值 ===
 
+// Validate sessionUuid to prevent path traversal in activityLogPath.
+// sessionUuid comes from Claude CLI's session_id (always a UUID v4).
+const SESSION_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const MAX_ACTIVITY_LOG_BYTES = 64 * 1024;
 const ROTATE_KEEP_RATIO = 0.5;
 // Minimum time between rotations per session (30s). Caps IO cost on long
@@ -71,6 +75,12 @@ const lastRotationAt = new Map<string, number>();
 // === Sidecar 文件路径 ===
 
 export function activityLogPath(sessionUuid: string): string {
+  // Validate to prevent path traversal: sessionUuid must be a UUID.
+  // Throw on invalid input rather than silently using a sanitized version,
+  // because callers depend on the path being predictable for a given sessionUuid.
+  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+    throw new Error(`Invalid sessionUuid: ${JSON.stringify(sessionUuid)}`);
+  }
   return join(ACTIVITY_DIR, `${sessionUuid}.log`);
 }
 
@@ -83,6 +93,12 @@ export function writeActivityMarker(
   pid?: number
 ): void {
   if (!sessionUuid) return;  // ★ 保护空字符串
+
+  // Validate sessionUuid format to prevent path traversal
+  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+    logger.warn(`writeActivityMarker: invalid sessionUuid ${JSON.stringify(sessionUuid)}`);
+    return;
+  }
 
   try {
     mkdirSync(ACTIVITY_DIR, { recursive: true, mode: 0o700 });
@@ -112,6 +128,13 @@ export function writeActivityMarker(
 
 export function readLastActivityMarker(sessionUuid: string): ActivityMarker | null {
   if (!sessionUuid) return null;
+
+  // Validate sessionUuid format to prevent path traversal
+  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+    logger.warn(`readLastActivityMarker: invalid sessionUuid ${JSON.stringify(sessionUuid)}`);
+    return null;
+  }
+
   const path = activityLogPath(sessionUuid);
   if (!existsSync(path)) return null;
 

@@ -42,9 +42,9 @@ describe('Activity Marker (sidecar)', () => {
   });
 
   test('write + read 最近的 marker', async () => {
-    writeActivityMarker('test-uuid', 'feishu', 'start', 12345);
-    writeActivityMarker('test-uuid', 'feishu', 'heartbeat', 12345);
-    const marker = readLastActivityMarker('test-uuid');
+    writeActivityMarker('11111111-1111-1111-1111-111111111111', 'feishu', 'start', 12345);
+    writeActivityMarker('11111111-1111-1111-1111-111111111111', 'feishu', 'heartbeat', 12345);
+    const marker = readLastActivityMarker('11111111-1111-1111-1111-111111111111');
     expect(marker?.action).toBe('heartbeat');
     expect(marker?.platform).toBe('feishu');
     expect(marker?.pid).toBe(12345);
@@ -64,7 +64,7 @@ describe('isSessionActive (combined)', () => {
   test('direction=cli-detects-feishu + 无 marker → inactive', async () => {
     const cache = new SessionActivityCache();
     const result = await isSessionActive(
-      { sessionUuid: 'no-marker-uuid', cwd: '/tmp', jsonl_path: null },
+      { sessionUuid: '22222222-2222-2222-2222-222222222222', cwd: '/tmp', jsonl_path: null },
       cache,
       'cli-detects-feishu'
     );
@@ -86,9 +86,9 @@ describe('isSessionActive (combined)', () => {
 
   test('缓存命中：第二次调用不重新检测', async () => {
     const cache = new SessionActivityCache();
-    const entry = { sessionUuid: 'cached-uuid', cwd: '/tmp', jsonl_path: null };
+    const entry = { sessionUuid: '33333333-3333-3333-3333-333333333333', cwd: '/tmp', jsonl_path: null };
 
-    writeActivityMarker('cached-uuid', 'feishu', 'start');
+    writeActivityMarker('33333333-3333-3333-3333-333333333333', 'feishu', 'start');
     const r1 = await isSessionActive(entry, cache, 'cli-detects-feishu');
     expect(r1.source).toBe('marker');
 
@@ -99,15 +99,15 @@ describe('isSessionActive (combined)', () => {
 
   test('缓存失效：invalidate 后重新检测', async () => {
     const cache = new SessionActivityCache();
-    const entry = { sessionUuid: 'invalidate-uuid', cwd: '/tmp', jsonl_path: null };
+    const entry = { sessionUuid: '44444444-4444-4444-4444-444444444444', cwd: '/tmp', jsonl_path: null };
 
-    writeActivityMarker('invalidate-uuid', 'feishu', 'end');
+    writeActivityMarker('44444444-4444-4444-4444-444444444444', 'feishu', 'end');
     const r1 = await isSessionActive(entry, cache, 'cli-detects-feishu');
     expect(r1.isProcessing).toBe(false);
 
-    cache.invalidate('cli-detects-feishu:invalidate-uuid');
+    cache.invalidate('cli-detects-feishu:44444444-4444-4444-4444-444444444444');
 
-    writeActivityMarker('invalidate-uuid', 'feishu', 'heartbeat');
+    writeActivityMarker('44444444-4444-4444-4444-444444444444', 'feishu', 'heartbeat');
     const r2 = await isSessionActive(entry, cache, 'cli-detects-feishu');
     expect(r2.isProcessing).toBe(true);
   });
