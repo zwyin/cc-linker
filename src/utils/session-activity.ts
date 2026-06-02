@@ -473,7 +473,11 @@ export async function isSessionActive(
     { isProcessing: false, confidence: 'low' as ActivityConfidence, reason: 'detection_timeout', source: 'none' as ActivitySource }
   );
 
-  cache.set(cacheKey, result);
+  // Don't cache timeout-fallbacks: they signal "we don't know", not "definitely not active".
+  // Caching would cause up to 10s of false negatives (next message goes through without re-checking).
+  if (result.reason !== 'detection_timeout') {
+    cache.set(cacheKey, result);
+  }
   return result;
 }
 
