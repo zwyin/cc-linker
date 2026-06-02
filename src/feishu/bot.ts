@@ -484,6 +484,8 @@ export class FeishuBot {
     }
 
     const targetMsg = processingMsgs[0];
+
+    // 标记为强制发送（CAS via lockfile）
     const updated = await this.spoolQueue.updateMessageFlags(
       targetMsg.messageId,
       targetMsg.serialKey,
@@ -492,6 +494,18 @@ export class FeishuBot {
 
     if (!updated) return null;
 
+    // 移回 pending/ 目录，让 worker 下一轮 dispatch 重新 claim
+    // 重新 claim 时会看到 skipActivityCheck=true，跳过活跃检测直接处理
+    const requeued = this.spoolQueue.requeueFromProcessing(
+      targetMsg.messageId,
+      targetMsg.serialKey
+    );
+    if (!requeued) {
+      logger.warn(`强制发送后移回 pending 失败: ${targetMsg.serialKey}:${targetMsg.messageId}`);
+      return null;
+    }
+
+    // 失效缓存（让 worker 下次 loop 重新检测）
     this.sessionManager.activityCache?.invalidate(`feishu-detects-cli:${entry.sessionUuid}`);
 
     return null;
@@ -605,8 +619,10 @@ export class FeishuBot {
             );
             if (status.isProcessing && status.confidence !== 'low') {
               await this.sendCLIBusyCard(msg, currentEntry, status);
-              this.spoolQueue.markReplied(msg.messageId, msg.serialKey);
-              this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+              // Keep message in processing/ with awaitingForceSend=true so user can force-send
+              this.spoolQueue.updateProcessingMessage(msg.messageId, msg.serialKey, {
+                awaitingForceSend: true,
+              });
               return;
             }
           } catch (err) {

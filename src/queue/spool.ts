@@ -278,6 +278,17 @@ export class SpoolQueue {
     this.moveMessage(messageId, serialKey, [this.processingDir], this.repliedDir, 'replied', replyMessageId);
   }
 
+  /**
+   * Move a message from processing/ back to pending/ so the next dispatch cycle
+   * can re-claim it. Used for force-send: after the user clicks "强制发送" on
+   * a busy card, the message (which is still in processing/ with
+   * awaitingForceSend=true) is moved back so the worker picks it up again
+   * and skips the activity check (skipActivityCheck=true).
+   */
+  requeueFromProcessing(messageId: string, serialKey: string): SpoolMessage | null {
+    return this.moveMessage(messageId, serialKey, [this.processingDir], this.pendingDir, 'pending');
+  }
+
   updateProcessingMessage(messageId: string, serialKey: string, patch: Partial<SpoolMessage>): SpoolMessage | null {
     const path = join(this.processingDir, `${serialKey}:${messageId}.json`);
     if (!existsSync(path)) return null;
