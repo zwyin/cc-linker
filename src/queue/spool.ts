@@ -44,6 +44,7 @@ export interface SpoolMessage {
   imagePaths?: string[];
   skipActivityCheck?: boolean;    // 强制发送标记
   awaitingForceSend?: boolean;    // 等待用户决策
+  busySinceAt?: string;           // 等待开始时间 (Issue 2.1 orphan timeout)
 }
 
 export interface Receipt {

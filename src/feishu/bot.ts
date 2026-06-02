@@ -88,6 +88,12 @@ export class FeishuBot {
   private activePermissionHandlers = new Map<string, PermissionHandler>();
   private lastImageCleanup = 0;
 
+  /** Maximum time to wait for user to click "force-send" on busy card before
+   *  auto-processing the message as force-send. Prevents infinite accumulation
+   *  of orphan messages in processing/ that would be re-cycled on daemon restart.
+   *  Default: 60 seconds. */
+  private static readonly BUSY_TIMEOUT_MS = 60_000;
+
   constructor(opts: {
     userManager: UserManager;
     listSnapshotManager: ListSnapshotManager;
@@ -529,6 +535,29 @@ export class FeishuBot {
       return;
     }
 
+    // Check for orphaned busy message (Issue 2.1)
+    // If the message has been waiting for user to click "force-send" for too long,
+    // auto-process it as if the user had clicked. Prevents infinite accumulation
+    // of orphan messages in processing/ that get re-cycled by recoverProcessing.
+    if (msg.awaitingForceSend && msg.busySinceAt) {
+      const waited = Date.now() - new Date(msg.busySinceAt).getTime();
+      if (waited >= FeishuBot.BUSY_TIMEOUT_MS) {
+        logger.info(
+          `Busy message ${msg.messageId} waited ${Math.floor(waited / 1000)}s, ` +
+          `auto-processing as force-send (orphan timeout)`
+        );
+        this.spoolQueue.updateProcessingMessage(msg.messageId, msg.serialKey, {
+          skipActivityCheck: true,
+          awaitingForceSend: false,
+        });
+        // Invalidate cache so next detection is fresh
+        if (this.registry.get(msg.serialKey)) {
+          this.sessionManager.activityCache?.invalidate(`feishu-detects-cli:${msg.serialKey}`);
+        }
+        // Continue processing (don't return)
+      }
+    }
+
     try {
       if (msg.responseText) {
         await this.replyAndFinalize(msg, msg.responseText);
@@ -618,10 +647,14 @@ export class FeishuBot {
               'feishu-detects-cli'
             );
             if (status.isProcessing && status.confidence !== 'low') {
-              await this.sendCLIBusyCard(msg, currentEntry, status);
-              // Keep message in processing/ with awaitingForceSend=true so user can force-send
+              const busyCardId = await this.sendCLIBusyCard(msg, currentEntry, status);
+              // Keep message in processing/ with awaitingForceSend=true so user can force-send.
+              // Record busyCardId as replyMessageId so cleanup processes can track the card.
+              // Set busySinceAt for orphan-message timeout (Issue 2.1).
               this.spoolQueue.updateProcessingMessage(msg.messageId, msg.serialKey, {
                 awaitingForceSend: true,
+                replyMessageId: busyCardId,
+                busySinceAt: new Date().toISOString(),
               });
               return;
             }
@@ -688,9 +721,9 @@ export class FeishuBot {
     msg: SpoolMessage,
     entry: any,
     status: ActivityResult,
-  ): Promise<void> {
+  ): Promise<string> {
     const cardUpdater = new CardUpdater(this.feishuClient, { throttle_ms: 0 });
-    await cardUpdater.createCLIBusyCard(
+    return await cardUpdater.createCLIBusyCard(
       msg.openId,
       entry?.title ?? '未命名会话',
       status
