@@ -8,8 +8,8 @@ import { ACTIVITY_DIR } from './paths';
 import {
   appendFileSync, readFileSync, existsSync, statSync, mkdirSync,
   unlinkSync, writeFileSync, readdirSync, openSync, readSync, closeSync,
+  realpathSync, readlinkSync,
 } from 'fs';
-import { realpathSync, readlinkSync } from 'fs';
 import { join } from 'path';
 import { config } from './config';
 import { logger } from './logger';
