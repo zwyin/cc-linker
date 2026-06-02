@@ -41,6 +41,8 @@
     "pack:test": "bun run build:npm && npm pack && mkdir -p /tmp/test-cc-linker && npm install --prefix /tmp/test-cc-linker $(ls -t *.tgz | head -1)",
     "reload": "bun run build:npm && node scripts/reload-daemon.js",
     "reload:force": "bun run build:npm && node scripts/reload-daemon.js --force",
+    "deploy": "node scripts/deploy-local.js",
+    "deploy:force": "node scripts/deploy-local.js --force",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit"
