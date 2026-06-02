@@ -394,6 +394,25 @@ cc-linker 支持两种分发形式，构建脚本不同：
 | **独立二进制** | `bun run build` | `dist/cc-linker` | 单机使用，无需额外运行时 |
 | **npm 包** | `bun run build:npm` | `dist/cli.js` | `npm install -g` 全局安装（运行时仍需 Bun） |
 
+### 开发命令速查
+
+| 命令 | 行为 | 适用场景 |
+|------|------|---------|
+| `bun run dev <命令>` | 直接运行 `src/index.ts`（不构建） | 开发调试 |
+| `bun run build:npm` | 构建 npm 包 → `dist/cli.js` | 构建产物 |
+| `bun run reload` | 构建 → 如果 daemon 在运行则自动重启 | 开发时快速生效（适合 `bun link` 安装） |
+| `bun run reload:force` | 构建 → 强制重启（没在运行也会启动） | 开发时确保 daemon 在运行 |
+| **`bun run deploy`** ⭐ | **构建 → 打包 → 全局安装 → 自动重启** | **正式发布到全局并生效** |
+| `bun run deploy:force` | 构建 → 打包 → 全局安装 → 强制重启 | 同上，确保启动 |
+| `bun run pack:test` | 构建 → 打包 → 安装到隔离目录 | 验证 npm 包完整性 |
+| `bun run typecheck` | TypeScript 类型检查 | CI/提交前 |
+| `bun test` | 运行所有测试 | CI/提交前 |
+
+> **💡 `deploy` 与 `reload` 的区别**：
+> - `reload` 只更新源码目录的 `dist/cli.js`，重启的是**旧的全局安装版本**（如果通过 `npm install -g` 安装）
+> - `deploy` 会 `npm install -g ./cc-linker-x.y.z.tgz`，确保全局安装的是最新代码，再重启
+> - 通过 `bun link` 本地链接安装的用户，`reload` 即可生效（符号链接自动指向源码目录）
+
 ### npm 包本地测试
 
 正式发布前，建议先在本地打包安装验证，确保 `files` 字段和 `bin` 入口正确。
