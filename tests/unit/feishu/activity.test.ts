@@ -289,7 +289,7 @@ describe('FeishuBot activity sync (busy → force-send round-trip)', () => {
     expect(textReplies.some(r => r.includes('normal response'))).toBe(true);
   });
 
-  test('force-send handler is a no-op when no message in processing/ for session', async () => {
+  test('force-send handler returns status card when no message in processing/ for session', async () => {
     const sessionUuid = '33333333-3333-3333-3333-333333333333';
     const openId = 'ou_activity3';
 
@@ -310,8 +310,15 @@ describe('FeishuBot activity sync (busy → force-send round-trip)', () => {
       message: { message_id: 'msg-missing' },
     });
 
-    // No exception, no state change
-    expect(result).toBeNull();
+    // Returns a status card explaining the message has been processed
+    // (instead of a silent null which left the user with no feedback)
+    expect(result).not.toBeNull();
+    const card = result as Record<string, unknown>;
+    const header = card.header as Record<string, unknown>;
+    expect((header.title as Record<string, unknown>).content).toContain('消息已被处理');
+    const elements = card.elements as Array<Record<string, unknown>>;
+    const md = elements.find(e => e.tag === 'markdown') as Record<string, unknown>;
+    expect(md.content as string).toContain('该消息已不在等待状态');
     expect(spoolQueue.listProcessing()).toHaveLength(0);
     expect(spoolQueue.listPending()).toHaveLength(0);
   });

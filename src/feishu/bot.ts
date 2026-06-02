@@ -486,7 +486,18 @@ export class FeishuBot {
       .filter(m => m.serialKey === entry.sessionUuid && m.openId === openId);
 
     if (processingMsgs.length === 0) {
-      return null;
+      // User clicked but no message in processing/ for this session.
+      // Possible causes: user double-clicked, bot restarted, or the message
+      // was already force-sent by another path. Return a status card so the
+      // user gets feedback rather than a silent no-op.
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: 'ℹ️ 消息已被处理' }, template: 'grey' },
+        elements: [{
+          tag: 'markdown',
+          content: '**该消息已不在等待状态。**\n\n可能的原因：\n- 你点击了多次（重复点击会忽略后续的）\n- Bot 重启后该消息已被自动恢复处理\n- 该消息已被其他途径强制发送\n\n请检查飞书侧是否已收到该消息的回复。',
+        }],
+      };
     }
 
     const targetMsg = processingMsgs[0];
