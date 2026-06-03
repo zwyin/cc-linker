@@ -130,6 +130,12 @@ export class CardUpdater {
     return messageId;
   }
 
+  /** Patch an existing busy card in-place to the confirm step */
+  async patchCLIBusyCardToConfirm(messageId: string, sessionTitle: string): Promise<void> {
+    this.cardMessageId = messageId;
+    await this.patchCard(this.buildForceSendConfirmCard(sessionTitle));
+  }
+
   /** Create a CLI busy notification card with optional force-send action */
   async createCLIBusyCard(
     openId: string,
@@ -287,11 +293,54 @@ export class CardUpdater {
           content: `会话 **"${esc(sessionTitle)}"** 正在 **CLI 终端** 处理中。\n\n> 💡 检测依据：${esc(status.reason)}\n> 建议等待 CLI 侧处理完毕后再继续对话。`,
         },
         {
+          tag: 'markdown',
+          content: `**风险提示**：点击"强制发送"**不会**中断 CLI 任务，而是让飞书侧**同时**处理这条消息。后果：\n\n• 两端会**并行** resume 同一个会话\n• JSONL 写入可能**冲突**，上下文可能**不一致**\n\n请确认你理解上述风险后再操作。`,
+        },
+        {
           tag: 'action',
           actions: [
             {
               tag: 'button',
-              text: { tag: 'plain_text', content: '⚡ 强制发送（会打断 CLI）' },
+              text: { tag: 'plain_text', content: '🗑 取消等待（释放 serialKey）' },
+              type: 'default',
+              value: { type: 'cli_cancel_wait' },
+            },
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '⚠️ 我了解风险，仍要发送' },
+              type: 'danger',
+              value: { type: 'cli_force_send_confirm' },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  /**
+   * 二次确认卡片 - 用户点击"我了解风险"后弹出
+   * 必须再次点击才真正执行强制发送
+   */
+  buildForceSendConfirmCard(
+    sessionTitle: string,
+  ): Record<string, unknown> {
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: {
+        title: { tag: 'plain_text', content: '🔴 确认强制发送？' },
+        template: 'red',
+      },
+      elements: [
+        {
+          tag: 'markdown',
+          content: `会话 **"${esc(sessionTitle)}"** 强制发送将立即执行，**不可撤销**。\n\n请确认是否继续？`,
+        },
+        {
+          tag: 'action',
+          actions: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '✅ 确认发送' },
               type: 'danger',
               value: { type: 'cli_force_send' },
             },
