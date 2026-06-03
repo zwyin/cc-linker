@@ -44,6 +44,17 @@ function migrateV1toV2(parsed: any): void {
   parsed.version = 2;
 }
 
+/** Migrate v3 registry to v4 schema */
+function migrateV3toV4(parsed: any): void {
+  if (parsed.version === 3) {
+    parsed.version = 4;
+    // 不主动改 sessions，避免破坏数据
+    // last_user_preview / last_assistant_preview 是 optional 字段，缺省 undefined
+  }
+  // parsed.version === 4 时跳过（多次 load 幂等）
+  // 其他值让 Zod 抛错（异常路径走 restoreFromBackup）
+}
+
 export class RegistryManager {
   private data: Registry;
   private basePath: string;
@@ -85,6 +96,7 @@ export class RegistryManager {
       let parsed = JSON.parse(raw);
 
       migrateV1toV2(parsed);
+      migrateV3toV4(parsed);
       return RegistrySchema.parse(parsed);
     } catch (err) {
       logger.warn('Registry 损坏，尝试从备份恢复...');
@@ -110,6 +122,7 @@ export class RegistryManager {
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
       migrateV1toV2(parsed);
+      migrateV3toV4(parsed);
       this.data = RegistrySchema.parse(parsed);
     });
   }
@@ -123,7 +136,7 @@ export class RegistryManager {
 
   private emptyRegistry(): Registry {
     return {
-      version: 3,
+      version: 4,
       updated_at: new Date().toISOString(),
       sessions: {},
     };
@@ -320,6 +333,7 @@ export class RegistryManager {
     try {
       let parsed = JSON.parse(readFileSync(this.registryPath, 'utf8'));
       migrateV1toV2(parsed);
+      migrateV3toV4(parsed);
       return RegistrySchema.parse(parsed);
     } catch {
       return this.restoreFromBackup() ?? this.emptyRegistry();
