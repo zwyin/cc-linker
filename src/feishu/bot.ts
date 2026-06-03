@@ -86,6 +86,13 @@ export class FeishuBot {
   private stopRequested = false;
   private activeWorkers = new Set<Promise<void>>();
   private activePermissionHandlers = new Map<string, PermissionHandler>();
+  /**
+   * Tracks the 1200ms-delayed "click → 处理中" patch timer for each permission card,
+   * keyed by Feishu message_id. Used by the post-operation completion patcher to
+   * cancel the click's pending patch BEFORE writing "✅ 已完成", so the click patch
+   * can't fire later and overwrite the final state.
+   */
+  private activePermissionCardTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private lastImageCleanup = 0;
 
   /** Maximum time to wait for user to click "force-send" on busy card before
@@ -355,6 +362,14 @@ export class FeishuBot {
       return await this.handleForceSendCardAction(openId, valueObj, message?.message_id);
     }
 
+    if (valueObj && valueObj.type === 'cli_force_send_confirm') {
+      return await this.handleForceSendConfirmAction(openId, valueObj, message?.message_id);
+    }
+
+    if (valueObj && valueObj.type === 'cli_cancel_wait') {
+      return await this.handleCancelWaitAction(openId, valueObj, message?.message_id);
+    }
+
     const sessionId = value as string;
 
     switch (tag) {
@@ -422,8 +437,12 @@ export class FeishuBot {
     // Delay patch to avoid racing with Feishu's card action processing lock.
     // Feishu may lock the card during event handling; patching immediately
     // can be silently ignored. A short delay lets the event finish first.
+    // We track the timer so the post-operation completion patcher can cancel
+    // it — otherwise a late click patch could overwrite "✅ 已完成" with
+    // "⏳ 处理中".
     if (this.feishuClient && messageId) {
-      setTimeout(async () => {
+      const timeout = setTimeout(async () => {
+        this.activePermissionCardTimeouts.delete(messageId);
         try {
           logger.info(`Permission card: delayed patch starting, messageId=${messageId}`);
           const cardUpdater = new CardUpdater(this.feishuClient, { throttle_ms: 0 });
@@ -438,6 +457,7 @@ export class FeishuBot {
           logger.warn(`Permission card: delayed patch failed: ${err}`);
         }
       }, 1200);
+      this.activePermissionCardTimeouts.set(messageId, timeout);
     }
 
     const resolved = handler.resolveUserDecision(index, approved);
@@ -536,6 +556,72 @@ export class FeishuBot {
       if (claimed) return claimed;
     }
     return null;
+  }
+
+  /**
+   * 用户在 CLI busy 卡片上点击"我了解风险，仍要发送"
+   * 把当前卡片 patch 为"确认发送"卡片，要求二次确认
+   */
+  private async handleForceSendConfirmAction(
+    openId: string,
+    _valueObj: Record<string, unknown>,
+    messageId?: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    const entry = this.userManager.getEntry(openId);
+    if (!entry?.sessionUuid) return null;
+
+    if (!messageId || !this.feishuClient) {
+      logger.warn(`force-send confirm: missing messageId or feishuClient`);
+      return null;
+    }
+
+    const currentEntry = this.registry.get(entry.sessionUuid);
+    const cardUpdater = new CardUpdater(this.feishuClient, { throttle_ms: 0 });
+    cardUpdater.setCardMessageId(messageId);
+    await cardUpdater.patchCLIBusyCardToConfirm(
+      messageId,
+      currentEntry?.title ?? '未命名会话',
+    );
+    return null;
+  }
+
+  /**
+   * 用户点击"取消等待"：把 processing/ 中 awaitingForceSend 的消息标记为 done，
+   * 释放 serialKey，让同 session 的新消息可以被处理。
+   * 这一动作不发送新消息，仅放弃等待。
+   */
+  private async handleCancelWaitAction(
+    openId: string,
+    _valueObj: Record<string, unknown>,
+    _messageId?: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    const entry = this.userManager.getEntry(openId);
+    if (!entry?.sessionUuid) return null;
+
+    const processingMsgs = this.spoolQueue.listProcessing()
+      .filter(m => m.serialKey === entry.sessionUuid && m.openId === openId && m.awaitingForceSend);
+
+    if (processingMsgs.length === 0) {
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: 'ℹ️ 已无等待消息' }, template: 'grey' },
+        elements: [{ tag: 'markdown', content: '**该会话当前没有等待中的消息。**' }],
+      };
+    }
+
+    for (const m of processingMsgs) {
+      logger.info(`用户取消等待: ${m.messageId}`);
+      this.spoolQueue.markDone(m.messageId, m.serialKey);
+    }
+
+    return {
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: '✅ 已取消等待' }, template: 'green' },
+      elements: [{
+        tag: 'markdown',
+        content: '**已取消等待该消息。**\n\nserialKey 已释放，你可以继续发送新消息。',
+      }],
+    };
   }
 
   /** Process a claimed message (already moved to processing dir). */
@@ -887,7 +973,10 @@ export class FeishuBot {
     let cardMessageId: string | null = null;
     let cardInitFailed = false;
     let currentHandler: PermissionHandler | null = null;
-    let permCardMessageId: string | null = null;
+    // Track ALL permission card messageIds created during this operation.
+    // Previously a single `permCardMessageId` variable was overwritten by each
+    // subsequent permission prompt, leaving earlier cards stuck in "⏳ 处理中".
+    const permCardMessageIds = new Set<string>();
 
     try {
       if (this.feishuClient) {
@@ -929,9 +1018,10 @@ export class FeishuBot {
           // Store handler BEFORE await so user clicks during card creation are handled
           this.activePermissionHandlers.set(sdkHandler.getHandlerId(), sdkHandler);
           try {
-            permCardMessageId = await permCardUpdater.createPermissionCard(
+            const createdId = await permCardUpdater.createPermissionCard(
               msg.openId, prompt.toolName, actionText, prompt.index, sdkHandler.getHandlerId(),
             );
+            if (createdId) permCardMessageIds.add(createdId);
           } catch (err: any) {
             logger.error(`SDK Stream: 权限卡片创建失败: ${err}`);
             // Auto-deny if card cannot be shown to user
@@ -967,15 +1057,26 @@ export class FeishuBot {
         cardUpdater.dispose();
       }
 
-      // Update permission card to completed state after operation finishes
-      if (permCardMessageId && this.feishuClient) {
+      // Update ALL permission cards to completed state after operation finishes.
+      // Keep the 1200ms delay so this fires AFTER any still-pending click-handler
+      // patches (which run at click-time + 1200ms). For each card we also cancel
+      // the click handler's pending timer — otherwise it could fire after us and
+      // overwrite "✅ 已完成" with "⏳ 处理中".
+      if (permCardMessageIds.size > 0 && this.feishuClient) {
         setTimeout(async () => {
-          try {
-            const permCardUpdater = new CardUpdater(this.feishuClient!, { throttle_ms: 0 });
-            permCardUpdater.setCardMessageId(permCardMessageId!);
-            await permCardUpdater.updatePermissionCardToCompleted();
-          } catch (e: any) {
-            logger.warn(`SDK Stream: permission card completion update failed: ${e}`);
+          for (const cardId of permCardMessageIds) {
+            const pending = this.activePermissionCardTimeouts.get(cardId);
+            if (pending) {
+              clearTimeout(pending);
+              this.activePermissionCardTimeouts.delete(cardId);
+            }
+            try {
+              const permCardUpdater = new CardUpdater(this.feishuClient!, { throttle_ms: 0 });
+              permCardUpdater.setCardMessageId(cardId);
+              await permCardUpdater.updatePermissionCardToCompleted();
+            } catch (e: any) {
+              logger.warn(`SDK Stream: permission card completion update failed (${cardId}): ${e}`);
+            }
           }
         }, 1200);
       }
@@ -1187,6 +1288,10 @@ export class FeishuBot {
     let cardMessageId: string | null = null;
     let cardInitFailed = false;
     let currentHandler: PermissionHandler | null = null;
+    // Track ALL permission card messageIds created during this new-session operation.
+    // The completion block (previously MISSING in this code path) patches all of
+    // them to "✅ 已完成" after the operation finishes.
+    const permCardMessageIds = new Set<string>();
 
     try {
       if (this.feishuClient) {
@@ -1228,9 +1333,10 @@ export class FeishuBot {
           // Store handler BEFORE await so user clicks during card creation are handled
           this.activePermissionHandlers.set(sdkHandler.getHandlerId(), sdkHandler);
           try {
-            await permCardUpdater.createPermissionCard(
+            const createdId = await permCardUpdater.createPermissionCard(
               msg.openId, prompt.toolName, actionText, prompt.index, sdkHandler.getHandlerId(),
             );
+            if (createdId) permCardMessageIds.add(createdId);
           } catch (err: any) {
             logger.error(`SDK Stream: 权限卡片创建失败: ${err}`);
             // Auto-deny if card cannot be shown to user
@@ -1285,6 +1391,29 @@ export class FeishuBot {
         }
         cardMessageId = cardUpdater.getCardMessageId();
         cardUpdater.dispose();
+      }
+
+      // Update ALL permission cards to completed state after operation finishes.
+      // (Previously this block did NOT exist in createSessionFromPromptSDK, so
+      // permission cards created during new-session creation were never patched
+      // to "✅ 已完成" — they stayed at "⏳ 处理中" forever.)
+      if (permCardMessageIds.size > 0 && this.feishuClient) {
+        setTimeout(async () => {
+          for (const cardId of permCardMessageIds) {
+            const pending = this.activePermissionCardTimeouts.get(cardId);
+            if (pending) {
+              clearTimeout(pending);
+              this.activePermissionCardTimeouts.delete(cardId);
+            }
+            try {
+              const permCardUpdater = new CardUpdater(this.feishuClient!, { throttle_ms: 0 });
+              permCardUpdater.setCardMessageId(cardId);
+              await permCardUpdater.updatePermissionCardToCompleted();
+            } catch (e: any) {
+              logger.warn(`SDK Stream (new): permission card completion update failed (${cardId}): ${e}`);
+            }
+          }
+        }, 1200);
       }
 
       this.registry.upsert(result.sessionId, {
