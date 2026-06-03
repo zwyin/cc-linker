@@ -69,55 +69,66 @@ export async function resume(registry: RegistryManager, target?: string, opts: R
     throw new CCLinkerError(err.code as any, msg);
   }
 
-  // Check if target session is actively being processed by the bot
-  const busy = isSessionBusy(uuid);
-  if (busy) {
-    if (opts.force) {
+  // 统一检查：bot 处理中（spool busy） + 飞书侧活跃（marker）
+  // 任一为真就提示用户一次
+  if (opts.force) {
+    // --force: 跳过所有冲突检查，仅打印信息
+    if (isSessionBusy(uuid)) {
       console.log(chalk.yellow(`⚠️ 会话 ${uuid.slice(0, 8)} 正在被 Bot 处理，--force 跳过冲突警告`));
     } else {
+      console.log(chalk.yellow(`⚠️ --force 跳过飞书侧活跃检测`));
+    }
+  } else {
+    // 综合检测：先看 bot 是否正在处理；再看飞书 marker
+    const busy = isSessionBusy(uuid);
+    let feishuStatus: { isProcessing: boolean; reason: string; confidence: string } | null = null;
+
+    if (!busy) {
+      try {
+        const activityCache = new SessionActivityCache();
+        const currentEntry = registry.get(uuid);
+        if (currentEntry) {
+          const result = await isSessionActive(
+            { sessionUuid: uuid, cwd: currentEntry.cwd, jsonl_path: currentEntry.jsonl_path },
+            activityCache,
+            'cli-detects-feishu',
+          );
+          if (result.isProcessing) {
+            feishuStatus = { isProcessing: true, reason: result.reason, confidence: result.confidence };
+          }
+        }
+      } catch (err) {
+        logger.warn(`飞书侧活跃检测失败: ${err}`);
+        // 降级：视为不活跃，不阻止
+      }
+    }
+
+    if (busy || feishuStatus) {
+      // 风险提示：与飞书侧卡片文案对齐
+      let reason: string;
+      if (busy) {
+        reason = '飞书 Bot 正在处理此会话的消息';
+      } else {
+        const ago = feishuStatus!.reason.match(/(\d+)s_ago/)?.[1] ?? '?';
+        const strength = feishuStatus!.confidence === 'high' ? '正在' : '可能正在';
+        reason = `${strength}被飞书 Bot 处理中（${ago} 秒前活跃）`;
+      }
+
+      console.log(chalk.yellow(`\n⚠️  风险提示：会话 ${uuid.slice(0, 8)} ${reason}。`));
+      console.log(chalk.yellow('   强制 resume **不会**中断飞书任务，而是让 CLI 侧**同时** resume 同一会话。'));
+      console.log(chalk.yellow('   可能后果：两端 JSONL 写入冲突、上下文历史不一致。'));
+      console.log('');
+
       const { confirmed } = await inquirer.prompt([{
         type: 'confirm',
         name: 'confirmed',
-        message: `会话 ${uuid.slice(0, 8)} 正在被 Bot 处理，同时用 CLI 恢复可能导致状态冲突。继续？`,
+        message: chalk.red('⚠️ 我了解风险，仍要强制 resume？'),
         default: false,
       }]);
       if (!confirmed) return;
-    }
-  } else if (StateCoordinator.isLocked()) {
-    // Bot is running but not processing this session — safe to resume
-    console.log(chalk.dim('Bot 正在运行，但未处理此会话，可安全恢复'));
-  }
-
-  // 2. 新增检测：飞书侧是否活跃（通过 marker）
-  // 注意：复用 --force 选项语义
-  if (!opts.force) {
-    const activityCache = new SessionActivityCache();
-    try {
-      const currentEntry = registry.get(uuid);
-      if (currentEntry) {
-        const status = await isSessionActive(
-          { sessionUuid: uuid, cwd: currentEntry.cwd, jsonl_path: currentEntry.jsonl_path },
-          activityCache,
-          'cli-detects-feishu'
-        );
-        if (status.isProcessing) {
-          const strengthText = status.confidence === 'high' ? '正在' : '可能';
-          console.log(chalk.yellow(`⚠️  该会话${strengthText}被飞书侧处理中。`));
-          console.log(chalk.yellow(`   原因: ${status.reason}`));
-          console.log(chalk.yellow('   继续 resume 可能会打断飞书侧的任务。'));
-
-          const { confirmed } = await inquirer.prompt([{
-            type: 'confirm',
-            name: 'confirmed',
-            message: '是否强制继续？',
-            default: false,
-          }]);
-          if (!confirmed) return;
-        }
-      }
-    } catch (err) {
-      logger.warn(`飞书侧活跃检测失败: ${err}`);
-      // 降级：继续
+    } else if (StateCoordinator.isLocked()) {
+      // Bot 跑着但此 session 不活跃 + marker 不活跃 → 安全
+      console.log(chalk.dim('Bot 正在运行，但此会话未被处理，可安全恢复'));
     }
   }
 

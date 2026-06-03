@@ -362,14 +362,6 @@ export class FeishuBot {
       return await this.handleForceSendCardAction(openId, valueObj, message?.message_id);
     }
 
-    if (valueObj && valueObj.type === 'cli_force_send_confirm') {
-      return await this.handleForceSendConfirmAction(openId, valueObj, message?.message_id);
-    }
-
-    if (valueObj && valueObj.type === 'cli_cancel_wait') {
-      return await this.handleCancelWaitAction(openId, valueObj, message?.message_id);
-    }
-
     const sessionId = value as string;
 
     switch (tag) {
@@ -559,71 +551,6 @@ export class FeishuBot {
   }
 
   /**
-   * 用户在 CLI busy 卡片上点击"我了解风险，仍要发送"
-   * 把当前卡片 patch 为"确认发送"卡片，要求二次确认
-   */
-  private async handleForceSendConfirmAction(
-    openId: string,
-    _valueObj: Record<string, unknown>,
-    messageId?: string,
-  ): Promise<string | Record<string, unknown> | null> {
-    const entry = this.userManager.getEntry(openId);
-    if (!entry?.sessionUuid) return null;
-
-    if (!messageId || !this.feishuClient) {
-      logger.warn(`force-send confirm: missing messageId or feishuClient`);
-      return null;
-    }
-
-    const currentEntry = this.registry.get(entry.sessionUuid);
-    const cardUpdater = new CardUpdater(this.feishuClient, { throttle_ms: 0 });
-    cardUpdater.setCardMessageId(messageId);
-    await cardUpdater.patchCLIBusyCardToConfirm(
-      messageId,
-      currentEntry?.title ?? '未命名会话',
-    );
-    return null;
-  }
-
-  /**
-   * 用户点击"取消等待"：把 processing/ 中 awaitingForceSend 的消息标记为 done，
-   * 释放 serialKey，让同 session 的新消息可以被处理。
-   * 这一动作不发送新消息，仅放弃等待。
-   */
-  private async handleCancelWaitAction(
-    openId: string,
-    _valueObj: Record<string, unknown>,
-    _messageId?: string,
-  ): Promise<string | Record<string, unknown> | null> {
-    const entry = this.userManager.getEntry(openId);
-    if (!entry?.sessionUuid) return null;
-
-    const processingMsgs = this.spoolQueue.listProcessing()
-      .filter(m => m.serialKey === entry.sessionUuid && m.openId === openId && m.awaitingForceSend);
-
-    if (processingMsgs.length === 0) {
-      return {
-        config: { wide_screen_mode: true },
-        header: { title: { tag: 'plain_text', content: 'ℹ️ 已无等待消息' }, template: 'grey' },
-        elements: [{ tag: 'markdown', content: '**该会话当前没有等待中的消息。**' }],
-      };
-    }
-
-    for (const m of processingMsgs) {
-      logger.info(`用户取消等待: ${m.messageId}`);
-      this.spoolQueue.markDone(m.messageId, m.serialKey);
-    }
-
-    return {
-      config: { wide_screen_mode: true },
-      header: { title: { tag: 'plain_text', content: '✅ 已取消等待' }, template: 'green' },
-      elements: [{
-        tag: 'markdown',
-        content: '**已取消等待该消息。**\n\nserialKey 已释放，你可以继续发送新消息。',
-      }],
-    };
-  }
-
   /** Process a claimed message (already moved to processing dir). */
   private async handleClaimed(msg: SpoolMessage): Promise<void> {
     if (this.spoolQueue.hasSentDelivery(msg.messageId)) {
@@ -745,6 +672,7 @@ export class FeishuBot {
             );
             if (status.isProcessing && status.confidence !== 'low') {
               const busyCardId = await this.sendCLIBusyCard(msg, currentEntry, status);
+              logger.info(`[activity] busy card created: messageId=${msg.messageId}, busyCardId=${busyCardId}`);
               // Keep message in processing/ with awaitingForceSend=true so user can force-send.
               // Record busyCardId as replyMessageId so cleanup processes can track the card.
               // Set busySinceAt for orphan-message timeout (Issue 2.1).

@@ -294,22 +294,18 @@ export class CardUpdater {
         },
         {
           tag: 'markdown',
-          content: `**风险提示**：点击"强制发送"**不会**中断 CLI 任务，而是让飞书侧**同时**处理这条消息。后果：\n\n• 两端会**并行** resume 同一个会话\n• JSONL 写入可能**冲突**，上下文可能**不一致**\n\n请确认你理解上述风险后再操作。`,
+          content: `**风险提示**：点击下方按钮**不会**中断 CLI 任务，而是让飞书侧**同时**处理这条消息。后果：\n\n• 两端会**并行** resume 同一个会话\n• JSONL 写入可能**冲突**，上下文可能**不一致**\n\n继续发送新消息将自动取代此等待。`,
         },
         {
           tag: 'action',
           actions: [
             {
               tag: 'button',
-              text: { tag: 'plain_text', content: '🗑 取消等待（释放 serialKey）' },
-              type: 'default',
-              value: { type: 'cli_cancel_wait' },
-            },
-            {
-              tag: 'button',
               text: { tag: 'plain_text', content: '⚠️ 我了解风险，仍要发送' },
               type: 'danger',
-              value: { type: 'cli_force_send_confirm' },
+              // 直接使用 cli_force_send：点击即执行强制发送
+              // 不再做二次确认（用户已经看到风险说明）
+              value: { type: 'cli_force_send' },
             },
           ],
         },

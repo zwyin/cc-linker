@@ -196,6 +196,17 @@ export class SpoolQueue {
       return false;
     }
 
+    // 新消息到达：取代同 serialKey 的旧 awaitingForceSend 消息
+    // 用户的"等待决策"被新消息自动取代（用户用行动表示要继续对话）
+    const processingFiles = readdirSync(this.processingDir).filter(f => f.startsWith(`${msg.serialKey}:`));
+    for (const file of processingFiles) {
+      const oldMsg = this.readSpoolMessage(join(this.processingDir, file));
+      if (oldMsg?.awaitingForceSend) {
+        logger.info(`新消息到达，旧 awaitingForceSend 消息被取代: ${oldMsg.messageId}`);
+        this.markDone(oldMsg.messageId, oldMsg.serialKey);
+      }
+    }
+
     msg.status = 'pending';
     msg.createdAt = msg.createdAt || new Date().toISOString();
     msg.updatedAt = msg.updatedAt || msg.createdAt;

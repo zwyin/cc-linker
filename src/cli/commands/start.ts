@@ -402,14 +402,25 @@ async function createBotRuntime(
           const messageId = data?.open_message_id ?? data?.context?.open_message_id ?? data?.event?.context?.open_message_id ?? data?.callback?.message?.message_id ?? '';
           const actionValue = data?.action?.value ?? data?.event?.action?.value ?? data?.callback?.action?.value ?? {};
 
-          // Detect permission card buttons (use 'type' field instead of 'tag')
-          const isPermissionAction = actionValue?.type === 'permission_approve' || actionValue?.type === 'permission_deny';
-          const tag = isPermissionAction ? actionValue.type : (actionValue?.tag ?? '');
+          // Detect actions that carry extra context in 'type' (not just 'tag').
+          // Permission buttons + CLI busy card buttons all use { type, ...payload }.
+          const ACTION_TYPES_WITH_OBJECT_VALUE = new Set([
+            'permission_approve',
+            'permission_deny',
+            'cli_force_send',
+          ]);
+          const isObjectValueAction = typeof actionValue === 'object'
+            && actionValue !== null
+            && ACTION_TYPES_WITH_OBJECT_VALUE.has((actionValue as any).type);
+
+          const tag = isObjectValueAction
+            ? (actionValue as any).type
+            : (actionValue?.tag ?? '');
           const sessionId = actionValue?.sessionId ?? actionValue?.value ?? '';
 
-          // For permission buttons, pass the full actionValue object as value
-          // so handleCardAction can extract index and type from it
-          const actionPayload: string | Record<string, unknown> = isPermissionAction ? actionValue : sessionId;
+          // For object-value actions, pass the full actionValue object as value
+          // so handleCardAction can extract type and other fields from it
+          const actionPayload: string | Record<string, unknown> = isObjectValueAction ? actionValue : sessionId;
 
           const action: FeishuBotCardAction = {
             open_id: openId,
