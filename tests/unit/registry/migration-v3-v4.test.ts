@@ -227,11 +227,16 @@ describe('migrateV3toV4', () => {
       },
     });
 
-    // First load: migrates and persists v4
-    const m1 = new RegistryManager(tmpDir);
-    expect(m1.sessions['s1'].title).toBe('Reload Test');
+    // Manager loads v3, migrates to v4, persists
+    const m = new RegistryManager(tmpDir);
+    expect(m.sessions['s1'].title).toBe('Reload Test');
+
+    // Sanity check: on-disk is now v4 (constructor persisted)
+    let raw = JSON.parse(readFileSync(join(tmpDir, 'registry.json'), 'utf8'));
+    expect(raw.version).toBe(4);
 
     // Manually re-write v3 to simulate a stale on-disk file
+    // (e.g., another process wrote an older version, or disk corruption)
     writeRegistry(3, {
       's1': {
         origin: 'cli',
@@ -247,10 +252,15 @@ describe('migrateV3toV4', () => {
       },
     });
 
-    // Reload from a second manager — should re-migrate and re-persist
-    const m2 = new RegistryManager(tmpDir);
-    await m2.reload();
-    const raw = JSON.parse(readFileSync(join(tmpDir, 'registry.json'), 'utf8'));
+    // Sanity check: on-disk is now v3
+    raw = JSON.parse(readFileSync(join(tmpDir, 'registry.json'), 'utf8'));
+    expect(raw.version).toBe(3);
+
+    // Reload from a single manager — must migrate and persist v4
+    await m.reload();
+
+    // On-disk should now be v4
+    raw = JSON.parse(readFileSync(join(tmpDir, 'registry.json'), 'utf8'));
     expect(raw.version).toBe(4);
     expect(raw.sessions['s1'].title).toBe('Reload Test');
   });

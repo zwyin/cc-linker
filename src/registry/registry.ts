@@ -129,8 +129,20 @@ export class RegistryManager {
     return path;
   }
 
-  /** 运行时重新加载 registry（带读锁），用于需要确保读取一致性的场景 */
+  /**
+   * Reload registry from disk.
+   *
+   * Acquires read lock briefly to read+validate+migrate. If migration occurred,
+   * acquires write lock OUTSIDE the read lock to persist (avoids RWLock deadlock).
+   *
+   * StateCoordinator 保证单 bot 进程，所以这里不需要担心多 bot 并发。
+   * CLI 命令的写通过 proper-lockfile 串行化。
+   */
   async reload(): Promise<void> {
+    let needsMigrationWrite = false;
+    let validated: Registry | null = null;
+    let originalVersion: number | null = null;
+
     await withReadLock(async () => {
       if (!existsSync(this.registryPath)) {
         this.data = this.createEmpty();
@@ -138,23 +150,35 @@ export class RegistryManager {
       }
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
-      const originalVersion = parsed.version;
+      originalVersion = parsed.version;
       migrateV1toV2(parsed);
       migrateV3toV4(parsed);
-      const validated = RegistrySchema.parse(parsed);
-      // Migration happened — re-acquire write lock to persist the new version
-      if (originalVersion !== parsed.version) {
-        // 迁移时持久化到磁盘。StateCoordinator（src/runtime/state-coordinator.ts）
-        // 保证单 bot 进程运行，所以这里不需要 withLock 保护（CLI 命令读时通过
-        // proper-lockfile 串行化）。如果未来允许多进程并发，需要改为 withLock。
-        await withLock(this.registryPath, async () => {
-          this.rotateBackup();
-          this.saveSync(validated);
-        });
-        return;
+      validated = RegistrySchema.parse(parsed);
+
+      // Decide inside read lock, write outside
+      if (originalVersion !== validated.version) {
+        needsMigrationWrite = true;
+      } else {
+        // No migration needed: just update in-memory
+        this.data = validated;
       }
-      this.data = validated;
     });
+
+    // Migration write happens OUTSIDE the read lock to avoid RWLock deadlock
+    // (write lock waits for activeReads === 0; we can't hold the read lock).
+    if (needsMigrationWrite && validated && originalVersion !== null) {
+      // Capture into const locals so TypeScript narrowing carries into the async closure
+      const toWrite: Registry = validated;
+      const fromVersion = originalVersion;
+      logger.info(
+        'Registry schema 已从 v' + fromVersion + ' 迁移到 v' + toWrite.version + '，持久化到磁盘'
+      );
+      await withLock(this.registryPath, async () => {
+        this.rotateBackup();
+        this.saveSync(toWrite);
+        this.data = toWrite;
+      });
+    }
   }
 
   private createEmpty(): Registry {
