@@ -617,7 +617,7 @@ describe('FeishuBot cards', () => {
     expect(textReplies[0]).toContain('未知操作');
   });
 
-  it('handleCardAction routes switch with UUID', async () => {
+  it('handleCardAction routes switch with UUID sends overview card', async () => {
     registry.upsert('test-session-uuid', {
       origin: 'cli',
       cwd: '/tmp/project',
@@ -625,6 +625,8 @@ describe('FeishuBot cards', () => {
       title: 'Test Session',
       message_count: 5,
       last_active: new Date().toISOString(),
+      last_user_preview: 'test user prompt',
+      last_assistant_preview: 'test assistant reply',
     });
 
     await bot.handleCardAction({
@@ -633,8 +635,10 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-3' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('已切换到会话');
+    // 改造后：doSwitch 发 overview 卡片，不再发 text 消息
+    expect(textReplies.length).toBe(0);
+    expect(cardReplies.length).toBe(1);
+    expect((cardReplies[0] as any).header.title.content).toContain('已切换会话');
   });
 
   it('handleCardAction routes switch with nonexistent session', async () => {
