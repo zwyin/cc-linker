@@ -37,7 +37,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -53,7 +53,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -69,7 +69,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -89,7 +89,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -108,7 +108,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -147,7 +147,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -179,7 +179,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const registry = new RegistryManager(tmpDir);
     const cache: FileCache = new Map();
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
@@ -232,7 +232,7 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
 
     const cache: FileCache = new Map();
     cache.set(join(projectDir, `${sessionId}.jsonl`), 0);  // 强制 scanner 重扫
-    const scanner = new JSONLScanner(registry, cache, tmpDir);
+    const scanner = new JSONLScanner(registry, cache, join(tmpDir, '.claude'));
     scanner.scan();
 
     const entry = registry.get(sessionId);
