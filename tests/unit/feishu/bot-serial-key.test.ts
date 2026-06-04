@@ -23,18 +23,16 @@ describe('FeishuBot serialKey and messageId validation', () => {
   let cardReplies: Array<{ card: any; openId?: string; messageId?: string }>;
   let bot: FeishuBot;
   let originalMaxPending: number;
+  let originalOwnerOpenId: string;
 
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'bot-serialkey-test-'));
 
-    // 复用 bot.test.ts:42-48 的 config mutation 模式（owner_open_id='' 允许所有 openId 通过 validateOwner）
+    // 仅 mutate 本测试需要的 config 字段并保存原值，afterEach 完整还原
+    // （之前 cargo-cult 5 个 mutation 实际无人用，state 还会 leak 到下个测试）
     originalMaxPending = (config as any).data.queue.max_pending;
+    originalOwnerOpenId = (config as any).data.feishu_bot.owner_open_id;
     (config as any).data.feishu_bot.owner_open_id = '';
-    (config as any).data.feishu_bot.default_cwd = '';
-    (config as any).data.security.allowed_roots = [];
-    (config as any).data.security.denied_roots = [];
-    (config as any).data.stream.enabled = false;
-    (config as any).data.sdk.enabled = false;
 
     userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
     listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
@@ -64,6 +62,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
 
   afterEach(() => {
     (config as any).data.queue.max_pending = originalMaxPending;
+    (config as any).data.feishu_bot.owner_open_id = originalOwnerOpenId;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -179,8 +178,12 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    // 没有"消息格式异常"回复
+    // happy path 必须真入队：只断 textReplies.length===0 的话 enqueue 静默失败也 pass
     expect(textReplies.length).toBe(0);
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const matchFile = pendingFiles.find(f => f.includes('om_valid_123-abc'));
+    expect(matchFile).toMatch(/^cmd:ou_user1:om_valid_123-abc:om_valid_123-abc\.json$/);
   });
 
   // ====== cmd: serialKey 行为 ======
