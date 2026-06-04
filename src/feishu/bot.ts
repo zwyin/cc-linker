@@ -65,6 +65,13 @@ function stableUuid(messageId: string, chunkIndex = 0): string {
   return `msg-${Bun.hash(`${messageId}:${chunkIndex}`).toString(16)}`;
 }
 
+/**
+ * 安全标识符白名单：messageId / openId 通用校验。
+ * 长度 {1,128} 对齐 src/utils/session-activity.ts:69 的 SESSION_UUID_REGEX；
+ * 字符集 [a-zA-Z0-9_-] 排除 : / \ 等所有路径分隔符与 shell 特殊字符。
+ */
+const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+
 /** Unique UUID for card callback replies — NOT based on messageId to avoid
  *  Feishu API idempotency deduplication when user clicks the same card button multiple times.
  */
@@ -134,6 +141,23 @@ export class FeishuBot {
       return;
     }
 
+    // messageId + openId 白名单校验：defense-in-depth 首个 gate
+    // - 防止特殊字符打乱 spool 文件名 ${serialKey}:${messageId}.json 的双 : 结构
+    // - openId 同样校验：它会拼入 cmd: serialKey，未校验可被 startsWith 匹配误判
+    // - {1,128} 长度上限对齐 src/utils/session-activity.ts:69 的 SESSION_UUID_REGEX
+    //   防 ENAMETOOLONG（实测 129 字符已让 enqueue 抛 errno -63）
+    if (!SAFE_ID_REGEX.test(event.message_id) || !SAFE_ID_REGEX.test(event.open_id)) {
+      logger.warn(
+        `消息 ID 格式异常，拒绝入队: messageId=${event.message_id}, openId=${event.open_id}`,
+      );
+      await this.replyFn('消息格式异常，请重试或联系管理员。', {
+        messageId: event.message_id,
+        openId: event.open_id,
+        requestUuid: stableUuid(event.message_id),
+      });
+      return;
+    }
+
     if (!this.userManager.validateOwner(event.open_id)) {
       await this.replyFn('该 Bot 为个人私有实例，暂不对外开放', {
         messageId: event.message_id,
@@ -145,17 +169,6 @@ export class FeishuBot {
 
     if (this.spoolQueue.hasReceipt(event.message_id)) {
       logger.debug(`消息已处理，跳过: ${event.message_id}`);
-      return;
-    }
-
-    // messageId 白名单校验：defense-in-depth，防止特殊字符打乱 spool 文件名 ${serialKey}:${messageId}.json 的双 : 结构
-    if (!/^[a-zA-Z0-9_-]+$/.test(event.message_id)) {
-      logger.warn(`消息 ID 格式异常，拒绝入队: ${event.message_id}`);
-      await this.replyFn('消息格式异常，请重试或联系管理员。', {
-        messageId: event.message_id,
-        openId: event.open_id,
-        requestUuid: stableUuid(event.message_id),
-      });
       return;
     }
 

@@ -119,6 +119,57 @@ describe('FeishuBot serialKey and messageId validation', () => {
     expect(pendingFiles).toHaveLength(0);
   });
 
+  it('rejects message with invalid openId (contains colon)', async () => {
+    // CR #3: openId 也参与 serialKey 拼接，必须同 messageId 一样校验
+    await bot.onMessage({
+      open_id: 'ou_user1:bad',  // 包含 : 字符
+      message_id: 'om_valid_001',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toContain('消息格式异常');
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    expect(pendingFiles).toHaveLength(0);
+  });
+
+  it('rejects message with messageId longer than 128 chars', async () => {
+    // CR #4: 长度上限对齐 session-activity.ts:69 的 SESSION_UUID_REGEX
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'a'.repeat(129),
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toContain('消息格式异常');
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    expect(pendingFiles).toHaveLength(0);
+  });
+
+  it('rejects message with openId longer than 128 chars', async () => {
+    // CR #4: openId 同样有长度上限（防 path-traversal + filename 长度爆掉）
+    await bot.onMessage({
+      open_id: 'o'.repeat(129),
+      message_id: 'om_valid_001',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toContain('消息格式异常');
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    expect(pendingFiles).toHaveLength(0);
+  });
+
   it('accepts valid alphanumeric+underscore+hyphen messageId', async () => {
     await bot.onMessage({
       open_id: 'ou_user1',
