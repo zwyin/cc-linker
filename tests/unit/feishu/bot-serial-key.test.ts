@@ -131,4 +131,114 @@ describe('FeishuBot serialKey and messageId validation', () => {
     // 没有"消息格式异常"回复
     expect(textReplies.length).toBe(0);
   });
+
+  // ====== cmd: serialKey 行为 ======
+
+  it('command message uses cmd:openId:msgId serialKey', async () => {
+    // 触发 onMessage 后，让 worker claim 一条消息检查 serialKey
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_001',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    // 检查 spool pending 目录中的文件名
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_001'));
+    expect(matchFile).toBeDefined();
+    // 文件名格式: cmd:openId:msgId:msgId.json
+    expect(matchFile).toMatch(/^cmd:ou_user1:om_msg_001:om_msg_001\.json$/);
+  });
+
+  it('non-command session message uses sessionUuid as serialKey', async () => {
+    // 先设置 user mapping 指向一个 session
+    // 注意：compareAndSwap 内部会调 validateOwner，依赖 feishu_bot.owner_open_id = ''
+    // （已在 beforeEach 设置为 ''）
+    await userManager.compareAndSwap('ou_user1', null, {
+      type: 'session',
+      sessionUuid: 'sess-abc-123',
+      cwd: '/tmp/proj',
+      createdAt: new Date().toISOString(),
+    });
+
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_002',
+      content: JSON.stringify({ text: '继续工作' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_002'));
+    expect(matchFile).toBeDefined();
+    expect(matchFile).toMatch(/^sess-abc-123:om_msg_002\.json$/);
+  });
+
+  it('non-command no-target message uses new:openId serialKey', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_003',
+      content: JSON.stringify({ text: 'hello' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_003'));
+    expect(matchFile).toBeDefined();
+    expect(matchFile).toMatch(/^new:ou_user1:om_msg_003\.json$/);
+  });
+
+  it('/listdir command also uses cmd: serialKey (not /list whitelist only)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_listdir',
+      content: JSON.stringify({ text: '/listdir' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_listdir'));
+    expect(matchFile).toBeDefined();
+    // /listdir 也走 cmd: 路径（按 isCommand 标志，不按白名单）
+    expect(matchFile).toMatch(/^cmd:ou_user1:om_msg_listdir:om_msg_listdir\.json$/);
+  });
+
+  it('two different messageId commands have independent serialKeys', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_cmd_a',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_cmd_b',
+      content: JSON.stringify({ text: '/status' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingDir = join(tmpDir, 'pending');
+    const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
+    const fileA = pendingFiles.find(f => f.includes('om_cmd_a'));
+    const fileB = pendingFiles.find(f => f.includes('om_cmd_b'));
+
+    expect(fileA).toBeDefined();
+    expect(fileB).toBeDefined();
+    // 两个 serialKey 完全不同
+    expect(fileA).not.toBe(fileB);
+    expect(fileA).toMatch(/^cmd:ou_user1:om_cmd_a:/);
+    expect(fileB).toMatch(/^cmd:ou_user1:om_cmd_b:/);
+  });
 });
