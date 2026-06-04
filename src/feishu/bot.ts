@@ -10,6 +10,7 @@ import { CardUpdater } from './card-updater';
 import { PermissionHandler, type PermissionPrompt } from '../proxy/permission-handler';
 import { esc } from './markdown-escape';
 import { RegistryManager } from '../registry';
+import type { SessionEntry } from '../registry/types';
 import { syncBeforeCommand } from '../scanner';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
@@ -1861,7 +1862,7 @@ export class FeishuBot {
     );
 
     const card = buildListCard(
-      sessions as Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string; last_assistant_preview?: string }]>,
+      sessions as Array<[string, SessionEntry]>,
       allSessions.length,
       hasMore,
       runningUuids,
@@ -2184,7 +2185,7 @@ export class FeishuBot {
 
 /** Build a session list card with switch/resume action buttons */
 function buildListCard(
-  sessions: Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string; last_assistant_preview?: string }]>,
+  sessions: Array<[string, SessionEntry]>,
   total: number,
   hasMore: boolean,
   runningUuids: Set<string>,
@@ -2194,8 +2195,7 @@ function buildListCard(
   if (sessions.length === 0) {
     elements.push({ tag: 'markdown', content: '当前没有可用会话。\n可使用 **✨ 新建会话** 创建新会话。' });
   } else {
-    for (const [uuid, entry] of sessions) {
-      const index = sessions.findIndex(s => s[0] === uuid) + 1;
+    for (const [index, [uuid, entry]] of sessions.entries()) {
       const runningMark = runningUuids.has(uuid) ? '🔴 ' : '';
       // esc() 必须在 preview() 之后调用,避免 preview 截断把 &lt; 切到一半
       // (例如 '<' + 截断会变成 '<' 单独一个被误读)
