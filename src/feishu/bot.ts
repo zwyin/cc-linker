@@ -1485,7 +1485,7 @@ export class FeishuBot {
     if (!prompt) {
       const currentEntry = this.userManager.getEntry(msg.openId);
       if (currentEntry?.type === 'pending_new_session_claimed') {
-        await this.replyAndFinalize(msg, '当前已有新会话正在创建，请稍后再试。');
+        await this.replyAndFinalize(msg, '⚠️ /new 正在处理中，请稍后再试。');
         return;
       }
 
@@ -1501,16 +1501,19 @@ export class FeishuBot {
         },
       );
 
+      // BUG-5 修复：统一 CAS 失败消息为"会话状态已被其他操作变更"
+      // 之前是"⚠️ 会话状态冲突，请稍后重试"——和 doSwitch 风格不一致且对用户晦涩。
+      // 详见 review finding "unify /new CAS error"（第三轮 review BUG-5）。
       await this.replyAndFinalize(
         msg,
-        swapped ? '✅ 已设置新会话目录，请继续发送第一条消息。' : '⚠️ 会话状态冲突，请稍后重试。',
+        swapped ? '✅ 已设置新会话目录，请继续发送第一条消息。' : '⚠️ /new 失败：会话状态已被其他操作变更，请稍后重试。',
       );
       return;
     }
 
     const currentEntry = this.userManager.getEntry(msg.openId);
     if (currentEntry?.type === 'pending_new_session_claimed') {
-      await this.replyAndFinalize(msg, '当前已有新会话正在创建，请稍后再试。');
+      await this.replyAndFinalize(msg, '⚠️ /new 正在处理中，请稍后再试。');
       return;
     }
 
@@ -1530,7 +1533,7 @@ export class FeishuBot {
     );
 
     if (!swapped) {
-      await this.replyAndFinalize(msg, '⚠️ 无法创建新会话，请稍后重试。');
+      await this.replyAndFinalize(msg, '⚠️ /new 失败：会话状态已被其他操作变更，请稍后重试。');
       return;
     }
 
@@ -1892,7 +1895,13 @@ export class FeishuBot {
       }
       if (hasMore) lines.push(`... 还有 ${allSessions.length - MAX_LIST_ITEMS} 个更早的会话未显示`);
       lines.push('━━━━━━━━━━━━━━━━');
-      lines.push('💡 点击卡片上的按钮快速切换/恢复，或回复 "恢复 2" 获取恢复指引');
+      // BUG-4 修复：空状态不输出"回复 恢复 2"（无意义）。有 >= 2 个 session 时才输出索引提示。
+      // 详见 review finding "doCardList text 降级空状态误导"（第三轮 review BUG-4）。
+      if (sessions.length >= 2) {
+        lines.push('💡 点击卡片上的按钮快速切换/恢复，或回复 "恢复 2" 获取恢复指引');
+      } else if (sessions.length === 1) {
+        lines.push('💡 点击卡片上的按钮快速切换/恢复');
+      }
       // 【P0 修复】msg 在 card action 路径（handleCardAction 调用）是 undefined，原 msg! 会在 replyTo 抛 TypeError
       if (msg) {
         await this.replyAndFinalize(msg, lines.join('\n'));
@@ -1906,7 +1915,7 @@ export class FeishuBot {
   private async doCardNew(openId: string, messageId?: string): Promise<void> {
     const currentEntry = this.userManager.getEntry(openId);
     if (currentEntry?.type === 'pending_new_session_claimed') {
-      await this.replyFn('当前已有新会话正在创建，请稍后再试。', { messageId, openId, requestUuid: uniqueUuid() });
+      await this.replyFn('⚠️ /new 正在处理中，请稍后再试。', { messageId, openId, requestUuid: uniqueUuid() });
       this.spoolQueue.recordReceipt(messageId ?? '');
       return;
     }
@@ -1938,7 +1947,7 @@ export class FeishuBot {
     );
 
     await this.replyFn(
-      swapped ? '✅ 已设置新会话目录，请发送第一条消息来创建会话。' : '⚠️ 会话状态冲突，请稍后重试。',
+      swapped ? '✅ 已设置新会话目录，请发送第一条消息来创建会话。' : '⚠️ /new 失败：会话状态已被其他操作变更，请稍后重试。',
       { messageId, openId, requestUuid: uniqueUuid() },
     );
     this.spoolQueue.recordReceipt(messageId ?? '');
@@ -1955,6 +1964,28 @@ export class FeishuBot {
     }
 
     const currentEntry = this.userManager.getEntry(openId);
+
+    // status 检查：corrupted/provisioning/degraded/archived session 不允许切换
+    // 与 doResume 行为一致（line 2157-2160），避免用户切到坏会话后发消息 Claude 端失败。
+    // 详见 review finding "doSwitch 应该检查 session.status"（第三轮 review BUG-2）。
+    if (session.status && session.status !== 'active') {
+      const status = session.status;
+      const failReply =
+        status === 'corrupted'
+          ? `⚠️ 会话 ${uuid.slice(0, 8)} 已损坏，不能直接切换。建议先在终端运行 \`cc-linker repair\` 修复。`
+          : status === 'provisioning'
+            ? `⚠️ 会话 ${uuid.slice(0, 8)} 正在等待系统自动修复，请稍后再试。`
+            : status === 'degraded'
+              ? `⚠️ 会话 ${uuid.slice(0, 8)} 处于降级状态，建议先保持 cc-linker 运行让系统自动修复。`
+              : status === 'archived'
+                ? `⚠️ 会话 ${uuid.slice(0, 8)} 已归档，不能直接切换。`
+                : `⚠️ 会话 ${uuid.slice(0, 8)} 状态为 ${status}，无法切换。`;
+      if (msg) await this.replyAndFinalize(msg, failReply);
+      else await this.replyFn(failReply, { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');
+      return 'failed';
+    }
+
     const swapped = await this.userManager.compareAndSwap(
       openId,
       currentEntry ?? null,
@@ -1969,7 +2000,13 @@ export class FeishuBot {
 
     // swapped=false 时发"切换失败"消息（不发 overview 卡片，避免误导用户）
     if (!swapped) {
-      const failReply = '⚠️ 切换失败，会话可能已被修改';
+      // 记录 CAS 冲突到日志，便于运维监控（cmd: serialKey 启用后并发场景增多）
+      // 上线后监控指标建议：CAS 冲突频率 > X 次/分钟触发告警
+      logger.warn(
+        `CAS race on doSwitch: openId=${openId}, uuid=${uuid}, ` +
+        `currentMappingVersion=${currentEntry ? this.userManager.getVersion() : 'none'}`,
+      );
+      const failReply = '⚠️ 切换失败：会话状态已被其他操作变更，请稍后重试';
       if (msg) await this.replyAndFinalize(msg, failReply);
       else await this.replyFn(failReply, { messageId, openId, requestUuid: uniqueUuid() });
       this.spoolQueue.recordReceipt(messageId ?? '');
@@ -2203,9 +2240,11 @@ function buildListCard(
       const aiPreviewLine = entry.last_assistant_preview
         ? `\n🤖 ${esc(preview(entry.last_assistant_preview, 60))}`
         : '';
+      // truncateTitleForCard: 防御性截断（与 scanner 的 truncateTitle 对齐）
+      const safeTitle = esc(truncateTitleForCard(entry.title));
       elements.push({
         tag: 'markdown',
-        content: `**${index}. ${runningMark}${esc(entry.title ?? 'Untitled')}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${esc(entry.project_name ?? '')}\n📁 \`${esc(entry.cwd ?? '-')}\`${aiPreviewLine}`,
+        content: `**${index}. ${runningMark}${safeTitle}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${esc(entry.project_name ?? '')}\n📁 \`${esc(entry.cwd ?? '-')}\`${aiPreviewLine}`,
       });
       elements.push({
         tag: 'action',
@@ -2234,11 +2273,11 @@ function buildListCard(
 /** Build an overview card for the user to see session progress after switch. */
 function buildSessionOverviewCard(
   uuid: string,
-  entry: { title?: string | null; cwd?: string; message_count: number; last_active: string; last_user_preview?: string; last_assistant_preview?: string },
+  entry: Pick<SessionEntry, 'title' | 'cwd' | 'message_count' | 'last_active' | 'origin' | 'status' | 'last_user_preview' | 'last_assistant_preview'>,
   isRunning: boolean,
 ): Record<string, unknown> {
   const runningTag = isRunning ? '🔴 处理中 · ' : '';
-  const titlePrefix = `${runningTag}${esc(entry.title ?? 'Untitled')}`;
+  const titlePrefix = `${runningTag}${esc(truncateTitleForCard(entry.title))}`;
 
   return {
     config: { wide_screen_mode: true },
@@ -2248,7 +2287,10 @@ function buildSessionOverviewCard(
       ...(entry.last_user_preview ? [{ tag: 'markdown', content: `**💬 最后提问：**\n> ${esc(entry.last_user_preview)}` }] : []),
       ...(entry.last_assistant_preview ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ${esc(entry.last_assistant_preview)}` }] : []),
       { tag: 'hr' },
-      { tag: 'markdown', content: `📊 ${entry.message_count} 条消息${entry.last_active ? ' · ' + formatTimeAgo(entry.last_active) : ''}\n\n💡 直接发送消息即可继续此会话` },
+      // 元信息行：消息数 + 时间 + 来源/状态（与 list 卡片保持一致）
+      // 非 active status 显示中文标签（如 '已损坏'）—— ITEM-6 修复
+      // 使用 formatMetaStats helper 避免与 list 卡片漂移（ITEM-3 修复）
+      { tag: 'markdown', content: `📊 ${formatMetaStats(entry)}\n\n💡 直接发送消息即可继续此会话` },
       { tag: 'hr' },
       { tag: 'action', actions: [
         { tag: 'button', text: { tag: 'plain_text', content: '📖 恢复指引' }, type: 'default', value: { tag: 'resume', sessionId: uuid } },
@@ -2388,6 +2430,14 @@ function buildSessionTitle(text: string): string {
   return preview(text, 60) || 'Untitled';
 }
 
+/** 渲染时截断 title 到 50 字符（防御性，与 scanner 的 truncateTitle 行为对齐）。
+ *  registry 里可能有历史超长 title（未截断的旧 entry / 手动编辑 / 第三方工具写入），
+ *  card 渲染时必须再次截断以避免 Feishu 4KB 元素限制。*/
+function truncateTitleForCard(s: string | null | undefined): string {
+  if (!s) return 'Untitled';
+  return s.length > 50 ? s.slice(0, 50) + '...' : s;
+}
+
 function normalizeCwd(cwd: string): string {
   const trimmed = cwd.trim();
   if (!trimmed) return '';
@@ -2452,11 +2502,27 @@ function parseNewCommand(rawArgs: string): { cwd: string; prompt: string; provid
   return { cwd: args, prompt: '', providerAlias };
 }
 
+/** Status 中文映射表（ITEM-6 修复）—— 把 session.status 英文术语翻译成中文卡片标签。 */
+const STATUS_LABELS: Record<string, string> = {
+  provisioning: '等待修复中',
+  degraded: '已降级',
+  archived: '已归档',
+  corrupted: '已损坏',
+};
+
 function formatOrigin(origin: string, status?: string): string {
   if (status && status !== 'active') {
-    return status;
+    return STATUS_LABELS[status] ?? status;
   }
   return origin === 'feishu' ? '飞书' : '终端';
+}
+
+/** 格式化元信息行（ITEM-3 修复）—— 提取 list/overview 卡片共用的统计部分。
+ *  list 卡片用 ` | ` 分隔，overview 卡片用 ` · ` 分隔——helper 返回拼接好的字符串，
+ *  调用方决定是否替换分隔符。*/
+function formatMetaStats(entry: { message_count: number; last_active?: string; origin: string; status?: string }): string {
+  const timePart = entry.last_active ? formatTimeAgo(entry.last_active) : '';
+  return `${entry.message_count} 条消息${timePart ? ' · ' + timePart : ''} · ${formatOrigin(entry.origin, entry.status)}`;
 }
 
 export function splitReplyText(text: string, maxBytes: number): string[] {

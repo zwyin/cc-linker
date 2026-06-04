@@ -78,6 +78,7 @@ export class JSONLScanner {
             this.registry.upsert(sessionId, {
               ...meta,
               jsonl_path: filePath,
+              // 新建 entry：RegistryManager.buildSessionEntry 默认 status='active'
             });
           } else {
             // 已注册会话：检查是否已有 JSONL 元数据（如标题）
@@ -90,6 +91,10 @@ export class JSONLScanner {
               this.registry.upsert(sessionId, {
                 ...meta,
                 jsonl_path: filePath,
+                // 复用 parseTail 路径的逻辑：corrupted → active（文件已可读）
+                // 其他 status（degraded/provisioning/active）由 Object.assign 不写即保留。
+                // 详见 review finding #6。
+                ...(existing?.status === 'corrupted' ? { status: 'active' } : {}),
               });
             } else {
               // 已有元数据，只更新活跃信息
@@ -147,8 +152,10 @@ export class JSONLScanner {
         }
         // 提取创建时间：取最早的时间戳（首条有 timestamp 的记录）
         if (!createdAt && entry.timestamp) createdAt = entry.timestamp;
-        // Early exit: once we have all metadata, no need to keep scanning
-        if (cwd && aiTitle && lastPrompt && firstUserMessage && createdAt) break;
+        // Early exit: once we have core metadata, no need to keep scanning.
+        // lastPrompt 故意不在 break 条件内——有些 JSONL 没有 last-prompt marker，
+        // 没有它会强制遍历全部行（性能 bug，详见 review finding #2）。
+        if (cwd && aiTitle && firstUserMessage && createdAt) break;
       } catch {
         // Silently skip malformed JSON lines
       }
@@ -160,6 +167,13 @@ export class JSONLScanner {
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
+        // 收集 last-prompt marker（必须在 NON_MESSAGE_TYPES 跳过前，否则被 continue 漏掉）。
+        // 第一个 forward loop 在 ai-title + firstUserMessage + createdAt 拿到后即 break，
+        // 不会到达文件末尾的 last-prompt marker；这里从尾部找避免漏掉。
+        // 详见 review finding "lastPrompt regression"（第二轮 review）。
+        if (entry.type === 'last-prompt' && !lastPrompt && entry.lastPrompt) {
+          lastPrompt = entry.lastPrompt;
+        }
         if (NON_MESSAGE_TYPES.has(entry.type)) continue;
         if ((entry.type === 'assistant' || entry.type === 'user') && !lastActive) {
           lastActive = entry.timestamp;
@@ -183,10 +197,17 @@ export class JSONLScanner {
     const origin: Origin = 'cli';
 
     // 标题优先级：ai-title > last-prompt > 第一条用户消息 > Untitled
+    // 所有来源统一截断到 50 字符（保留 '...' 3 字符），防止 aiTitle 超长撑爆 Feishu 卡片 4KB 限制。
+    // 详见 review finding "title 截断"（第三轮 review BUG-1）。
+    const truncateTitle = (s: string): string =>
+      s.length > 50 ? s.slice(0, 50) + '...' : s;
     const title = aiTitle
-      ?? (lastPrompt ? lastPrompt.slice(0, 50) + (lastPrompt.length > 50 ? '...' : '') : null)
-      ?? (firstUserMessage ? firstUserMessage.slice(0, 50) + (firstUserMessage.length > 50 ? '...' : '') : null)
-      ?? `Untitled (${sessionId.slice(0, 8)})`;
+      ? truncateTitle(aiTitle)
+      : lastPrompt
+        ? truncateTitle(lastPrompt)
+        : firstUserMessage
+          ? truncateTitle(firstUserMessage)
+          : `Untitled (${sessionId.slice(0, 8)})`;
 
     // project_dir: 从 jsonl_path 提取 Claude Code project 目录名
     const jsonlPath = filePath;
@@ -216,7 +237,8 @@ export class JSONLScanner {
       // 新增 80 字符版（bot overview 卡片用）
       last_assistant_preview: preview ? preview.slice(0, 80) : undefined,
       last_user_preview: lastUserPreview ? lastUserPreview.slice(0, 80) : undefined,
-      status: 'active',
+      // 注意：parseFull 不再硬编码 status: 'active'。由调用方根据 existing.status 决定
+      // 保留（degraded/provisioning）或重置（corrupted → active）。详见 review finding #6。
     };
   }
 
@@ -229,6 +251,7 @@ export class JSONLScanner {
     let lastActive: string | null = null;
     let preview = '';
     let lastUserPreview = '';  // 新增：必须在函数顶部声明，让 if/else 两个分支都能访问
+    let lastPrompt = '';  // 与 parseFull 一致：3-tier fallback 需要 lastPrompt
     let lineCount = 0;
 
     try {
@@ -242,6 +265,10 @@ export class JSONLScanner {
         for (let i = tailLines.length - 1; i >= 0; i--) {
           try {
             const entry = JSON.parse(tailLines[i]);
+            // 收集 last-prompt marker（在 NON_MESSAGE_TYPES 跳过前），从尾部找避免漏掉
+            if (entry.type === 'last-prompt' && !lastPrompt && entry.lastPrompt) {
+              lastPrompt = entry.lastPrompt;
+            }
             if (NON_MESSAGE_TYPES.has(entry.type)) continue;
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
@@ -272,6 +299,10 @@ export class JSONLScanner {
                     break;
                   }
                 }
+                // 全量 fallback 时也顺便收集 lastPrompt（如果 4KB 内没拿到）
+                if (entry.type === 'last-prompt' && !lastPrompt && entry.lastPrompt) {
+                  lastPrompt = entry.lastPrompt;
+                }
               } catch {}
             }
           } catch (err) {
@@ -291,6 +322,10 @@ export class JSONLScanner {
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const entry = JSON.parse(lines[i]);
+            // 收集 last-prompt marker（在 NON_MESSAGE_TYPES 跳过前），从尾部找
+            if (entry.type === 'last-prompt' && !lastPrompt && entry.lastPrompt) {
+              lastPrompt = entry.lastPrompt;
+            }
             if (NON_MESSAGE_TYPES.has(entry.type)) continue;
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
@@ -309,12 +344,18 @@ export class JSONLScanner {
         }
       }
 
+      // 3-tier fallback 与 parseFull 一致：preview || lastPrompt || '[无内容]'
+      // 详见 review finding "parseFull/parseTail 3-tier fallback inconsistency"（第二轮 review）。
+      const lastMessagePreview = preview || lastPrompt?.slice(0, 100) || '[无内容]';
+
       return {
         ...(lineCount > 0 ? { message_count: lineCount } : {}),
         ...(lastActive ? { last_active: lastActive } : {}),
-        ...(preview ? { last_message_preview: preview } : {}),                    // 保留 100 字符（向后兼容）
-        ...(preview ? { last_assistant_preview: preview.slice(0, 80) } : {}),     // 新增 80 字符
-        ...(lastUserPreview ? { last_user_preview: lastUserPreview.slice(0, 80) } : {}),  // 新增
+        // 保留 100 字符（向后兼容 CLI/bot 多处复用）
+        ...(lastMessagePreview ? { last_message_preview: lastMessagePreview } : {}),
+        // 新增 80 字符版（bot overview 卡片用）—— 与 parseFull 行为对齐
+        ...(preview ? { last_assistant_preview: preview.slice(0, 80) } : {}),
+        ...(lastUserPreview ? { last_user_preview: lastUserPreview.slice(0, 80) } : {}),
       };
     } finally {
       closeSync(fd);
