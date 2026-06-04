@@ -11,8 +11,6 @@
  * - 实际 Feishu messageId / openId / Claude sessionUuid 都 < 50 字符，80 是安全冗余
  */
 
-export const MAX_SAFE_ID_LEN = 80;
-
 export const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]{1,80}$/;
 
 export function isSafeId(s: string): boolean {

@@ -13,6 +13,7 @@ import { syncBeforeCommand } from '../scanner';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
 import { isSafeId } from '../utils/safe-id';
+import { SERVICE_UNAVAILABLE_REPLY } from './replies';
 import { repairJsonlLastPrompt } from '../utils/jsonl-repair';
 import { formatTimeAgo } from '../cli/output';
 import { ProviderManager } from '../utils/providers';
@@ -136,17 +137,13 @@ export class FeishuBot {
     }
 
     // messageId + openId 白名单校验：defense-in-depth 首个 gate
-    // - 防止特殊字符打乱 spool 文件名 ${serialKey}:${messageId}.json 的双 : 结构
-    // - openId 同样校验：它会拼入 cmd: serialKey，未校验可被 startsWith 匹配误判
-    // - {1,128} 长度上限对齐 src/utils/session-activity.ts:69 的 SESSION_UUID_REGEX
-    //   防 ENAMETOOLONG（实测 129 字符已让 enqueue 抛 errno -63）
+    // 字符集 + 长度上限定义见 src/utils/safe-id.ts
+    // 攻击者通过 valid/invalid 格式响应差异可推断配置（owner_open_id、白名单存在性）—— oracle 防御
     if (!isSafeId(event.message_id) || !isSafeId(event.open_id)) {
       logger.warn(
         `消息 ID 格式异常，拒绝入队: messageId=${event.message_id}, openId=${event.open_id}`,
       );
-      // CR2 #5: 归一化错误消息，不透露"白名单/格式"信息防 oracle
-      // 攻击者通过 valid/invalid 格式响应差异可推断配置（owner_open_id、白名单存在性）
-      await this.replyFn('服务暂不可用，请稍后重试', {
+      await this.replyFn(SERVICE_UNAVAILABLE_REPLY, {
         messageId: event.message_id,
         openId: event.open_id,
         requestUuid: stableUuid(event.message_id),
@@ -260,7 +257,10 @@ export class FeishuBot {
     const enqueued = this.spoolQueue.enqueue(spoolMsg);
     if (!enqueued) {
       logger.warn(`消息入队失败: ${event.message_id}`);
-      await this.replyFn('消息处理队列已满，请稍后重试。', {
+      // CR3 #4: 统一用通用消息，enqueue false 现在有 3 种原因（CAS race / 队列满 / writeAtomic
+      // 失败如 EACCES / ENOSPC），前两者不影响用户决策（重试就行），后者跟"队列满"无关——
+      // 旧消息 "消息处理队列已满" 对后者是误导。统一为 SERVICE_UNAVAILABLE_REPLY 与 oracle 防御一致。
+      await this.replyFn(SERVICE_UNAVAILABLE_REPLY, {
         messageId: event.message_id,
         openId: event.open_id,
         requestUuid: stableUuid(event.message_id),

@@ -9,6 +9,7 @@ import { SpoolQueue } from '../../../src/queue/spool';
 import { RegistryManager } from '../../../src/registry/registry';
 import { ClaudeSessionManager } from '../../../src/proxy/session';
 import { config } from '../../../src/utils/config';
+import { SERVICE_UNAVAILABLE_REPLY } from '../../../src/feishu/replies';
 
 // 复用 bot.test.ts:42-48 的 setup 模式：(config as any).data.* 直接 mutation
 // 不要用 config.load() —— 该方法不存在
@@ -78,7 +79,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     // 拒绝入队：pending 目录应该是空的
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
@@ -95,7 +96,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -112,7 +113,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -129,7 +130,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -147,7 +148,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -164,7 +165,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -199,7 +200,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
 
     expect(textReplies.length).toBe(1);
     // 通用消息，不透露白名单 / 长度上限 / 字符集
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
   });
 
   it('rejection messages are generic (no whitelist leak) for openId format error', async () => {
@@ -212,7 +213,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
   });
 
   // ====== cmd: serialKey 行为 ======

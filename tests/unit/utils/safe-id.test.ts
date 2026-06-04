@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { SAFE_ID_REGEX, isSafeId, MAX_SAFE_ID_LEN } from '../../../src/utils/safe-id';
+import { SAFE_ID_REGEX, isSafeId } from '../../../src/utils/safe-id';
 
 describe('safe-id', () => {
   it('exports SAFE_ID_REGEX with {1,80} cap (PR 2 review: prevents ENAMETOOLONG at cmd: serialKey boundary)', () => {
     // 4 cmd + 80 openId + 1 + 80 msgId + 1 + 80 msgId + 5 .json = 251
     // + 4 .tmp suffix during writeAtomic = 255 = NAME_MAX boundary
     expect(SAFE_ID_REGEX.source).toBe('^[a-zA-Z0-9_-]{1,80}$');
-    expect(MAX_SAFE_ID_LEN).toBe(80);
   });
 
   it('isSafeId accepts typical Feishu om_ / ou_ IDs', () => {
