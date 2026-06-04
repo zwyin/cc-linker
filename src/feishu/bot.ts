@@ -148,6 +148,17 @@ export class FeishuBot {
       return;
     }
 
+    // messageId 白名单校验：defense-in-depth，防止特殊字符打乱 spool 文件名 ${serialKey}:${messageId}.json 的双 : 结构
+    if (!/^[a-zA-Z0-9_-]+$/.test(event.message_id)) {
+      logger.warn(`消息 ID 格式异常，拒绝入队: ${event.message_id}`);
+      await this.replyFn('消息格式异常，请重试或联系管理员。', {
+        messageId: event.message_id,
+        openId: event.open_id,
+        requestUuid: stableUuid(event.message_id),
+      });
+      return;
+    }
+
     let text = '';
     let imagePaths: string[] = [];
 
