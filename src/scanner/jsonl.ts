@@ -208,6 +208,7 @@ export class JSONLScanner {
     const fd = openSync(filePath, 'r');
     let lastActive: string | null = null;
     let preview = '';
+    let lastUserPreview = '';  // 新增：必须在函数顶部声明，让 if/else 两个分支都能访问
     let lineCount = 0;
 
     try {
@@ -229,7 +230,44 @@ export class JSONLScanner {
               const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
               if (textBlock) preview = textBlock.text.slice(0, 100);
             }
+            if (entry.type === 'user' && !lastUserPreview) {
+              const content = entry.message?.content;
+              if (typeof content === 'string') {
+                lastUserPreview = content.slice(0, 100);
+              } else if (Array.isArray(content)) {
+                const textBlock = content.find((b: any) => b.type === 'text');
+                if (textBlock?.text) lastUserPreview = textBlock.text.slice(0, 100);
+              }
+            }
           } catch {}
+        }
+
+        // 4KB 内找不到 user preview 时全量重读（fallback）
+        if (!lastUserPreview && stat.size > 4096) {
+          try {
+            const fullContent = readFileSync(filePath, 'utf8');
+            const allLines = fullContent.split('\n').filter(Boolean);
+            for (let i = allLines.length - 1; i >= 0; i--) {
+              try {
+                const entry = JSON.parse(allLines[i]);
+                if (entry.type === 'user') {
+                  const content = entry.message?.content;
+                  if (typeof content === 'string') {
+                    lastUserPreview = content.slice(0, 100);
+                    break;
+                  } else if (Array.isArray(content)) {
+                    const textBlock = content.find((b: any) => b.type === 'text');
+                    if (textBlock?.text) {
+                      lastUserPreview = textBlock.text.slice(0, 100);
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+            }
+          } catch (err) {
+            logger.warn(`parseTail 全量 fallback 失败: ${filePath}: ${err}`);
+          }
         }
 
         // 行数估算：总大小 / 平均行长度(用尾部估算)
@@ -252,6 +290,15 @@ export class JSONLScanner {
               const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
               if (textBlock) preview = textBlock.text.slice(0, 100);
             }
+            if (entry.type === 'user' && !lastUserPreview) {
+              const content = entry.message?.content;
+              if (typeof content === 'string') {
+                lastUserPreview = content.slice(0, 100);
+              } else if (Array.isArray(content)) {
+                const textBlock = content.find((b: any) => b.type === 'text');
+                if (textBlock?.text) lastUserPreview = textBlock.text.slice(0, 100);
+              }
+            }
           } catch {}
         }
       }
@@ -259,7 +306,9 @@ export class JSONLScanner {
       return {
         ...(lineCount > 0 ? { message_count: lineCount } : {}),
         ...(lastActive ? { last_active: lastActive } : {}),
-        ...(preview ? { last_message_preview: preview } : {}),
+        ...(preview ? { last_message_preview: preview } : {}),                    // 保留 100 字符（向后兼容）
+        ...(preview ? { last_assistant_preview: preview.slice(0, 80) } : {}),     // 新增 80 字符
+        ...(lastUserPreview ? { last_user_preview: lastUserPreview.slice(0, 80) } : {}),  // 新增
       };
     } finally {
       closeSync(fd);
