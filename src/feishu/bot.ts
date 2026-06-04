@@ -2268,7 +2268,7 @@ function buildModelCard(
     const current = providers.find(p => p.alias === currentAlias);
     elements.push({
       tag: 'markdown',
-      content: `**当前默认:** ${current?.name ?? currentAlias} (\`${currentAlias}\`)`,
+      content: `**当前默认:** ${esc(current?.name ?? currentAlias ?? '')} (\`${esc(currentAlias)}\`)`,
     });
     elements.push({ tag: 'hr' });
   }
@@ -2278,7 +2278,7 @@ function buildModelCard(
     const isCurrent = p.alias === currentAlias;
     elements.push({
       tag: 'markdown',
-      content: `${i + 1}. **${p.name}**  \`${p.alias}\`${isCurrent ? '  ✅' : ''}`,
+      content: `${i + 1}. **${esc(p.name)}**  \`${esc(p.alias)}\`${isCurrent ? '  ✅' : ''}`,
     });
     elements.push({
       tag: 'action',
@@ -2332,7 +2332,7 @@ function buildDirListCard(
 
   elements.push({
     tag: 'markdown',
-    content: `**当前路径：**\n\`${cwd}\``,
+    content: `**当前路径：**\n\`${esc(cwd)}\``,
   });
 
   if (parent) {
