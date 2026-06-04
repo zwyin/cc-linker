@@ -228,9 +228,13 @@ export class FeishuBot {
       ? { type: 'no_target' as const, openId: event.open_id, mappingVersion: this.userManager.getVersion() }
       : await this.resolveChatTarget(event.open_id, event.message_id);
 
-    const serialKey = target.type === 'session' && target.sessionUuid
-      ? target.sessionUuid
-      : `new:${event.open_id}`;
+    // command 走独立 serialKey（每个 messageId 独立），避免被 session streaming 阻塞
+    // 注意：必须用 isCommand 标志，不按命令白名单——/listdir / 未来新增命令都自动覆盖
+    const serialKey = isCommand
+      ? `cmd:${event.open_id}:${event.message_id}`
+      : target.type === 'session' && target.sessionUuid
+        ? target.sessionUuid
+        : `new:${event.open_id}`;
 
     const spoolMsg: SpoolMessage = {
       messageId: event.message_id,
