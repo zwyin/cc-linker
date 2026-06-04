@@ -134,14 +134,6 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
         message: { role: 'assistant', content: [{ type: 'tool_use', id: `tool_${i}`, name: 'Bash', input: { command: `echo ${i}` } }] },
       }));
     }
-    lines.push(JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: 'recent user prompt' }] },
-    }));
-    lines.push(JSON.stringify({
-      type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'text', text: 'recent assistant' }] },
-    }));
 
     writeJsonl(`${sessionId}.jsonl`, lines.join('\n'));
 

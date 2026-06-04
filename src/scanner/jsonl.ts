@@ -147,7 +147,8 @@ export class JSONLScanner {
 
     let lastActive: string | null = null;
     let preview = '';
-    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
+    let lastUserPreview = '';
+    for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
         if (NON_MESSAGE_TYPES.has(entry.type)) continue;
@@ -158,6 +159,17 @@ export class JSONLScanner {
           const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
           if (textBlock) preview = textBlock.text.slice(0, 100);
         }
+        if (entry.type === 'user' && !lastUserPreview) {
+          const content = entry.message?.content;
+          if (typeof content === 'string') {
+            lastUserPreview = content.slice(0, 100);
+          } else if (Array.isArray(content)) {
+            const textBlock = content.find((b: any) => b.type === 'text');
+            if (textBlock?.text) lastUserPreview = textBlock.text.slice(0, 100);
+          }
+        }
+        // 三个字段都拿到就 break 提升性能
+        if (lastActive && preview && lastUserPreview) break;
       } catch {
         // Silently skip malformed JSON lines
       }
@@ -195,7 +207,11 @@ export class JSONLScanner {
       message_count: messageLines.length,
       created_at: createdAt ?? new Date().toISOString(),
       last_active: lastActive ?? new Date().toISOString(),
+      // 三字段并存：last_message_preview 保留 100 字符（向后兼容 CLI/bot 多处复用）
       last_message_preview: preview || lastPrompt?.slice(0, 100) || '[无内容]',
+      // 新增 80 字符版（bot overview 卡片用）
+      last_assistant_preview: preview ? preview.slice(0, 80) : undefined,
+      last_user_preview: lastUserPreview ? lastUserPreview.slice(0, 80) : undefined,
       status: 'active',
     };
   }
