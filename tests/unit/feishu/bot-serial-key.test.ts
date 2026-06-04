@@ -78,7 +78,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     // 拒绝入队：pending 目录应该是空的
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
@@ -95,7 +95,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -112,7 +112,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -129,7 +129,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -147,7 +147,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -164,7 +164,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toContain('消息格式异常');
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
     const pendingDir = join(tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
@@ -185,6 +185,34 @@ describe('FeishuBot serialKey and messageId validation', () => {
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_valid_123-abc'));
     expect(matchFile).toMatch(/^cmd:ou_user1:om_valid_123-abc:om_valid_123-abc\.json$/);
+  });
+
+  // CR2 #5: oracle 归一化——invalid messageId/openId 错误消息不再透露"格式"信息
+  it('rejection messages are generic (no whitelist leak) for messageId format error', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om:bad:id',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    // 通用消息，不透露白名单 / 长度上限 / 字符集
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
+  });
+
+  it('rejection messages are generic (no whitelist leak) for openId format error', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1:bad',
+      message_id: 'om_valid_001',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toBe('服务暂不可用，请稍后重试');
   });
 
   // ====== cmd: serialKey 行为 ======

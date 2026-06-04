@@ -144,7 +144,9 @@ export class FeishuBot {
       logger.warn(
         `消息 ID 格式异常，拒绝入队: messageId=${event.message_id}, openId=${event.open_id}`,
       );
-      await this.replyFn('消息格式异常，请重试或联系管理员。', {
+      // CR2 #5: 归一化错误消息，不透露"白名单/格式"信息防 oracle
+      // 攻击者通过 valid/invalid 格式响应差异可推断配置（owner_open_id、白名单存在性）
+      await this.replyFn('服务暂不可用，请稍后重试', {
         messageId: event.message_id,
         openId: event.open_id,
         requestUuid: stableUuid(event.message_id),
