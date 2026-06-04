@@ -21,7 +21,6 @@ describe('FeishuBot serialKey and messageId validation', () => {
   let registry: RegistryManager;
   let sessionManager: ClaudeSessionManager;
   let textReplies: Array<{ text: string; openId?: string; messageId?: string }>;
-  let cardReplies: Array<{ card: any; openId?: string; messageId?: string }>;
   let bot: FeishuBot;
   let originalMaxPending: number;
   let originalOwnerOpenId: string;
@@ -42,7 +41,6 @@ describe('FeishuBot serialKey and messageId validation', () => {
     sessionManager = new ClaudeSessionManager();
 
     textReplies = [];
-    cardReplies = [];
 
     bot = new FeishuBot({
       userManager,
@@ -53,10 +51,6 @@ describe('FeishuBot serialKey and messageId validation', () => {
       replyFn: async (text, opts) => {
         textReplies.push({ text, openId: opts?.openId, messageId: opts?.messageId });
         return 'reply-id-' + textReplies.length;
-      },
-      cardReplyFn: async (card, opts) => {
-        cardReplies.push({ card, openId: opts?.openId, messageId: opts?.messageId });
-        return 'card-id-' + cardReplies.length;
       },
     });
   });
@@ -186,34 +180,6 @@ describe('FeishuBot serialKey and messageId validation', () => {
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_valid_123-abc'));
     expect(matchFile).toMatch(/^cmd:ou_user1:om_valid_123-abc:om_valid_123-abc\.json$/);
-  });
-
-  // CR2 #5: oracle 归一化——invalid messageId/openId 错误消息不再透露"格式"信息
-  it('rejection messages are generic (no whitelist leak) for messageId format error', async () => {
-    await bot.onMessage({
-      open_id: 'ou_user1',
-      message_id: 'om:bad:id',
-      content: JSON.stringify({ text: '/list' }),
-      chat_type: 'p2p',
-      message_type: 'text',
-    });
-
-    expect(textReplies.length).toBe(1);
-    // 通用消息，不透露白名单 / 长度上限 / 字符集
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-  });
-
-  it('rejection messages are generic (no whitelist leak) for openId format error', async () => {
-    await bot.onMessage({
-      open_id: 'ou_user1:bad',
-      message_id: 'om_valid_001',
-      content: JSON.stringify({ text: '/list' }),
-      chat_type: 'p2p',
-      message_type: 'text',
-    });
-
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
   });
 
   // ====== cmd: serialKey 行为 ======

@@ -3,12 +3,10 @@ import { mkdtempSync, rmSync, existsSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SpoolQueue, SpoolMessage } from '../../../src/queue/spool';
-import { config } from '../../../src/utils/config';
 
 describe('SpoolQueue concurrency with cmd: serialKey (PR 2 pain point A core guarantee)', () => {
   let tmpDir: string;
   let spoolQueue: SpoolQueue;
-  let originalMaxPending: number;
 
   function makeMsg(messageId: string, serialKey: string, text: string): SpoolMessage {
     return {
@@ -25,13 +23,10 @@ describe('SpoolQueue concurrency with cmd: serialKey (PR 2 pain point A core gua
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'spool-concurrency-test-'));
-    originalMaxPending = (config as any).data.queue.max_pending;
-    (config as any).data.queue.max_pending = 100;
     spoolQueue = new SpoolQueue(tmpDir);
   });
 
   afterEach(() => {
-    (config as any).data.queue.max_pending = originalMaxPending;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   });
 
