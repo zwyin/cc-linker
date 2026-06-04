@@ -1,0 +1,540 @@
+# 飞书并发命令 PR 2: bot.ts serialKey 改造 实施计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 让 `/list` / `/new` / `/status` / `/listdir` 等命令走独立 serialKey `cmd:${openId}:${messageId}`，实现"session A streaming 中可并发发命令"的痛点 A 修复。
+
+**Architecture:** `onMessage` 中 `isCommand` 时直接生成 `cmd:` 前缀的 serialKey（不读 target），与 `new:` / sessionUuid 路径互不干扰。messageId 加白名单校验作为 defense-in-depth（飞书 messageId 理论不含 `:` `/`，但加校验保证 spool 文件名永远形如 `${serialKey}:${messageId}.json`）。bot.ts 新增本地 `esc()` helper（避免扩大 card-updater 公开 API）。
+
+**Tech Stack:** Bun + TypeScript + `bun:test`（复用现有 bot.test.ts 模式）
+
+**Spec:** `docs/superpowers/specs/2026-06-02-feishu-concurrent-commands-and-session-overview-design.md` 改动 1 + §1 组件 1 + 风险与缓解 messageId 行 + §1.1 messageId 白名单
+
+**Prerequisite:** PR 1 已合（schema v4 + scanner preview 字段），但本 PR 不强依赖 PR 1 字段——`serialKey` 改造是独立的逻辑层改动。
+
+---
+
+## File Structure
+
+| 文件 | 职责 |
+|------|------|
+| `src/feishu/bot.ts` | **修改**:`onMessage` 加 messageId 校验 + serialKey 改造（isCommand 走 cmd:）+ 文件底部加本地 `esc()` |
+| `tests/unit/feishu/bot-serial-key.test.ts` | **新增**:5 个 serialKey 行为测试 + messageId 校验测试 |
+
+---
+
+## Task 1: 写 failing test 给 messageId 校验
+
+**Files:**
+- Create: `tests/unit/feishu/bot-serial-key.test.ts`
+
+- [ ] **Step 1: 创建测试文件**
+
+新建 `tests/unit/feishu/bot-serial-key.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { FeishuBot } from '../../../src/feishu/bot';
+import { UserManager } from '../../../src/feishu/mapping';
+import { ListSnapshotManager } from '../../../src/feishu/list-snapshot';
+import { SpoolQueue } from '../../../src/queue/spool';
+import { RegistryManager } from '../../../src/registry/registry';
+import { ClaudeSessionManager } from '../../../src/proxy/session';
+import { config } from '../../../src/utils/config';
+
+// 复用 bot.test.ts 的 setup 模式：每个测试独立 tmpDir
+describe('FeishuBot serialKey and messageId validation', () => {
+  let tmpDir: string;
+  let userManager: UserManager;
+  let listSnapshotManager: ListSnapshotManager;
+  let spoolQueue: SpoolQueue;
+  let registry: RegistryManager;
+  let sessionManager: ClaudeSessionManager;
+  let textReplies: Array<{ text: string; openId?: string; messageId?: string }>;
+  let cardReplies: Array<{ card: any; openId?: string; messageId?: string }>;
+  let bot: FeishuBot;
+
+  beforeEach(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'bot-serialkey-test-'));
+    config.load({ general: { cc_linker_dir: tmpDir, registry_path: join(tmpDir, 'registry.json') } });
+
+    userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
+    listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
+    spoolQueue = new SpoolQueue(tmpDir);
+    registry = new RegistryManager(tmpDir);
+    sessionManager = new ClaudeSessionManager();
+
+    textReplies = [];
+    cardReplies = [];
+
+    bot = new FeishuBot({
+      userManager,
+      listSnapshotManager,
+      spoolQueue,
+      registry,
+      sessionManager,
+      replyFn: async (text, opts) => {
+        textReplies.push({ text, openId: opts?.openId, messageId: opts?.messageId });
+        return 'reply-id-' + textReplies.length;
+      },
+      cardReplyFn: async (card, opts) => {
+        cardReplies.push({ card, openId: opts?.openId, messageId: opts?.messageId });
+        return 'card-id-' + cardReplies.length;
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ====== messageId 校验 ======
+
+  it('rejects message with invalid messageId (contains colon)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om:bad:id',  // 包含 : 字符
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toContain('消息格式异常');
+  });
+
+  it('rejects message with invalid messageId (contains slash)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om/bad/id',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    expect(textReplies.length).toBe(1);
+    expect(textReplies[0].text).toContain('消息格式异常');
+  });
+
+  it('accepts valid alphanumeric+underscore+hyphen messageId', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_valid_123-abc',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    // 没有"消息格式异常"回复
+    expect(textReplies.length).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: 跑测试看它失败**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot-serial-key.test.ts`
+Expected: 3 个测试全失败——当前 bot.ts 没有 messageId 校验逻辑，所有消息都被接受。
+
+- [ ] **Step 3: Commit 失败测试**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git add tests/unit/feishu/bot-serial-key.test.ts
+git commit -m "test(bot): add messageId validation + serialKey test suite (red)"
+```
+
+---
+
+## Task 2: 实现 messageId 白名单校验
+
+**Files:**
+- Modify: `src/feishu/bot.ts:146-149`（在 hasReceipt 之后加 messageId 校验）
+
+- [ ] **Step 1: 在 onMessage 中加 messageId 白名单**
+
+修改 `src/feishu/bot.ts:146-149` 之后插入新代码（在 `if (!this.userManager.validateOwner(...))` 之后、`if (this.spoolQueue.hasReceipt(...))` 之后、文本提取之前）:
+
+```typescript
+    // messageId 白名单校验：defense-in-depth，防止特殊字符打乱 spool 文件名 ${serialKey}:${messageId}.json 的双 : 结构
+    if (!/^[a-zA-Z0-9_-]+$/.test(event.message_id)) {
+      logger.warn(`消息 ID 格式异常，拒绝入队: ${event.message_id}`);
+      await this.replyFn('消息格式异常，请重试或联系管理员。', {
+        messageId: event.message_id,
+        openId: event.open_id,
+        requestUuid: stableUuid(event.message_id),
+      });
+      return;
+    }
+```
+
+具体插入位置：在 `bot.ts:149` 之后（`hasReceipt` 检查之后），`bot.ts:151` 之前（`let text = '';` 之前）。
+
+- [ ] **Step 2: 跑测试**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot-serial-key.test.ts`
+Expected: 3 个 messageId 校验测试全过。
+
+- [ ] **Step 3: 跑现有 bot.test.ts 确保不破坏**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot.test.ts`
+Expected: 全过。现有测试的 messageId 形如 `'msg-1'` / `'msg-card-1'` / `'msg-list-1'` 都是合法字符。
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git add src/feishu/bot.ts
+git commit -m "feat(bot): validate messageId against /^[a-zA-Z0-9_-]+$/ whitelist"
+```
+
+---
+
+## Task 3: 写 failing test 给 cmd: serialKey 行为
+
+**Files:**
+- Modify: `tests/unit/feishu/bot-serial-key.test.ts`（追加测试）
+
+- [ ] **Step 1: 追加 5 个 serialKey 行为测试**
+
+在 `tests/unit/feishu/bot-serial-key.test.ts` 末尾（最后一个 `it()` 之后、`describe` 闭合之前）追加:
+
+```typescript
+  // ====== cmd: serialKey 行为 ======
+
+  it('command message uses cmd:openId:msgId serialKey', async () => {
+    // 触发 onMessage 后，让 worker claim 一条消息检查 serialKey
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_001',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    // 检查 spool pending 目录中的文件名
+    const pendingFiles = require('fs').readdirSync(join(tmpDir, 'pending'));
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_001'));
+    expect(matchFile).toBeDefined();
+    // 文件名格式: cmd:openId:msgId:msgId.json
+    expect(matchFile).toMatch(/^cmd:ou_user1:om_msg_001:om_msg_001\.json$/);
+  });
+
+  it('non-command session message uses sessionUuid as serialKey', async () => {
+    // 先设置 user mapping 指向一个 session
+    await userManager.compareAndSwap('ou_user1', null, {
+      type: 'session',
+      sessionUuid: 'sess-abc-123',
+      cwd: '/tmp/proj',
+      createdAt: new Date().toISOString(),
+    });
+
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_002',
+      content: JSON.stringify({ text: '继续工作' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingFiles = require('fs').readdirSync(join(tmpDir, 'pending'));
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_002'));
+    expect(matchFile).toBeDefined();
+    expect(matchFile).toMatch(/^sess-abc-123:om_msg_002\.json$/);
+  });
+
+  it('non-command no-target message uses new:openId serialKey', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_003',
+      content: JSON.stringify({ text: 'hello' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingFiles = require('fs').readdirSync(join(tmpDir, 'pending'));
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_003'));
+    expect(matchFile).toBeDefined();
+    expect(matchFile).toMatch(/^new:ou_user1:om_msg_003\.json$/);
+  });
+
+  it('/listdir command also uses cmd: serialKey (not /list whitelist only)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_msg_listdir',
+      content: JSON.stringify({ text: '/listdir' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingFiles = require('fs').readdirSync(join(tmpDir, 'pending'));
+    const matchFile = pendingFiles.find(f => f.includes('om_msg_listdir'));
+    expect(matchFile).toBeDefined();
+    // /listdir 也走 cmd: 路径（按 isCommand 标志，不按白名单）
+    expect(matchFile).toMatch(/^cmd:ou_user1:om_msg_listdir:om_msg_listdir\.json$/);
+  });
+
+  it('two different messageId commands have independent serialKeys', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_cmd_a',
+      content: JSON.stringify({ text: '/list' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'om_cmd_b',
+      content: JSON.stringify({ text: '/status' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+
+    const pendingFiles = require('fs').readdirSync(join(tmpDir, 'pending'));
+    const fileA = pendingFiles.find(f => f.includes('om_cmd_a'));
+    const fileB = pendingFiles.find(f => f.includes('om_cmd_b'));
+
+    expect(fileA).toBeDefined();
+    expect(fileB).toBeDefined();
+    // 两个 serialKey 完全不同
+    expect(fileA).not.toBe(fileB);
+    expect(fileA).toMatch(/^cmd:ou_user1:om_cmd_a:/);
+    expect(fileB).toMatch(/^cmd:ou_user1:om_cmd_b:/);
+  });
+```
+
+- [ ] **Step 2: 跑测试看它失败**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot-serial-key.test.ts`
+Expected: 5 个 serialKey 测试全失败——当前代码用 `target.type === 'session' ? sessionUuid : new:openId`，command 也会落入 `new:openId` 分支，文件名是 `new:ou_user1:om_msg_001.json` 而非 `cmd:ou_user1:om_msg_001:om_msg_001.json`。
+
+- [ ] **Step 3: Commit 失败测试**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git add tests/unit/feishu/bot-serial-key.test.ts
+git commit -m "test(bot): add cmd: serialKey behavior tests (red)"
+```
+
+---
+
+## Task 4: 实现 isCommand 走 cmd: serialKey
+
+**Files:**
+- Modify: `src/feishu/bot.ts:220-222`（serialKey 计算）
+
+- [ ] **Step 1: 改 serialKey 计算加 isCommand 分支**
+
+修改 `src/feishu/bot.ts:220-222`:
+
+把:
+```typescript
+    const serialKey = target.type === 'session' && target.sessionUuid
+      ? target.sessionUuid
+      : `new:${event.open_id}`;
+```
+
+改为:
+```typescript
+    // command 走独立 serialKey（每个 messageId 独立），避免被 session streaming 阻塞
+    // 注意：必须用 isCommand 标志，不按命令白名单——/listdir / 未来新增命令都自动覆盖
+    const serialKey = isCommand
+      ? `cmd:${event.open_id}:${event.message_id}`
+      : target.type === 'session' && target.sessionUuid
+        ? target.sessionUuid
+        : `new:${event.open_id}`;
+```
+
+- [ ] **Step 2: 跑测试**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot-serial-key.test.ts`
+Expected: 8 个测试（3 messageId 校验 + 5 serialKey 行为）全过。
+
+- [ ] **Step 3: 跑现有 bot.test.ts 确保不破坏**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/bot.test.ts`
+Expected: 全过。现有测试中 command 消息的 serialKey 之前是 `new:openId`，**不会**触发任何断言失败（现有测试主要测 textReplies / cardReplies 内容，不测文件名）。
+
+**但要警惕**：现有测试如果 dispatch 跑到了 `claimNext` 检查 processing 目录，新代码下 command 走 `cmd:` 路径，**可能改变 dispatch 行为**。如果发现现有测试失败，**修复该测试**（不是改新代码）——新行为是正确的，测试需要适配。
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git add src/feishu/bot.ts
+git commit -m "feat(bot): command messages use independent cmd:openId:msgId serialKey"
+```
+
+---
+
+## Task 5: 添加本地 esc() helper
+
+**Files:**
+- Modify: `src/feishu/bot.ts:2266-2268`（在 buildSessionTitle 之后追加 esc）
+
+- [ ] **Step 1: 添加 esc() 本地定义**
+
+修改 `src/feishu/bot.ts:2266-2268` 之后追加:
+
+```typescript
+function esc(text: string): string {
+  return text.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+}
+```
+
+**为什么不需要测试**：esc() 是 1 行纯函数，行为可由 manual 验证（`<` → `&lt;`、`>` → `&gt;`），加测试是 over-spec。esc() 在 PR 3 才会被 buildSessionOverviewCard 使用，PR 3 会通过 bot-do-switch.test.ts 间接覆盖。
+
+- [ ] **Step 2: 跑 typecheck**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun run typecheck`
+Expected: 通过。
+
+- [ ] **Step 3: 跑所有相关测试**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test tests/unit/feishu/`
+Expected: bot.test.ts + bot-serial-key.test.ts + card-updater.test.ts + mapping.test.ts + activity.test.ts + image.test.ts 全过。
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git add src/feishu/bot.ts
+git commit -m "feat(bot): add local esc() helper for markdown escape"
+```
+
+---
+
+## Task 6: 全量测试验证
+
+**Files:**
+- 无代码修改
+
+- [ ] **Step 1: 跑全量单元测试**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test`
+Expected: 全过。如有失败，定位是 PR 2 引起的，修复。
+
+- [ ] **Step 2: 跑 typecheck**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun run typecheck`
+Expected: 通过。
+
+- [ ] **Step 3: 跑测试覆盖率**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && bun test --coverage`
+Expected: bot.ts onMessage 相关代码覆盖率 ≥ 80%。
+
+- [ ] **Step 4: 手动 smoke test**
+
+启动 daemon:
+```bash
+cd /Users/wuyujun/Git/cc-linker
+bun run dev start
+```
+
+在飞书侧：
+1. 发送 `/list` → 收到列表卡片（验证 cmd serialKey 工作）
+2. 立即发送 `/status` → 也立即返回（验证两条 cmd 不互相阻塞）
+3. 发送 `/listdir` → 也走 cmd 路径，收到目录浏览卡片（验证 isCommand 标志而非白名单）
+4. 发送 `hello`（非 command）→ 走 chat 路径（可能因没 session 收到"当前没有活跃会话"——这是正常行为）
+
+- [ ] **Step 5: 验证无破坏后无 commit**
+
+此 task 无代码修改。
+
+---
+
+## Task 7: Commit 全部 + 创建 PR
+
+- [ ] **Step 1: 检查 git status**
+
+Run: `cd /Users/wuyujun/Git/cc-linker && git status`
+Expected: 干净。
+
+- [ ] **Step 2: 推送到远端并创建 PR**
+
+```bash
+cd /Users/wuyujun/Git/cc-linker
+git push origin <branch-name>
+gh pr create --base master --title "feat(feishu): command messages use independent cmd: serialKey" --body "$(cat <<'EOF'
+## 概述
+PR 2 of 3: 飞书侧 command 消息（/list / /new / /status / /listdir 等）走独立 serialKey `cmd:${openId}:${messageId}`，**修复"session streaming 中无法发命令"的痛点 A**。
+
+## 范围
+- src/feishu/bot.ts:onMessage: 加 messageId 白名单校验 + 改 serialKey 计算
+- src/feishu/bot.ts: 加本地 esc() helper（PR 3 用）
+- tests/unit/feishu/bot-serial-key.test.ts: 8 个新测试（3 messageId + 5 serialKey）
+
+## 工作原理
+- isCommand 时直接生成 `cmd:` 前缀 serialKey
+- 不同 messageId → 不同 serialKey → SpoolQueue claimNext 的 `startsWith(serialKey+":")` 匹配不上 → **真正并行**
+- 内部 lockKey (`new:${openId}`) 仍用于互斥 Claude 进程，行为不变
+
+## 测试
+- 8 个新测试全过
+- 现有 bot.test.ts 全过（不破坏）
+
+## 风险
+- 行为变化：飞书侧 command 消息**不再被 session streaming 阻塞**
+- 回滚简单：git revert，老 serialKey `new:openId` 行为恢复
+- 不影响 schema（PR 1 已合）、不影响 overview 卡片（PR 3）
+
+## 部署
+- 上线后立即生效
+- 关键监控：`cmd.queue.wait_ms` P95 应该从无上限降到 < 100ms
+- 冒烟测试：streaming 中发 /list 立即返回
+
+## 后续
+- PR 3: bot.ts overview 卡片 + list 运行中标记（解决"切换看不到进展"痛点 B）
+EOF
+)"
+```
+
+- [ ] **Step 3: 等 CI 通过后合并**
+
+如有 CI，等所有 check 通过后 merge squash。
+
+---
+
+## Self-Review Checklist
+
+执行时逐项检查：
+
+- [ ] Task 1 测试文件中 `config.load` 调用方式与项目其他测试一致
+- [ ] Task 2 messageId 校验正则 `/^[a-zA-Z0-9_-]+$/` 严格匹配
+- [ ] Task 2 拒绝时 reply "消息格式异常"，**不**入队
+- [ ] Task 4 serialKey 改造**不**影响非 command 路径（session 消息仍用 sessionUuid）
+- [ ] Task 4 /listdir / 未来新增命令自动覆盖（不依赖白名单）
+- [ ] Task 5 esc() 加在 `preview()` / `buildSessionTitle()` 同区域（bot.ts 底部）
+- [ ] Task 6 全量测试不破坏
+- [ ] Task 7 PR body 描述 3 PR 全景
+
+---
+
+## 工作量估算
+
+| Task | 范围 | 预计时间 |
+|------|------|---------|
+| Task 1 | messageId 失败测试 | 10 分钟 |
+| Task 2 | messageId 校验实现 | 5 分钟 |
+| Task 3 | serialKey 失败测试 | 15 分钟 |
+| Task 4 | serialKey 改造 | 5 分钟 |
+| Task 5 | esc() helper | 2 分钟 |
+| Task 6 | 全量测试验证 | 10 分钟 |
+| Task 7 | PR 创建 | 10 分钟 |
+| **总计** | - | **~1 小时**（不含 review 反馈循环） |
+
+---
+
+## 下一步
+
+PR 2 合并后写 PR 3 计划（`2026-06-02-feishu-concurrent-commands-pr3-overview-card.md`），覆盖：
+- `buildSessionOverviewCard` + `isSessionRunning` 新增
+- `doSwitch` 改造（swapped=false + overview card + text 降级）
+- `buildListCard` 加 `runningUuids` 参数
+- `doCardList` 计算 runningUuids + text 降级加 `[运行中]`
+- 测试: `tests/unit/feishu/bot-do-switch.test.ts` + 更新 `tests/unit/feishu/bot.test.ts:620`
