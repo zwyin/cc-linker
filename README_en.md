@@ -323,6 +323,8 @@ permission_mode = "acceptEdits"
 - **Permission Handler** (SDK mode): Interactive tool approval via Feishu cards
 - **Image Processor**: Downloads Feishu images, injects image references into prompts, and cleans up expired files
 - **Startup Reconciler**: Repairs inconsistent runtime state on startup, including stuck messages and incomplete session metadata
+- **Provider Manager**: Multi-model management with CC Switch integration and manual configuration
+- **Activity Detection**: CLI-side session activity detection to prevent concurrent access from Feishu and CLI
 
 ## Developer Guide
 
