@@ -1,4 +1,5 @@
 import { withTimeout } from './async';
+import { isSafeId } from './safe-id';
 import {
   getClaudeProcessesByCwd,
   getDarwinClaudeProcesses,
@@ -61,12 +62,9 @@ export interface ActivityEntry {
 // === Rotate 阈值 ===
 
 // Validate sessionUuid to prevent path traversal in activityLogPath.
-// Loosened from strict UUID v4 to allow any non-empty string that doesn't contain
-// path separators. This still prevents path traversal (slashes/dots blocked at
-// join-time) but accepts real Claude CLI session IDs (UUIDs), test fixtures
-// ('test-session-1234'), and any future non-UUID format.
-// The real security against `../etc/passwd` is the join() resolution, not this regex.
-const SESSION_UUID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+// Uses src/utils/safe-id.ts isSafeId() which also gates messageId/openId
+// in bot.ts — single source of truth. Length cap 80 is the cmd: serialKey
+// composition limit (cmd: + 80 + : + 80 + : + 80 + .json = 251 ≤ NAME_MAX 255).
 
 // Track sessionUuids we've already warned about (to avoid log spam from
 // per-chunk heartbeat calls)
@@ -88,7 +86,7 @@ export function activityLogPath(sessionUuid: string): string {
   // Validate to prevent path traversal: sessionUuid must be a UUID.
   // Throw on invalid input rather than silently using a sanitized version,
   // because callers depend on the path being predictable for a given sessionUuid.
-  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+  if (!isSafeId(sessionUuid)) {
     throw new Error(`Invalid sessionUuid: ${JSON.stringify(sessionUuid)}`);
   }
   return join(ACTIVITY_DIR, `${sessionUuid}.log`);
@@ -105,7 +103,7 @@ export function writeActivityMarker(
   if (!sessionUuid) return;  // ★ 保护空字符串
 
   // Validate sessionUuid format to prevent path traversal
-  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+  if (!isSafeId(sessionUuid)) {
     if (!warnedSessionUuids.has(sessionUuid)) {
       warnedSessionUuids.add(sessionUuid);
       logger.warn(
@@ -150,7 +148,7 @@ export function readLastActivityMarker(sessionUuid: string): ActivityMarker | nu
   if (!sessionUuid) return null;
 
   // Validate sessionUuid format to prevent path traversal
-  if (!SESSION_UUID_REGEX.test(sessionUuid)) {
+  if (!isSafeId(sessionUuid)) {
     if (!warnedSessionUuids.has(sessionUuid)) {
       warnedSessionUuids.add(sessionUuid);
       logger.warn(

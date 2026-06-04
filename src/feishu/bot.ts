@@ -12,6 +12,7 @@ import { RegistryManager } from '../registry';
 import { syncBeforeCommand } from '../scanner';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
+import { isSafeId } from '../utils/safe-id';
 import { repairJsonlLastPrompt } from '../utils/jsonl-repair';
 import { formatTimeAgo } from '../cli/output';
 import { ProviderManager } from '../utils/providers';
@@ -64,13 +65,6 @@ class ReplyDeliveryPendingError extends Error {
 function stableUuid(messageId: string, chunkIndex = 0): string {
   return `msg-${Bun.hash(`${messageId}:${chunkIndex}`).toString(16)}`;
 }
-
-/**
- * 安全标识符白名单：messageId / openId 通用校验。
- * 长度 {1,128} 对齐 src/utils/session-activity.ts:69 的 SESSION_UUID_REGEX；
- * 字符集 [a-zA-Z0-9_-] 排除 : / \ 等所有路径分隔符与 shell 特殊字符。
- */
-const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
 
 /** Unique UUID for card callback replies — NOT based on messageId to avoid
  *  Feishu API idempotency deduplication when user clicks the same card button multiple times.
@@ -146,7 +140,7 @@ export class FeishuBot {
     // - openId 同样校验：它会拼入 cmd: serialKey，未校验可被 startsWith 匹配误判
     // - {1,128} 长度上限对齐 src/utils/session-activity.ts:69 的 SESSION_UUID_REGEX
     //   防 ENAMETOOLONG（实测 129 字符已让 enqueue 抛 errno -63）
-    if (!SAFE_ID_REGEX.test(event.message_id) || !SAFE_ID_REGEX.test(event.open_id)) {
+    if (!isSafeId(event.message_id) || !isSafeId(event.open_id)) {
       logger.warn(
         `消息 ID 格式异常，拒绝入队: messageId=${event.message_id}, openId=${event.open_id}`,
       );

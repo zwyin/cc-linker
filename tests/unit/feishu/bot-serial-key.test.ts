@@ -135,11 +135,12 @@ describe('FeishuBot serialKey and messageId validation', () => {
     expect(pendingFiles).toHaveLength(0);
   });
 
-  it('rejects message with messageId longer than 128 chars', async () => {
-    // CR #4: 长度上限对齐 session-activity.ts:69 的 SESSION_UUID_REGEX
+  it('rejects message with messageId longer than 80 chars', async () => {
+    // CR #4: 长度上限对齐 src/utils/safe-id.ts {1,80}，80 是 cmd: serialKey 组合边界
+    // (cmd: + 80 + : + 80 + : + 80 + .json = 251 ≤ NAME_MAX 255)
     await bot.onMessage({
       open_id: 'ou_user1',
-      message_id: 'a'.repeat(129),
+      message_id: 'a'.repeat(81),
       content: JSON.stringify({ text: '/list' }),
       chat_type: 'p2p',
       message_type: 'text',
@@ -152,10 +153,10 @@ describe('FeishuBot serialKey and messageId validation', () => {
     expect(pendingFiles).toHaveLength(0);
   });
 
-  it('rejects message with openId longer than 128 chars', async () => {
-    // CR #4: openId 同样有长度上限（防 path-traversal + filename 长度爆掉）
+  it('rejects message with openId longer than 80 chars', async () => {
+    // CR #4: openId 同样有长度上限
     await bot.onMessage({
-      open_id: 'o'.repeat(129),
+      open_id: 'o'.repeat(81),
       message_id: 'om_valid_001',
       content: JSON.stringify({ text: '/list' }),
       chat_type: 'p2p',
