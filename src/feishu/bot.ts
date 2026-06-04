@@ -2295,10 +2295,6 @@ function buildSessionTitle(text: string): string {
   return preview(text, 60) || 'Untitled';
 }
 
-function esc(text: string): string {
-  return text.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
-}
-
 function normalizeCwd(cwd: string): string {
   const trimmed = cwd.trim();
   if (!trimmed) return '';
