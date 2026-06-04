@@ -1853,10 +1853,17 @@ export class FeishuBot {
     }));
     this.listSnapshotManager.saveSnapshot(openId, snapshotEntries);
 
+    const runningUuids = new Set(
+      this.sessionManager.listSessions()
+        .map(s => s.sessionId)
+        .filter((id): id is string => Boolean(id))
+    );
+
     const card = buildListCard(
-      sessions as Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string }]>,
+      sessions as Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string; last_assistant_preview?: string }]>,
       allSessions.length,
       hasMore,
+      runningUuids,
     );
     const replyId = await this.cardReplyFn(card, { messageId, openId });
 
@@ -1869,13 +1876,14 @@ export class FeishuBot {
         this.spoolQueue.recordReceipt(messageId ?? '');
       }
     } else {
-      // Fallback to text
+      // Fallback to text（卡片与 text 必须展示相同的运行中状态，保持 UX 一致）
       const lines = [`📋 我的会话（最近 ${sessions.length} 个，共 ${allSessions.length} 个）`, ''];
       for (const [index, [uuid, session]] of sessions.entries()) {
         const providerTag = session.lastKnownProvider
           ? ` [${session.lastKnownProvider}]`
           : '';
-        lines.push(`${index + 1}. ${session.title ?? 'Untitled'}${providerTag}`);
+        const runningTag = runningUuids.has(uuid) ? ' [运行中]' : '';
+        lines.push(`${index + 1}. ${session.title ?? 'Untitled'}${providerTag}${runningTag}`);
         lines.push(`   ID: ${uuid.slice(0, 8)}`);
         lines.push(`   ${formatOrigin(session.origin, session.status)} | ${session.message_count}条 | ${formatTimeAgo(session.last_active)} | ${session.project_name ?? basename(session.cwd)}`);
         lines.push('');
@@ -1883,7 +1891,13 @@ export class FeishuBot {
       if (hasMore) lines.push(`... 还有 ${allSessions.length - MAX_LIST_ITEMS} 个更早的会话未显示`);
       lines.push('━━━━━━━━━━━━━━━━');
       lines.push('💡 点击卡片上的按钮快速切换/恢复，或回复 "恢复 2" 获取恢复指引');
-      await this.replyAndFinalize(msg!, lines.join('\n'));
+      // 【P0 修复】msg 在 card action 路径（handleCardAction 调用）是 undefined，原 msg! 会在 replyTo 抛 TypeError
+      if (msg) {
+        await this.replyAndFinalize(msg, lines.join('\n'));
+      } else {
+        await this.replyFn(lines.join('\n'), { messageId, openId, requestUuid: uniqueUuid() });
+        this.spoolQueue.recordReceipt(messageId ?? '');
+      }
     }
   }
 
@@ -2168,7 +2182,12 @@ export class FeishuBot {
 }
 
 /** Build a session list card with switch/resume action buttons */
-function buildListCard(sessions: Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string }]>, total: number, hasMore: boolean): Record<string, unknown> {
+function buildListCard(
+  sessions: Array<[string, { title?: string; origin: string; message_count: number; last_active: string; status?: string; project_name?: string; cwd?: string; last_assistant_preview?: string }]>,
+  total: number,
+  hasMore: boolean,
+  runningUuids: Set<string>,
+): Record<string, unknown> {
   const elements: Array<Record<string, unknown>> = [];
 
   if (sessions.length === 0) {
@@ -2176,9 +2195,13 @@ function buildListCard(sessions: Array<[string, { title?: string; origin: string
   } else {
     for (const [uuid, entry] of sessions) {
       const index = sessions.findIndex(s => s[0] === uuid) + 1;
+      const runningMark = runningUuids.has(uuid) ? '🔴 ' : '';
+      const aiPreviewLine = entry.last_assistant_preview
+        ? `\n🤖 ${preview(entry.last_assistant_preview, 60)}`
+        : '';
       elements.push({
         tag: 'markdown',
-        content: `**${index}. ${entry.title ?? 'Untitled'}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${entry.project_name ?? ''}\n📁 \`${entry.cwd ?? '-'}\``,
+        content: `**${index}. ${runningMark}${entry.title ?? 'Untitled'}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${entry.project_name ?? ''}\n📁 \`${entry.cwd ?? '-'}\`${aiPreviewLine}`,
       });
       elements.push({
         tag: 'action',
