@@ -131,4 +131,61 @@ describe('SpoolQueue concurrency with cmd: serialKey (PR 2 pain point A core gua
     const okResult = spoolQueue.enqueue(makeMsg('om_retry_001', 'cmd:ou_user1:om_retry_001', '/list'));
     expect(okResult).toBe(true);
   });
+
+  // CR3 #1: enqueue 的 markDone 循环（awaitingForceSend 取代）也必须在 try/catch 内
+  // markDone 内 renameSync 抛错（EIO / EACCES）时 receipt 必须被 revert
+  // 用 spy 强制 markDone 抛错来模拟（filesystem 错误实际无法可靠触发因为 markDone 内部已 try/catch）
+  it('enqueue failure during awaitingForceSend markDone also reverts receipt (CR3 #1)', async () => {
+    // 先在 processing 目录放一个 awaitingForceSend 消息
+    const awaitingMsg: SpoolMessage = {
+      messageId: 'om_awaiting_001',
+      openId: 'ou_user1',
+      text: 'awaiting prompt',
+      target: { type: 'no_target' as const, openId: 'ou_user1' },
+      serialKey: 'cmd:ou_user1:om_awaiting_001',
+      status: 'processing',
+      awaitingForceSend: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const processingDir = join(tmpDir, 'processing');
+    const { mkdirSync, writeFileSync } = await import('fs');
+    mkdirSync(processingDir, { recursive: true });
+    writeFileSync(
+      join(processingDir, 'cmd:ou_user1:om_awaiting_001:om_awaiting_001.json'),
+      JSON.stringify(awaitingMsg),
+    );
+
+    // 用 spy 替换 markDone 强制抛错（模拟未来重构可能引入的 throw）
+    const originalMarkDone = spoolQueue.markDone.bind(spoolQueue);
+    (spoolQueue as any).markDone = () => {
+      throw new Error('simulated markDone failure');
+    };
+
+    try {
+      const newMsg: SpoolMessage = {
+        messageId: 'om_new_001',
+        openId: 'ou_user1',
+        text: '/list',
+        target: { type: 'no_target' as const, openId: 'ou_user1' },
+        serialKey: 'cmd:ou_user1:om_awaiting_001',  // 同 serialKey 触发 markDone
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // enqueue 应该捕获 markDone 抛错并 revert receipt
+      const result = spoolQueue.enqueue(newMsg);
+      expect(result).toBe(false);
+
+      // 关键断言：receipt 已经被 revert
+      const receiptsDir = join(tmpDir, 'receipts');
+      const receiptFile = join(receiptsDir, `${newMsg.messageId}.json`);
+      expect(existsSync(receiptFile)).toBe(false);
+    } finally {
+      // 恢复原 markDone（避免污染后续测试 / afterEach cleanup）
+      (spoolQueue as any).markDone = originalMarkDone;
+    }
+  });
 });

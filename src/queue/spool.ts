@@ -191,20 +191,29 @@ export class SpoolQueue {
     const maxSize = config.get<number>('queue.max_pending', DEFAULT_MAX_QUEUE_SIZE);
     if (pendingCount + processingCount >= maxSize) {
       logger.warn(`队列已满 (${pendingCount + processingCount}/${maxSize})，拒绝: ${msg.messageId}`);
-      // Revert receipt
-      try { unlinkSync(receiptPath); } catch {}
+      this.revertReceipt(receiptPath, msg.messageId);
       return false;
     }
 
     // 新消息到达：取代同 serialKey 的旧 awaitingForceSend 消息
     // 用户的"等待决策"被新消息自动取代（用户用行动表示要继续对话）
-    const processingFiles = readdirSync(this.processingDir).filter(f => f.startsWith(`${msg.serialKey}:`));
-    for (const file of processingFiles) {
-      const oldMsg = this.readSpoolMessage(join(this.processingDir, file));
-      if (oldMsg?.awaitingForceSend) {
-        logger.info(`新消息到达，旧 awaitingForceSend 消息被取代: ${oldMsg.messageId}`);
-        this.markDone(oldMsg.messageId, oldMsg.serialKey);
+    // CR3 #1: 包 try/catch——当前 markDone 内部已 try/catch 不会抛，但 future 重构可能引入 throw。
+    // 若 markDone 抛错而未被捕获，receipt 残留会导致同 messageId 消息被 hasReceipt 永久 block。
+    try {
+      const processingFiles = readdirSync(this.processingDir).filter(f => f.startsWith(`${msg.serialKey}:`));
+      for (const file of processingFiles) {
+        const oldMsg = this.readSpoolMessage(join(this.processingDir, file));
+        if (oldMsg?.awaitingForceSend) {
+          logger.info(`新消息到达，旧 awaitingForceSend 消息被取代: ${oldMsg.messageId}`);
+          this.markDone(oldMsg.messageId, oldMsg.serialKey);
+        }
       }
+    } catch (err) {
+      logger.warn(
+        `enqueue 取代 awaitingForceSend 失败: ${msg.messageId} (key=${msg.serialKey}): ${err}`,
+      );
+      this.revertReceipt(receiptPath, msg.messageId);
+      return false;
     }
 
     msg.status = 'pending';
@@ -220,7 +229,7 @@ export class SpoolQueue {
       logger.warn(
         `enqueue 写入 pending 失败: ${msg.messageId} (key=${msg.serialKey}): ${err}`,
       );
-      try { unlinkSync(receiptPath); } catch {}
+      this.revertReceipt(receiptPath, msg.messageId);
       return false;
     }
 
@@ -553,6 +562,21 @@ export class SpoolQueue {
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
     renameSync(tmp, path);
+  }
+
+  /**
+   * Revert orphan receipt when enqueue fails after the atomic receipt write.
+   * CR3 #6: unlink 失败也 log warn（之前是静默 swallow）—— 若 EACCES / EBUSY 让
+   * unlink 失败，receipt 永久残留，同 messageId 消息被 hasReceipt 永远 block。
+   */
+  private revertReceipt(receiptPath: string, messageId: string): void {
+    try {
+      unlinkSync(receiptPath);
+    } catch (err) {
+      logger.warn(
+        `enqueue revert receipt 失败 (receipt 残留将 block 后续 ${messageId}): ${err}`,
+      );
+    }
   }
 
   private moveMessage(
