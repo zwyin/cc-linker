@@ -95,9 +95,23 @@ export class RegistryManager {
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
 
+      const originalVersion = parsed.version;
       migrateV1toV2(parsed);
       migrateV3toV4(parsed);
-      return RegistrySchema.parse(parsed);
+      const validated = RegistrySchema.parse(parsed);
+
+      // 如果迁移改变了 version，持久化新版本到磁盘（带备份以便回滚）
+      if (originalVersion !== parsed.version) {
+        logger.info(
+          `Registry schema 已从 v${originalVersion} 迁移到 v${parsed.version}，持久化到磁盘`
+        );
+        this.rotateBackup();
+        this.saveSync(validated);
+        return validated;
+      }
+
+      this.data = validated;
+      return validated;
     } catch (err) {
       logger.warn('Registry 损坏，尝试从备份恢复...');
       return this.restoreFromBackup() ?? this.createEmpty();
@@ -121,9 +135,19 @@ export class RegistryManager {
       }
       const raw = readFileSync(this.registryPath, 'utf8');
       let parsed = JSON.parse(raw);
+      const originalVersion = parsed.version;
       migrateV1toV2(parsed);
       migrateV3toV4(parsed);
-      this.data = RegistrySchema.parse(parsed);
+      const validated = RegistrySchema.parse(parsed);
+      // Migration happened — re-acquire write lock to persist the new version
+      if (originalVersion !== parsed.version) {
+        await withLock(this.registryPath, async () => {
+          this.rotateBackup();
+          this.saveSync(validated);
+        });
+        return;
+      }
+      this.data = validated;
     });
   }
 

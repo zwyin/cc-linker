@@ -176,4 +176,37 @@ describe('migrateV3toV4', () => {
     expect(entry.last_user_preview).toBeUndefined();
     expect(entry.last_assistant_preview).toBeUndefined();
   });
+
+  it('load() persists the upgraded v4 file to disk (smoke test fix)', () => {
+    // PR 1 smoke test failed because load() migrated parsed.version to 4
+    // in-memory but never wrote it back to disk. The on-disk file stayed v3
+    // until something else triggered a save. Fix: load() must rotate a
+    // backup and write the migrated v4 data to disk when migration occurs.
+    writeRegistry(3, {
+      'session-1': {
+        origin: 'cli',
+        cwd: '/tmp/proj',
+        project_name: null,
+        jsonl_path: null,
+        project_dir: null,
+        created_at: '2026-01-01T00:00:00Z',
+        last_active: '2026-01-02T00:00:00Z',
+        title: 'Persisted',
+        message_count: 7,
+        last_message_preview: 'persisted preview',
+      },
+    });
+
+    new RegistryManager(tmpDir);
+
+    // On-disk file must now be v4 with sessions preserved
+    const raw = JSON.parse(readFileSync(join(tmpDir, 'registry.json'), 'utf8'));
+    expect(raw.version).toBe(4);
+    expect(raw.sessions['session-1']).toBeDefined();
+    expect(raw.sessions['session-1'].last_message_preview).toBe('persisted preview');
+    expect(raw.sessions['session-1'].message_count).toBe(7);
+
+    // A backup of the original v3 file must have been rotated
+    expect(require('fs').existsSync(join(tmpDir, 'backups'))).toBe(true);
+  });
 });
