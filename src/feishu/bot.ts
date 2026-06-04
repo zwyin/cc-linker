@@ -2197,12 +2197,14 @@ function buildListCard(
     for (const [uuid, entry] of sessions) {
       const index = sessions.findIndex(s => s[0] === uuid) + 1;
       const runningMark = runningUuids.has(uuid) ? '🔴 ' : '';
+      // esc() 必须在 preview() 之后调用,避免 preview 截断把 &lt; 切到一半
+      // (例如 '<' + 截断会变成 '<' 单独一个被误读)
       const aiPreviewLine = entry.last_assistant_preview
-        ? `\n🤖 ${preview(entry.last_assistant_preview, 60)}`
+        ? `\n🤖 ${esc(preview(entry.last_assistant_preview, 60))}`
         : '';
       elements.push({
         tag: 'markdown',
-        content: `**${index}. ${runningMark}${entry.title ?? 'Untitled'}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${entry.project_name ?? ''}\n📁 \`${entry.cwd ?? '-'}\`${aiPreviewLine}`,
+        content: `**${index}. ${runningMark}${esc(entry.title ?? 'Untitled')}**\nID: \`${uuid.slice(0, 8)}\` | ${entry.message_count}条 | ${formatTimeAgo(entry.last_active)} | ${formatOrigin(entry.origin, entry.status)} | ${esc(entry.project_name ?? '')}\n📁 \`${esc(entry.cwd ?? '-')}\`${aiPreviewLine}`,
       });
       elements.push({
         tag: 'action',
@@ -2234,13 +2236,13 @@ function buildSessionOverviewCard(
   isRunning: boolean,
 ): Record<string, unknown> {
   const runningTag = isRunning ? '🔴 处理中 · ' : '';
-  const titlePrefix = `${runningTag}${entry.title ?? 'Untitled'}`;
+  const titlePrefix = `${runningTag}${esc(entry.title ?? 'Untitled')}`;
 
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: '🔄 已切换会话' }, template: 'blue' },
     elements: [
-      { tag: 'markdown', content: `**${titlePrefix}**\nID: \`${uuid.slice(0, 8)}\`\n📁 \`${entry.cwd ?? '-'}\`` },
+      { tag: 'markdown', content: `**${titlePrefix}**\nID: \`${uuid.slice(0, 8)}\`\n📁 \`${esc(entry.cwd ?? '-')}\`` },
       ...(entry.last_user_preview ? [{ tag: 'markdown', content: `**💬 最后提问：**\n> ${esc(entry.last_user_preview)}` }] : []),
       ...(entry.last_assistant_preview ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ${esc(entry.last_assistant_preview)}` }] : []),
       { tag: 'hr' },
