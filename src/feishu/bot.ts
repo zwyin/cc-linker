@@ -8,6 +8,7 @@ import { sessionManager as defaultSessionManager } from '../proxy/session';
 import { StreamChunk } from '../proxy/stream-parser';
 import { CardUpdater } from './card-updater';
 import { PermissionHandler, type PermissionPrompt } from '../proxy/permission-handler';
+import { esc } from './markdown-escape';
 import { RegistryManager } from '../registry';
 import { syncBeforeCommand } from '../scanner';
 import { config } from '../utils/config';
@@ -2377,14 +2378,6 @@ function buildDirListCard(
 function preview(text: string, maxLength = 80): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
-}
-
-/** Escape < and > in markdown content to prevent injection.
- *  Local copy — card-updater.ts:448 也有同名私有实现。
- *  后续如出现第三处调用，应考虑抽到 src/feishu/markdown-escape.ts 共享（PR 2 评审意见）。
- */
-function esc(text: string): string {
-  return text.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
 }
 
 function buildSessionTitle(text: string): string {

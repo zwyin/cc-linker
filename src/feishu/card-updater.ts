@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger';
 import { config } from '../utils/config';
 import type { ActivityResult } from '../utils/session-activity';
+import { esc } from './markdown-escape';
 
 export type CardState = 'processing' | 'streaming' | 'complete' | 'error';
 
@@ -443,10 +444,6 @@ export class CardUpdater {
       elements: [{ tag: 'markdown', content: `错误原因：**${esc(message)}**\n\n请检查 Claude CLI 是否可用，或稍后重试。` }],
     };
   }
-}
-
-function esc(text: string): string {
-  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function truncateBytes(text: string, maxBytes: number): string {
