@@ -125,7 +125,7 @@ describe('Acceptance Tests', () => {
     it('registry.json 格式正确', () => {
       runOk('init');
       const registry = JSON.parse(readFileSync(join(ccBridgeDir, 'registry.json'), 'utf8'));
-      expect(registry.version).toBe(3);
+      expect(registry.version).toBe(4);
       expect(registry.updated_at).toBeDefined();
       expect(registry.sessions).toBeDefined();
       expect(Object.keys(registry.sessions).length).toBe(2);
