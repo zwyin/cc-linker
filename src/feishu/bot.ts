@@ -1934,6 +1934,7 @@ export class FeishuBot {
       const reply = '未找到对应会话，请先执行 /list。';
       if (msg) await this.replyAndFinalize(msg, reply);
       else await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');
       return reply;
     }
 
@@ -1950,11 +1951,38 @@ export class FeishuBot {
       },
     );
 
-    const reply = swapped ? `✅ 已切换到会话 ${uuid.slice(0, 8)}` : '⚠️ 切换失败，会话可能已被修改';
-    if (msg) await this.replyAndFinalize(msg, reply);
-    else await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
-    this.spoolQueue.recordReceipt(messageId ?? '');
-    return reply;
+    // swapped=false 时发"切换失败"消息（不发 overview 卡片，避免误导用户）
+    if (!swapped) {
+      const failReply = '⚠️ 切换失败，会话可能已被修改';
+      if (msg) await this.replyAndFinalize(msg, failReply);
+      else await this.replyFn(failReply, { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');
+      return 'failed';
+    }
+
+    // swapped=true：判断目标 session 是否正在跑 Claude
+    const isRunning = this.isSessionRunning(uuid);
+
+    // 发概览卡片
+    const card = buildSessionOverviewCard(uuid, session, isRunning);
+    const replyId = await this.cardReplyFn(card, { messageId, openId });
+
+    if (replyId) {
+      if (msg) {
+        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, replyId, 1);
+        this.spoolQueue.markReplied(msg.messageId, msg.serialKey, replyId);
+        this.spoolQueue.markDone(msg.messageId, msg.serialKey, replyId);
+      } else {
+        this.spoolQueue.recordReceipt(messageId ?? '');
+      }
+    } else {
+      // 降级到 text
+      const reply = `✅ 已切换到 ${uuid.slice(0, 8)}\n💬 最后提问：${session.last_user_preview ?? '无'}\n🤖 最后回复：${session.last_assistant_preview ?? '无'}\n📊 ${session.message_count} 条消息${session.last_active ? ' · ' + formatTimeAgo(session.last_active) : ''}`;
+      if (msg) await this.replyAndFinalize(msg, reply);
+      else await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
+      this.spoolQueue.recordReceipt(messageId ?? '');  // 【review 必加】补回 recordReceipt,避免 card action 路径同 messageId 重复入队
+    }
+    return 'switched';
   }
 
   private async doSelectModel(openId: string, alias: string, messageId?: string): Promise<string> {

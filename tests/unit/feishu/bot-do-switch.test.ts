@@ -8,6 +8,7 @@ import { ListSnapshotManager } from '../../../src/feishu/list-snapshot';
 import { SpoolQueue } from '../../../src/queue/spool';
 import { RegistryManager } from '../../../src/registry/registry';
 import { ClaudeSessionManager } from '../../../src/proxy/session';
+import { config } from '../../../src/utils/config';
 
 describe('FeishuBot doSwitch overview card', () => {
   let tmpDir: string;
@@ -19,12 +20,17 @@ describe('FeishuBot doSwitch overview card', () => {
   let textReplies: Array<{ text: string; openId?: string; messageId?: string }>;
   let cardReplies: Array<{ card: any; openId?: string; messageId?: string }>;
   let bot: FeishuBot;
+  let originalOwnerOpenId: string;
 
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'bot-doswitch-test-'));
 
     // 不要用 config.load() —— 该方法不存在（参考 tests/unit/feishu/bot-serial-key.test.ts:13-14）。
     // 路径通过构造函数显式传入 tmpDir 子路径,config 用全局默认值。
+    // 清空 owner_open_id 让 validateOwner 对测试用的 ou_user1 也通过
+    // （避免真实 config.toml 里的 owner_open_id 干扰）
+    originalOwnerOpenId = (config as any).data.feishu_bot.owner_open_id;
+    (config as any).data.feishu_bot.owner_open_id = '';
 
     userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
     listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
@@ -53,6 +59,7 @@ describe('FeishuBot doSwitch overview card', () => {
   });
 
   afterEach(() => {
+    (config as any).data.feishu_bot.owner_open_id = originalOwnerOpenId;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   });
 
