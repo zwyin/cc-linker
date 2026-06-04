@@ -28,6 +28,16 @@ export interface TestBotOptions {
   replyIdSuffix?: string;
   /** If true, do not mutate config (caller manages config). Default: false. */
   noConfigMutation?: boolean;
+  /**
+   * Extra config fields to set during the test, in `'section.field'` form.
+   * The original value of each path is snapshot before being overwritten and
+   * restored on `cleanup()`. If the path was absent originally (e.g.
+   * `security.allowed_roots` not yet set), cleanup deletes the key so the
+   * post-test state matches the pre-test state.
+   *
+   * Example: `{ 'queue.max_pending': 5, 'security.allowed_roots': [] }`.
+   */
+  extraConfigMutations?: Record<string, unknown>;
 }
 
 export interface TestBot {
@@ -51,6 +61,10 @@ export interface TestBot {
  * Always clears `config.feishu_bot.owner_open_id` so tests using arbitrary openIds
  * (e.g. 'ou_user1') pass `validateOwner`. The original value is restored on `cleanup()`.
  *
+ * Use `extraConfigMutations` to also clear/overwrite other config keys (the snapshot
+ * is taken pre-overwrite; missing keys are deleted on cleanup to leave config
+ * exactly as the test found it).
+ *
  * Intended usage:
  *   const env = createTestBot({ tmpDirPrefix: 'my-test-' });
  *   try {
@@ -65,10 +79,30 @@ export function createTestBot(opts: TestBotOptions = {}): TestBot {
 
   const tmpDir = mkdtempSync(join(tmpdir(), tmpDirPrefix));
 
-  let originalOwnerOpenId: string | undefined;
+  // Snapshot all config keys the test wants to mutate, then apply.
+  // The sentinel `undefined` marks "key was absent originally" so cleanup
+  // knows to delete it instead of restoring a value.
+  const configSnapshots = new Map<string, unknown | undefined>();
+  const applyConfigMutation = (path: string, newValue: unknown) => {
+    const [section, field] = path.split('.');
+    if (!section || !field) {
+      throw new Error(`extraConfigMutations path must be "section.field", got: ${path}`);
+    }
+    const sectionData = (config as any).data[section];
+    if (!sectionData) {
+      throw new Error(`config.data.${section} does not exist; cannot set ${path}`);
+    }
+    if (!configSnapshots.has(path)) {
+      configSnapshots.set(path, field in sectionData ? sectionData[field] : undefined);
+    }
+    sectionData[field] = newValue;
+  };
+
   if (!opts.noConfigMutation) {
-    originalOwnerOpenId = (config as any).data.feishu_bot.owner_open_id;
-    (config as any).data.feishu_bot.owner_open_id = '';
+    applyConfigMutation('feishu_bot.owner_open_id', '');
+  }
+  for (const [path, value] of Object.entries(opts.extraConfigMutations ?? {})) {
+    applyConfigMutation(path, value);
   }
 
   const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
@@ -100,8 +134,14 @@ export function createTestBot(opts: TestBotOptions = {}): TestBot {
   const cleanup = () => {
     if (cleanedUp) return;
     cleanedUp = true;
-    if (originalOwnerOpenId !== undefined) {
-      (config as any).data.feishu_bot.owner_open_id = originalOwnerOpenId;
+    for (const [path, originalValue] of configSnapshots) {
+      const [section, field] = path.split('.');
+      const sectionData = (config as any).data[section];
+      if (originalValue === undefined) {
+        delete sectionData[field];
+      } else {
+        sectionData[field] = originalValue;
+      }
     }
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   };

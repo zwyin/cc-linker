@@ -1,70 +1,27 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { FeishuBot } from '../../../src/feishu/bot';
-import { UserManager } from '../../../src/feishu/mapping';
-import { ListSnapshotManager } from '../../../src/feishu/list-snapshot';
-import { SpoolQueue } from '../../../src/queue/spool';
-import { RegistryManager } from '../../../src/registry/registry';
-import { ClaudeSessionManager } from '../../../src/proxy/session';
-import { config } from '../../../src/utils/config';
+import { createTestBot, type TestBot } from '../../helpers/feishu-bot';
 import { SERVICE_UNAVAILABLE_REPLY } from '../../../src/feishu/replies';
 
-// 复用 bot.test.ts:42-48 的 setup 模式：(config as any).data.* 直接 mutation
-// 不要用 config.load() —— 该方法不存在
 describe('FeishuBot serialKey and messageId validation', () => {
-  let tmpDir: string;
-  let userManager: UserManager;
-  let listSnapshotManager: ListSnapshotManager;
-  let spoolQueue: SpoolQueue;
-  let registry: RegistryManager;
-  let sessionManager: ClaudeSessionManager;
-  let textReplies: Array<{ text: string; openId?: string; messageId?: string }>;
-  let bot: FeishuBot;
-  let originalMaxPending: number;
-  let originalOwnerOpenId: string;
+  let env: TestBot;
 
-  beforeEach(async () => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'bot-serialkey-test-'));
-
-    // 仅 mutate 本测试需要的 config 字段并保存原值，afterEach 完整还原
-    // （之前 cargo-cult 5 个 mutation 实际无人用，state 还会 leak 到下个测试）
-    originalMaxPending = (config as any).data.queue.max_pending;
-    originalOwnerOpenId = (config as any).data.feishu_bot.owner_open_id;
-    (config as any).data.feishu_bot.owner_open_id = '';
-
-    userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
-    listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
-    spoolQueue = new SpoolQueue(tmpDir);
-    registry = new RegistryManager(tmpDir);
-    sessionManager = new ClaudeSessionManager();
-
-    textReplies = [];
-
-    bot = new FeishuBot({
-      userManager,
-      listSnapshotManager,
-      spoolQueue,
-      registry,
-      sessionManager,
-      replyFn: async (text, opts) => {
-        textReplies.push({ text, openId: opts?.openId, messageId: opts?.messageId });
-        return 'reply-id-' + textReplies.length;
-      },
+  beforeEach(() => {
+    env = createTestBot({
+      tmpDirPrefix: 'bot-serialkey-test-',
+      extraConfigMutations: { 'queue.max_pending': 5 },
     });
   });
 
   afterEach(() => {
-    (config as any).data.queue.max_pending = originalMaxPending;
-    (config as any).data.feishu_bot.owner_open_id = originalOwnerOpenId;
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    env.cleanup();
   });
 
   // ====== messageId 校验 ======
 
   it('rejects message with invalid messageId (contains colon)', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om:bad:id',  // 包含 : 字符
       content: JSON.stringify({ text: '/list' }),
@@ -72,16 +29,16 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
     // 拒绝入队：pending 目录应该是空的
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
 
   it('rejects message with invalid messageId (contains slash)', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om/bad/id',
       content: JSON.stringify({ text: '/list' }),
@@ -89,16 +46,16 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
 
   it('rejects message with invalid messageId regardless of content type (non-command)', async () => {
     // boundary case：messageId 校验在 isCommand 之前就生效
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om:bad',  // 包含 : 字符
       content: JSON.stringify({ text: 'hello' }),  // 非 command
@@ -106,16 +63,16 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
 
   it('rejects message with invalid openId (contains colon)', async () => {
     // CR #3: openId 也参与 serialKey 拼接，必须同 messageId 一样校验
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1:bad',  // 包含 : 字符
       message_id: 'om_valid_001',
       content: JSON.stringify({ text: '/list' }),
@@ -123,9 +80,9 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
@@ -133,7 +90,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
   it('rejects message with messageId longer than 80 chars', async () => {
     // CR #4: 长度上限对齐 src/utils/safe-id.ts {1,80}，80 是 cmd: serialKey 组合边界
     // (cmd: + 80 + : + 80 + : + 80 + .json = 251 ≤ NAME_MAX 255)
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'a'.repeat(81),
       content: JSON.stringify({ text: '/list' }),
@@ -141,16 +98,16 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
 
   it('rejects message with openId longer than 80 chars', async () => {
     // CR #4: openId 同样有长度上限
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'o'.repeat(81),
       message_id: 'om_valid_001',
       content: JSON.stringify({ text: '/list' }),
@@ -158,15 +115,15 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toBe(SERVICE_UNAVAILABLE_REPLY);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     expect(pendingFiles).toHaveLength(0);
   });
 
   it('accepts valid alphanumeric+underscore+hyphen messageId', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_valid_123-abc',
       content: JSON.stringify({ text: '/list' }),
@@ -175,8 +132,8 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     // happy path 必须真入队：只断 textReplies.length===0 的话 enqueue 静默失败也 pass
-    expect(textReplies.length).toBe(0);
-    const pendingDir = join(tmpDir, 'pending');
+    expect(env.textReplies.length).toBe(0);
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_valid_123-abc'));
     expect(matchFile).toMatch(/^cmd:ou_user1:om_valid_123-abc:om_valid_123-abc\.json$/);
@@ -186,7 +143,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
 
   it('command message uses cmd:openId:msgId serialKey', async () => {
     // 触发 onMessage 后，让 worker claim 一条消息检查 serialKey
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_msg_001',
       content: JSON.stringify({ text: '/list' }),
@@ -195,7 +152,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
     });
 
     // 检查 spool pending 目录中的文件名
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_msg_001'));
     expect(matchFile).toBeDefined();
@@ -207,14 +164,14 @@ describe('FeishuBot serialKey and messageId validation', () => {
     // 先设置 user mapping 指向一个 session
     // 注意：compareAndSwap 内部会调 validateOwner，依赖 feishu_bot.owner_open_id = ''
     // （已在 beforeEach 设置为 ''）
-    await userManager.compareAndSwap('ou_user1', null, {
+    await env.userManager.compareAndSwap('ou_user1', null, {
       type: 'session',
       sessionUuid: 'sess-abc-123',
       cwd: '/tmp/proj',
       createdAt: new Date().toISOString(),
     });
 
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_msg_002',
       content: JSON.stringify({ text: '继续工作' }),
@@ -222,7 +179,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_msg_002'));
     expect(matchFile).toBeDefined();
@@ -230,7 +187,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
   });
 
   it('non-command no-target message uses new:openId serialKey', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_msg_003',
       content: JSON.stringify({ text: 'hello' }),
@@ -238,7 +195,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_msg_003'));
     expect(matchFile).toBeDefined();
@@ -246,7 +203,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
   });
 
   it('/listdir command also uses cmd: serialKey (not /list whitelist only)', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_msg_listdir',
       content: JSON.stringify({ text: '/listdir' }),
@@ -254,7 +211,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const matchFile = pendingFiles.find(f => f.includes('om_msg_listdir'));
     expect(matchFile).toBeDefined();
@@ -263,7 +220,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
   });
 
   it('two different messageId commands have independent serialKeys', async () => {
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_cmd_a',
       content: JSON.stringify({ text: '/list' }),
@@ -271,7 +228,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    await bot.onMessage({
+    await env.bot.onMessage({
       open_id: 'ou_user1',
       message_id: 'om_cmd_b',
       content: JSON.stringify({ text: '/status' }),
@@ -279,7 +236,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
       message_type: 'text',
     });
 
-    const pendingDir = join(tmpDir, 'pending');
+    const pendingDir = join(env.tmpDir, 'pending');
     const pendingFiles = existsSync(pendingDir) ? readdirSync(pendingDir) : [];
     const fileA = pendingFiles.find(f => f.includes('om_cmd_a'));
     const fileB = pendingFiles.find(f => f.includes('om_cmd_b'));
@@ -295,7 +252,7 @@ describe('FeishuBot serialKey and messageId validation', () => {
   // ====== handleCardAction SAFE_ID_REGEX 校验（CR2 #2）======
 
   it('handleCardAction rejects card with invalid openId (no recordReceipt, returns null)', async () => {
-    const result = await bot.handleCardAction({
+    const result = await env.bot.handleCardAction({
       open_id: 'ou_user1:bad',  // 含 : 字符
       action: { tag: 'button', value: { tag: 'list' } },
       message: { message_id: 'om_valid_card' },
@@ -303,33 +260,33 @@ describe('FeishuBot serialKey and messageId validation', () => {
 
     // 拒绝：返回 null，receipts 目录不应该写
     expect(result).toBeNull();
-    const receiptsDir = join(tmpDir, 'receipts');
+    const receiptsDir = join(env.tmpDir, 'receipts');
     const receiptsFiles = existsSync(receiptsDir) ? readdirSync(receiptsDir) : [];
     expect(receiptsFiles).toHaveLength(0);
   });
 
   it('handleCardAction rejects card with invalid messageId (no recordReceipt, returns null)', async () => {
-    const result = await bot.handleCardAction({
+    const result = await env.bot.handleCardAction({
       open_id: 'ou_user1',
       action: { tag: 'button', value: { tag: 'list' } },
       message: { message_id: 'om:bad:id' },  // 含 : 字符
     });
 
     expect(result).toBeNull();
-    const receiptsDir = join(tmpDir, 'receipts');
+    const receiptsDir = join(env.tmpDir, 'receipts');
     const receiptsFiles = existsSync(receiptsDir) ? readdirSync(receiptsDir) : [];
     expect(receiptsFiles).toHaveLength(0);
   });
 
   it('handleCardAction rejects card with messageId longer than 80 chars', async () => {
-    const result = await bot.handleCardAction({
+    const result = await env.bot.handleCardAction({
       open_id: 'ou_user1',
       action: { tag: 'button', value: { tag: 'list' } },
       message: { message_id: 'a'.repeat(81) },
     });
 
     expect(result).toBeNull();
-    const receiptsDir = join(tmpDir, 'receipts');
+    const receiptsDir = join(env.tmpDir, 'receipts');
     const receiptsFiles = existsSync(receiptsDir) ? readdirSync(receiptsDir) : [];
     expect(receiptsFiles).toHaveLength(0);
   });

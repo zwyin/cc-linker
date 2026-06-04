@@ -9,6 +9,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { RegistryManager } from '../../../src/registry';
 import { config } from '../../../src/utils/config';
+import { createTestBot, type TestBot } from '../../helpers/feishu-bot';
 
 function createMockFeishuClient() {
   return {
@@ -28,48 +29,38 @@ function createMockFeishuClient() {
 }
 
 describe('FeishuBot', () => {
+  let env: TestBot;
   let tmpDir: string;
-  let bot: FeishuBot;
   let replies: string[];
+  let bot: FeishuBot;
   let registry: RegistryManager;
+  // 保留原始 max_pending 兜底:测试 "keeps mapping pending when queue rejects
+  // the message" 会 mutate max_pending=0 但不自己恢复,需 afterEach 还原
   let originalMaxPending: number;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'bot-test-'));
+    originalMaxPending = (config as any).data.queue.max_pending;
+    env = createTestBot({
+      tmpDirPrefix: 'bot-test-',
+      extraConfigMutations: {
+        'feishu_bot.default_cwd': '',
+        'security.allowed_roots': [],
+        'security.denied_roots': [],
+        'stream.enabled': false,
+        'sdk.enabled': false,
+      },
+    });
+    tmpDir = env.tmpDir;
     mkdirSync('/tmp/project', { recursive: true });
 
     replies = [];
-    originalMaxPending = (config as any).data.queue.max_pending;
-    (config as any).data.feishu_bot.owner_open_id = '';
-    (config as any).data.feishu_bot.default_cwd = '';
-    (config as any).data.security.allowed_roots = [];
-    (config as any).data.security.denied_roots = [];
-    (config as any).data.stream.enabled = false;
-    (config as any).data.sdk.enabled = false;
-    const replyFn: FeishuReplyFn = async (text: string): Promise<string | null> => {
-      replies.push(text);
-      return `reply-${replies.length}`;
-    };
-
-    const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
-    const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
-    const spoolQueue = new SpoolQueue(tmpDir);
-    const sessionManager = new ClaudeSessionManager();
-    registry = new RegistryManager(tmpDir);
-
-    bot = new FeishuBot({
-      userManager,
-      listSnapshotManager,
-      spoolQueue,
-      registry,
-      sessionManager,
-      replyFn,
-    });
+    registry = env.registry;
+    bot = env.bot;
   });
 
   afterEach(() => {
+    env.cleanup();
     (config as any).data.queue.max_pending = originalMaxPending;
-    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('ignores group messages', async () => {
@@ -96,8 +87,8 @@ describe('FeishuBot', () => {
     // Dispatch to process
     await bot.dispatch();
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('help'))).toBe(true);
+    expect(env.textReplies.length).toBeGreaterThanOrEqual(1);
+    expect(env.textReplies.some(r => r.text.includes('help'))).toBe(true);
   });
 
   it('processes /status command', async () => {
@@ -111,8 +102,8 @@ describe('FeishuBot', () => {
 
     await bot.dispatch();
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('状态'))).toBe(true);
+    expect(env.textReplies.length).toBeGreaterThanOrEqual(1);
+    expect(env.textReplies.some(r => r.text.includes('状态'))).toBe(true);
   });
 
   it('ignores unsupported message types like file', async () => {
@@ -138,8 +129,8 @@ describe('FeishuBot', () => {
       message_type: 'image',
     });
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('已禁用'))).toBe(true);
+    expect(env.textReplies.length).toBeGreaterThanOrEqual(1);
+    expect(env.textReplies.some(r => r.text.includes('已禁用'))).toBe(true);
 
     (config as any).data.images.enabled = true;
   });
@@ -153,8 +144,8 @@ describe('FeishuBot', () => {
       message_type: 'image',
     });
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('未就绪'))).toBe(true);
+    expect(env.textReplies.length).toBeGreaterThanOrEqual(1);
+    expect(env.textReplies.some(r => r.text.includes('未就绪'))).toBe(true);
   });
 
   it('accepts image message when client is available', async () => {
@@ -170,8 +161,8 @@ describe('FeishuBot', () => {
     });
 
     // Should not reply with error
-    expect(replies.some(r => r.includes('下载失败'))).toBe(false);
-    expect(replies.some(r => r.includes('未就绪'))).toBe(false);
+    expect(env.textReplies.some(r => r.text.includes('下载失败'))).toBe(false);
+    expect(env.textReplies.some(r => r.text.includes('未就绪'))).toBe(false);
   });
 
   it('silently ignores invalid image content', async () => {
@@ -212,8 +203,9 @@ describe('FeishuBot', () => {
 
     await bot.dispatch();
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('我的会话'))).toBe(true);
+    expect(env.cardReplies.length).toBeGreaterThanOrEqual(1);
+    const cardContent = JSON.stringify(env.cardReplies[0].card.elements);
+    expect(cardContent).toContain('Session 1');
   });
 
   it('/help includes /listDir', async () => {
@@ -226,7 +218,7 @@ describe('FeishuBot', () => {
     });
     await bot.dispatch();
 
-    expect(replies.some(r => r.includes('listDir'))).toBe(true);
+    expect(env.textReplies.some(r => r.text.includes('listDir'))).toBe(true);
   });
 
   it('rejects unknown commands', async () => {
@@ -240,7 +232,7 @@ describe('FeishuBot', () => {
 
     await bot.dispatch();
 
-    expect(replies.some(r => r.includes('未知命令'))).toBe(true);
+    expect(env.textReplies.some(r => r.text.includes('未知命令'))).toBe(true);
   });
 
   it('deduplicates messages by messageId', async () => {
@@ -258,7 +250,7 @@ describe('FeishuBot', () => {
     await bot.dispatch();
 
     // Should only process once
-    expect(replies.length).toBe(1);
+    expect(env.textReplies.length).toBe(1);
   });
 
   it('does not claim pending_new_session during onMessage before dispatch', async () => {
@@ -527,8 +519,8 @@ describe('FeishuBot', () => {
     });
     await bot.dispatch();
 
-    expect(replies.length).toBeGreaterThanOrEqual(1);
-    expect(replies.some(r => r.includes('模型') || r.includes('provider') || r.includes('默认'))).toBe(true);
+    expect(env.textReplies.length).toBeGreaterThanOrEqual(1);
+    expect(env.textReplies.some(r => r.text.includes('模型') || r.includes('provider') || r.includes('默认'))).toBe(true);
   });
 
   it('rejects unknown model alias', async () => {
@@ -541,58 +533,37 @@ describe('FeishuBot', () => {
     });
     await bot.dispatch();
 
-    expect(replies.some(r => r.includes('未知模型'))).toBe(true);
+    expect(env.textReplies.some(r => r.text.includes('未知模型'))).toBe(true);
   });
 });
 
 describe('FeishuBot cards', () => {
-  let tmpDir: string;
+  let env: TestBot;
   let cardReplies: Record<string, unknown>[];
   let textReplies: string[];
   let bot: FeishuBot;
   let registry: RegistryManager;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'bot-card-test-'));
+    env = createTestBot({
+      tmpDirPrefix: 'bot-card-test-',
+      extraConfigMutations: {
+        'security.allowed_roots': [],
+        'security.denied_roots': [],
+        'stream.enabled': false,
+        'sdk.enabled': false,
+      },
+    });
     mkdirSync('/tmp/project', { recursive: true });
 
     cardReplies = [];
     textReplies = [];
-    (config as any).data.feishu_bot.owner_open_id = '';
-    (config as any).data.security.allowed_roots = [];
-    (config as any).data.security.denied_roots = [];
-    (config as any).data.stream.enabled = false;
-    (config as any).data.sdk.enabled = false;
-
-    const replyFn: FeishuReplyFn = async (text: string): Promise<string | null> => {
-      textReplies.push(text);
-      return `reply-${textReplies.length}`;
-    };
-
-    const cardReplyFn = async (card: Record<string, unknown>): Promise<string | null> => {
-      cardReplies.push(card);
-      return `card-${cardReplies.length}`;
-    };
-
-    const userManager = new UserManager(join(tmpDir, 'card-user-mapping.json'));
-    const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'card-list-snapshot.json'));
-    const spoolQueue = new SpoolQueue(tmpDir);
-    const sessionManager = new ClaudeSessionManager();
-    registry = new RegistryManager(tmpDir);
-
-    bot = new FeishuBot({
-      userManager,
-      listSnapshotManager,
-      spoolQueue,
-      registry,
-      sessionManager,
-      replyFn,
-      cardReplyFn,
-    });
+    registry = env.registry;
+    bot = env.bot;
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    env.cleanup();
   });
 
   it('handleCardAction routes help action', async () => {
@@ -602,8 +573,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-1' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('可用命令');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('可用命令');
   });
 
   it('handleCardAction routes unknown action', async () => {
@@ -613,8 +584,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-2' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('未知操作');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('未知操作');
   });
 
   it('handleCardAction routes switch with UUID sends overview card', async () => {
@@ -636,9 +607,9 @@ describe('FeishuBot cards', () => {
     });
 
     // 改造后：doSwitch 发 overview 卡片，不再发 text 消息
-    expect(textReplies.length).toBe(0);
-    expect(cardReplies.length).toBe(1);
-    expect((cardReplies[0] as any).header.title.content).toContain('已切换会话');
+    expect(env.textReplies.length).toBe(0);
+    expect(env.cardReplies.length).toBe(1);
+    expect((env.cardReplies[0].card as any).header.title.content).toContain('已切换会话');
   });
 
   it('handleCardAction routes switch with nonexistent session', async () => {
@@ -648,8 +619,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-4' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('未找到');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('未找到');
   });
 
   it('handleCardAction routes resume with UUID', async () => {
@@ -668,8 +639,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-5' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-linker resume');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('cc-linker resume');
   });
 
   it('handleCardAction routes resume with corrupted session', async () => {
@@ -689,8 +660,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-6' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('已损坏');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('已损坏');
   });
 
   it('handleCardAction routes status', async () => {
@@ -700,9 +671,9 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-7' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('cc-linker 状态');
-    expect(textReplies[0]).toContain('队列消息');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('cc-linker 状态');
+    expect(env.textReplies[0].text).toContain('队列消息');
   });
 
   it('handleCardAction routes list (sends card)', async () => {
@@ -729,8 +700,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-8' },
     });
 
-    expect(cardReplies.length).toBe(1);
-    const card = cardReplies[0] as Record<string, unknown>;
+    expect(env.cardReplies.length).toBe(1);
+    const card = env.cardReplies[0].card as Record<string, unknown>;
     expect(card.config).toEqual({ wide_screen_mode: true });
     expect(card.header).toBeDefined();
     expect((card.elements as unknown[])?.length).toBeGreaterThan(0);
@@ -743,8 +714,8 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-9' },
     });
 
-    expect(textReplies.length).toBe(1);
-    expect(textReplies[0]).toContain('已设置新会话目录');
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('已设置新会话目录');
   });
 
   it('handleCardAction routes list (sends card)', async () => {
@@ -763,14 +734,15 @@ describe('FeishuBot cards', () => {
       message: { message_id: 'msg-card-list' },
     });
 
-    expect(cardReplies.length).toBe(1);
-    const card = cardReplies[0] as Record<string, unknown>;
+    expect(env.cardReplies.length).toBe(1);
+    const card = env.cardReplies[0].card as Record<string, unknown>;
     expect(card.config).toEqual({ wide_screen_mode: true });
     expect(card.header).toBeDefined();
   });
 });
 
 describe('FeishuBot /listDir', () => {
+  let env: TestBot;
   let tmpDir: string;
   let bot: FeishuBot;
   let textReplies: string[];
@@ -779,47 +751,31 @@ describe('FeishuBot /listDir', () => {
   let registry: RegistryManager;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'listdir-test-'));
+    env = createTestBot({
+      tmpDirPrefix: 'listdir-test-',
+      extraConfigMutations: {
+        'security.allowed_roots': [],
+        'security.denied_roots': [],
+        'stream.enabled': false,
+        'sdk.enabled': false,
+      },
+    });
+    tmpDir = env.tmpDir;
     mkdirSync(join(tmpDir, 'project-a'), { recursive: true });
     mkdirSync(join(tmpDir, 'project-b'), { recursive: true });
     mkdirSync(join(tmpDir, '.hidden-dir'), { recursive: true });
+    // default_cwd 需要 env 创建后才能设置(用 env.tmpDir)
+    (config as any).data.feishu_bot.default_cwd = tmpDir;
 
     textReplies = [];
     cardReplies = [];
-    (config as any).data.feishu_bot.owner_open_id = '';
-    (config as any).data.feishu_bot.default_cwd = tmpDir;
-    (config as any).data.security.allowed_roots = [];
-    (config as any).data.security.denied_roots = [];
-    (config as any).data.stream.enabled = false;
-    (config as any).data.sdk.enabled = false;
-
-    const replyFn: FeishuReplyFn = async (text: string): Promise<string | null> => {
-      textReplies.push(text);
-      return `reply-${textReplies.length}`;
-    };
-    const cardReplyFn = async (card: Record<string, unknown>): Promise<string | null> => {
-      cardReplies.push(card);
-      return `card-${cardReplies.length}`;
-    };
-
-    userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
-    const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
-    const spoolQueue = new SpoolQueue(tmpDir);
-    registry = new RegistryManager(tmpDir);
-
-    bot = new FeishuBot({
-      userManager,
-      listSnapshotManager,
-      spoolQueue,
-      registry,
-      sessionManager: new ClaudeSessionManager(),
-      replyFn,
-      cardReplyFn,
-    });
+    userManager = env.userManager;
+    registry = env.registry;
+    bot = env.bot;
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    env.cleanup();
   });
 
   it('/listDir uses default_cwd when no session exists', async () => {
@@ -832,8 +788,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const card = cardReplies[0];
+    expect(env.cardReplies.length).toBe(1);
+    const card = env.cardReplies[0].card;
     expect(card.header).toBeDefined();
     const elements = card.elements as unknown[];
     const mdContent = elements
@@ -866,8 +822,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const mdContent = elements
       .filter((e: any) => e.tag === 'markdown')
       .map((e: any) => e.content)
@@ -885,8 +841,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const mdContent = elements
       .filter((e: any) => e.tag === 'markdown')
       .map((e: any) => e.content)
@@ -911,8 +867,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const actions = elements.filter((e: any) => e.tag === 'action');
     const allButtons = actions.flatMap((e: any) => e.actions);
     const parentBtn = allButtons.find((b: any) =>
@@ -941,8 +897,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const mdContent = elements
       .filter((e: any) => e.tag === 'markdown')
       .map((e: any) => e.content)
@@ -967,12 +923,12 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(textReplies.some(r => r.includes('不存在'))).toBe(true);
+    expect(env.textReplies.some(r => r.text.includes('不存在'))).toBe(true);
   });
 
   it('handleCardAction routes select_dir', async () => {
     const targetDir = join(tmpDir, 'project-a');
-    const repliesBefore = textReplies.length;
+    const repliesBefore = env.textReplies.length;
 
     const result = await bot.handleCardAction({
       open_id: 'ou_user1',
@@ -984,8 +940,8 @@ describe('FeishuBot /listDir', () => {
     expect(result).toContain(targetDir);
 
     // Verify reply was actually sent to user
-    expect(textReplies.length).toBe(repliesBefore + 1);
-    expect(textReplies[textReplies.length - 1]).toContain('已切换到');
+    expect(env.textReplies.length).toBe(repliesBefore + 1);
+    expect(env.textReplies[env.textReplies.length - 1].text).toContain('已切换到');
 
     const entry = userManager.getEntry('ou_user1');
     expect(entry?.type).toBe('pending_new_session');
@@ -1025,8 +981,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const actions = elements.filter((e: any) => e.tag === 'action');
     const allButtons = actions.flatMap((e: any) => e.actions);
 
@@ -1054,8 +1010,8 @@ describe('FeishuBot /listDir', () => {
     });
     await bot.dispatch();
 
-    expect(cardReplies.length).toBe(1);
-    const elements = cardReplies[0].elements as unknown[];
+    expect(env.cardReplies.length).toBe(1);
+    const elements = env.cardReplies[0].card.elements as unknown[];
     const mdContent = elements
       .filter((e: any) => e.tag === 'markdown')
       .map((e: any) => e.content)
@@ -1096,7 +1052,7 @@ describe('FeishuBot /listDir', () => {
       });
       await bot.dispatch();
 
-      expect(textReplies.some(r => r.includes('无法读取目录'))).toBe(true);
+      expect(env.textReplies.some(r => r.text.includes('无法读取目录'))).toBe(true);
     } finally {
       chmodSync(noPermDir, originalMode);
     }
