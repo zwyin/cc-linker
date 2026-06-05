@@ -107,16 +107,17 @@ if (entry.type === 'assistant' && !preview) {
 
 ```typescript
 /**
- * 从 assistant message 的 content 数组中提取 cleaned text 末条
+ * 从 assistant message 数组中提取 cleaned final-answer text
  *
- * 算法：
- * 1. 跳过 content 全部是 thinking 的 message（assistant 还在推理，没说 final answer）
- * 2. 跳过 content 全部是 tool_use 的 message（assistant 在调工具，没真正回答）
- * 3. 跳过中间态：content 同时有 text 和 tool_use（model 准备 tool call 不是 final answer）
- * 4. 找到第一个满足 "content 有 text 块且无 tool_use" 的 message
- * 5. 合并该 message 的所有 text 块
- * 6. markdown 清理（standard 级别）
- * 7. 截断 240 字符，按行边界回退
+ * 算法（与下方实现严格对应）：
+ * 1. 倒序遍历 messages
+ * 2. 跳过非 assistant message
+ * 3. 跳过 content 不是数组的（防御性，覆盖 string content 形态）
+ * 4. 跳过中间态（has tool_use）：model 准备 tool call 不是 final answer
+ * 5. 跳过无 text 块的：自然过滤 thinking-only 和 tool_use-only 两种情况
+ * 6. 合并该 message 的所有 text 块
+ * 7. markdown 清理（standard 级别）
+ * 8. 截断 maxLength 字符，按行边界回退
  *
  * 边界处理：
  * - 整个 JSONL 没找到符合的 assistant message → 返回 null
@@ -228,7 +229,29 @@ if (cleanedAssistant) preview = cleanedAssistant;
 ```
 
 **重要**：`tailLines.slice(-10)` 只取最后 10 行，可能漏掉前一个 assistant message。
-**兜底**：如果 tail 4KB 内没找到 cleaned assistant，`fallback` 全量重读阶段也要尝试 `cleanAssistantText`（与现有 `lastUserPreview` fallback 对齐）。
+**兜底（必须）**：如果 tail 4KB 内没找到 cleaned assistant（`cleanAssistantText(assistantMessages) === null`），
+**全量重读 fallback 阶段也要再次调用 `cleanAssistantText`**（与现有 `lastUserPreview` fallback 对齐）：
+
+```typescript
+// parseTail line 309 附近的 fallback 块内新增：
+if (!preview && stat.size > 4096) {  // preview 仍空 → 也尝试 cleanAssistantText
+  try {
+    const fullContent = readFileSync(filePath, 'utf8');
+    const allLines = fullContent.split('\n').filter(Boolean);
+    const allAssistantMessages: any[] = [];
+    for (const line of allLines) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'assistant') allAssistantMessages.push(entry);
+      } catch {}
+    }
+    const cleanedFromFull = JSONLScanner.cleanAssistantText(allAssistantMessages, 240);
+    if (cleanedFromFull) preview = cleanedFromFull;
+  } catch (err) {
+    logger.warn(`parseTail cleanAssistantText 全量 fallback 失败: ${filePath}: ${err}`);
+  }
+}
+```
 
 ### 3. `src/scanner/jsonl.ts` —— `parseFull` 改造
 
