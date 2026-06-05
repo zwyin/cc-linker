@@ -164,6 +164,59 @@ describe('Feishu concurrent commands integration', () => {
     expect(pending.filter(f => f.startsWith('cmd:ou_user1:om_list_2:')).length).toBe(1);
     expect(pending.filter(f => f.startsWith('cmd:ou_user1:om_list_3:')).length).toBe(1);
   });
+
+  // 真实复现：dispatch 跑长任务时，新到 /list 必须并行处理
+  // 之前的测试只在 dispatch() 启动时入队（无活跃 worker），没覆盖"已有长任务在跑"场景
+  it('BUG REPRO: /list must process in parallel with already-running long worker', async () => {
+    // 准备：注册一个 session，让 /list 有内容
+    env.registry.upsert('long-task-session', {
+      origin: 'cli', cwd: '/tmp/proj', project_name: 'proj', jsonl_path: null, project_dir: null,
+      created_at: '2026-01-01T00:00:00Z', last_active: new Date().toISOString(),
+      title: 'Long Task', message_count: 1, last_message_preview: 'p',
+    });
+
+    // 让 sendSDKMessage 阻塞 1.5s（模拟长任务，类似 sleep 50 但更短以便测试）
+    // /new -- prompt 走 createSessionFromPromptSDK → sendSDKMessage
+    const origSendSDK = env.sessionManager.sendSDKMessage.bind(env.sessionManager);
+    (env.sessionManager as any).sendSDKMessage = async () => {
+      await new Promise(r => setTimeout(r, 1500));
+      return { sessionId: 'long-task-session', response: 'done' };
+    };
+
+    try {
+      // 1) 注入长任务消息（用 /new -- 触发 sendMessage 阻塞）
+      await env.bot.onMessage({
+        open_id: 'ou_user1', message_id: 'om_long_task',
+        content: JSON.stringify({ text: '/new -- sleep 50' }),
+        chat_type: 'p2p', message_type: 'text',
+      });
+
+      // 2) 启动 dispatch 但不 await 完成（fire-and-forget）
+      const dispatchPromise = env.bot.dispatch().catch(() => {});
+
+      // 等 200ms 让长任务被 claim 并进入 activeWorkers
+      await new Promise(r => setTimeout(r, 200));
+
+      // 3) 在长任务跑的过程中入队 /list
+      await env.bot.onMessage({
+        open_id: 'ou_user1', message_id: 'om_list_parallel',
+        content: JSON.stringify({ text: '/list' }),
+        chat_type: 'p2p', message_type: 'text',
+      });
+
+      // 4) 等 500ms——/list 应该已经处理完（doCardList 是同步 I/O，< 100ms）
+      await new Promise(r => setTimeout(r, 500));
+
+      // 验证：/list 已处理完，cardReplies 收到 1 张卡片
+      // 【核心断言】这是在长任务跑的过程中并行处理的，不应等长任务结束
+      expect(env.cardReplies.length).toBe(1);
+
+      // 等 dispatch 完全结束
+      await dispatchPromise;
+    } finally {
+      (env.sessionManager as any).sendSDKMessage = origSendSDK;
+    }
+  });
 });
 
 // ===== Spec §2.1 端到端 v3→v4 迁移测试 =====

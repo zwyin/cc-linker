@@ -304,7 +304,17 @@ export class FeishuBot {
 
         if (this.activeWorkers.size === 0) break;
 
-        await Promise.race(this.activeWorkers);
+        // Race against workers + a short poll tick: when a slow worker (e.g. claude -p sleep 50)
+        // is running, Promise.race(workers) blocks the entire dispatch loop for the full duration,
+        // and new cmd: messages arriving in pending/ sit there until that worker finishes.
+        // The tick (200ms) lets the outer loop re-enter and call claimOne() to pick up
+        // independent serialKey messages while the slow worker is still running.
+        // Spec: 飞书侧"处理中可发命令 + 切换会话展示进展" (PR 2) — must process /list
+        // in parallel with streaming session. (Bug found 2026-06-06 via integration test.)
+        await Promise.race([
+          ...Array.from(this.activeWorkers),
+          new Promise<void>(resolve => setTimeout(resolve, 200)),
+        ]);
       }
     } finally {
       this.running = false;
