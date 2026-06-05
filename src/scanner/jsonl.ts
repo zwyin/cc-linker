@@ -169,6 +169,51 @@ export class JSONLScanner {
     return truncated + '...';
   }
 
+  /**
+   * 从 assistant message 数组中提取 cleaned final-answer text
+   *
+   * 算法（与 JSDoc 严格对应）：
+   * 1. 倒序遍历 messages
+   * 2. 跳过非 assistant message
+   * 3. 跳过 content 不是数组的（防御性，覆盖 string content 形态）
+   * 4. 跳过中间态（has tool_use）
+   * 5. 跳过无 text 块的（自然过滤 thinking-only / tool_use-only）
+   * 6. 合并该 message 的所有 text 块（用 \n 连接）
+   * 7. markdown 清理（standard 级别）
+   * 8. 截断 maxLength 字符，按行边界回退
+   *
+   * 边界处理：
+   * - 没找到符合的 → 返回 null
+   * - text 块全空 → 返回 null（被 step 5 过滤）
+   */
+  private static cleanAssistantText(
+    messages: Array<{ type: string; message?: { content?: unknown } }>,
+    maxLength: number = 240,
+  ): string | null {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const entry = messages[i];
+      if (entry.type !== 'assistant') continue;
+
+      const content = entry.message?.content;
+      if (!Array.isArray(content)) continue;
+
+      const hasToolUse = content.some((b: any) => b?.type === 'tool_use');
+      if (hasToolUse) continue;
+
+      const textBlocks = content
+        .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b: any) => b.text);
+      if (textBlocks.length === 0) continue;
+
+      const raw = textBlocks.join('\n');
+      const cleaned = JSONLScanner.stripMarkdownNoise(raw);
+      const truncated = JSONLScanner.truncateByLine(cleaned, maxLength);
+
+      return truncated;
+    }
+    return null;
+  }
+
   private parseFull(filePath: string, sessionId: string): Partial<SessionEntry> {
     const content = readFileSync(filePath, 'utf8');
     const lines = content.split('\n').filter(Boolean);

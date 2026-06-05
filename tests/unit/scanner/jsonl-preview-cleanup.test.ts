@@ -72,3 +72,86 @@ describe('JSONLScanner.truncateByLine', () => {
     expect(result.length).toBe(243);
   });
 });
+
+describe('JSONLScanner.cleanAssistantText', () => {
+  const clean = (msgs: any[], max: number = 240) => (JSONLScanner as any).cleanAssistantText(msgs, max);
+
+  function assistantMessage(content: any[]) {
+    return { type: 'assistant', message: { role: 'assistant', content } };
+  }
+
+  it('skips thinking-only messages and returns earlier final answer', () => {
+    const messages = [
+      assistantMessage([{ type: 'text', text: '## 推荐路径：内存队列' }]),
+      assistantMessage([{ type: 'thinking', thinking: '让我分析下...' }]),
+    ];
+    // 末条只 thinking → 跳过；找前一个；清 ## → 保留文字
+    expect(clean(messages)).toBe('推荐路径：内存队列');
+  });
+
+  it('skips tool_use-only messages', () => {
+    const messages = [
+      assistantMessage([{ type: 'text', text: '## 上 git_bridge_queue 表的方案' }]),
+      assistantMessage([{ type: 'tool_use', id: 'x', name: 'Bash', input: {} }]),
+    ];
+    expect(clean(messages)).toBe('上 git_bridge_queue 表的方案');
+  });
+
+  it('skips midway state (text + tool_use together)', () => {
+    const messages = [
+      assistantMessage([{ type: 'text', text: '## 决策版' }]),
+      assistantMessage([
+        { type: 'text', text: '让我先看看代码' },  // 准备 tool call 的中间态
+        { type: 'tool_use', id: 'x', name: 'Read', input: {} },
+      ]),
+    ];
+    expect(clean(messages)).toBe('决策版');
+  });
+
+  it('returns null when no final answer exists (all thinking/tool_use)', () => {
+    const messages = [
+      assistantMessage([{ type: 'thinking', thinking: '...' }]),
+      assistantMessage([{ type: 'tool_use', id: 'x', name: 'Bash', input: {} }]),
+    ];
+    expect(clean(messages)).toBeNull();
+  });
+
+  it('merges multiple text blocks in same message with \\n separator', () => {
+    const messages = [
+      assistantMessage([
+        { type: 'text', text: '第一段文字' },
+        { type: 'text', text: '第二段文字' },
+      ]),
+    ];
+    expect(clean(messages)).toBe('第一段文字\n第二段文字');
+  });
+
+  it('cleans markdown noise and truncates in one pass', () => {
+    // 模拟截图里的真实场景：review 决策版 + 多级标题 + 加粗
+    const messages = [
+      assistantMessage([{
+        type: 'text',
+        text: '# 完整最终 Review 修改意见（决策版）\n\n## 0. 内存膨胀分析\n\n### 0.1 单个 queue item 真实大小\n\n看 `traeScanner` 代码...',
+      }]),
+    ];
+    const result = clean(messages, 100);
+    // 期望：# ## ### ` 都被清，保留文字；100 字符内可能按行截
+    expect(result).not.toContain('#');
+    expect(result).not.toContain('`');
+    expect(result).toContain('完整最终 Review 修改意见');
+    expect(result!.endsWith('...')).toBe(true);
+  });
+
+  it('returns null for empty input', () => {
+    expect(clean([])).toBeNull();
+  });
+
+  it('skips non-assistant messages (user, system, etc.)', () => {
+    const messages = [
+      { type: 'user', message: { content: [{ type: 'text', text: '不应该是这个' }] } },
+      assistantMessage([{ type: 'text', text: '## 正确回复' }]),
+      { type: 'system', message: { content: [{ type: 'text', text: '系统消息' }] } },
+    ];
+    expect(clean(messages)).toBe('正确回复');
+  });
+});
