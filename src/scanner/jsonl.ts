@@ -272,8 +272,8 @@ export class JSONLScanner {
           const text = JSONLScanner.extractTextContent(entry.message?.content);
           if (text) lastUserPreview = text.slice(0, 100);
         }
-        // 三个字段都拿到就 break 提升性能
-        if (lastActive && preview && lastUserPreview) break;
+        // 三个字段都拿到就 break 提升性能（preview 不再这里填充，由 cleanAssistantText 在循环外填）
+        if (lastActive && lastUserPreview && lastPrompt) break;
       } catch {
         // Silently skip malformed JSON lines
       }
