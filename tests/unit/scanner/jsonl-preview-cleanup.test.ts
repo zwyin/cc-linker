@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { JSONLScanner } from '../../../src/scanner/jsonl';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import type { FileCache } from '../../../src/scanner/cache';
 
 describe('JSONLScanner.stripMarkdownNoise', () => {
   // 用 (JSONLScanner as any) 访问 private static method
@@ -171,5 +175,86 @@ describe('JSONLScanner.cleanAssistantText', () => {
       { type: 'system', message: { content: [{ type: 'text', text: '系统消息' }] } },
     ];
     expect(clean(messages)).toBe('正确回复');
+  });
+});
+
+describe('JSONLScanner.parseTail integration with cleanAssistantText', () => {
+  let tmpDir: string;
+  let projectDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'jsonl-cleanup-test-'));
+    projectDir = join(tmpDir, '.claude', 'projects', '-Users-test-project');
+    mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeScanner(): JSONLScanner {
+    const registry = {
+      has: () => true,
+      get: () => ({ cwd: '/test', title: 'Test' }),
+      upsert: () => {},
+    };
+    const cache: FileCache = new Map();
+    return new (JSONLScanner as any)(registry, cache, tmpDir);
+  }
+
+  function writeLargeJsonl(lines: string[]): string {
+    // 拼一个 > 4KB 的文件（用 padding tool_use 行撑大）
+    const padding = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"pad","name":"Bash","input":{}}]}}\n';
+    const paddedLines: string[] = [];
+    let totalSize = 0;
+    for (const line of lines) {
+      paddedLines.push(line);
+      totalSize += line.length + 1;
+    }
+    while (totalSize < 5000) {
+      paddedLines.splice(paddedLines.length - 1, 0, padding);
+      totalSize += padding.length;
+    }
+    const path = join(projectDir, 'session-cleanup-test.jsonl');
+    writeFileSync(path, paddedLines.join('\n') + '\n');
+    return path;
+  }
+
+  it('returns cleaned final answer when last 10 lines are tool_use, final answer is earlier', () => {
+    const finalAnswer = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## 决策版：内存队列"}]}}';
+    const toolUseLine = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}';
+    const path = writeLargeJsonl([finalAnswer, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine, toolUseLine]);
+    const scanner = makeScanner();
+    const result = (scanner as any).parseTail(path);
+    expect(result.last_assistant_preview).toBe('决策版：内存队列');
+    expect(result.last_assistant_preview).not.toContain('##');
+  });
+
+  it('returns null last_assistant_preview when no final answer exists (all thinking)', () => {
+    const thinkingLine = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"让我分析..."}]}}';
+    const path = writeLargeJsonl([thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine, thinkingLine]);
+    const scanner = makeScanner();
+    const result = (scanner as any).parseTail(path);
+    expect(result.last_assistant_preview).toBeUndefined();
+  });
+
+  it('truncates to 240 chars with ... at end when content is longer', () => {
+    const longText = 'a'.repeat(300);
+    const longLine = `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"${longText}"}]}}`;
+    const path = writeLargeJsonl([longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine]);
+    const scanner = makeScanner();
+    const result = (scanner as any).parseTail(path);
+    expect(result.last_assistant_preview).toBe('a'.repeat(240) + '...');
+  });
+
+  it('falls back to full file read when tail 4KB has no final answer (large file scenario)', () => {
+    // 场景：last 10 行都是 tool_use，final answer 在第 5 行
+    // parseTail 4KB 内找不到，触发全量重读
+    const finalAnswer = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## 真正回复"}]}}';
+    const toolUse = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}';
+    const path = writeLargeJsonl([finalAnswer, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse, toolUse]);
+    const scanner = makeScanner();
+    const result = (scanner as any).parseTail(path);
+    expect(result.last_assistant_preview).toBe('真正回复');
   });
 });

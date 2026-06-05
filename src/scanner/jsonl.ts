@@ -347,6 +347,7 @@ export class JSONLScanner {
         readSync(fd, buffer, 0, readSize, stat.size - readSize);
         const tail = buffer.toString('utf8');
         const tailLines = tail.split('\n').filter(Boolean).slice(-10);
+        const assistantMessages: Array<{ type: string; message?: { content?: unknown } }> = [];
 
         for (let i = tailLines.length - 1; i >= 0; i--) {
           try {
@@ -359,9 +360,8 @@ export class JSONLScanner {
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
             }
-            if (entry.type === 'assistant' && !preview) {
-              const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
-              if (textBlock) preview = textBlock.text.slice(0, 100);
+            if (entry.type === 'assistant') {
+              assistantMessages.unshift(entry);
             }
             if (entry.type === 'user' && !lastUserPreview) {
               const text = JSONLScanner.extractTextContent(entry.message?.content);
@@ -370,26 +370,37 @@ export class JSONLScanner {
           } catch {}
         }
 
-        // 4KB 内找不到 user preview 时全量重读（fallback）
-        if (!lastUserPreview && stat.size > 4096) {
+        if (!preview) {
+          preview = JSONLScanner.cleanAssistantText(assistantMessages, 240) ?? '';
+        }
+
+        // 4KB 内找不到 user preview 或 assistant preview 时全量重读
+        if ((!lastUserPreview || !preview) && stat.size > 4096) {
           try {
             const fullContent = readFileSync(filePath, 'utf8');
             const allLines = fullContent.split('\n').filter(Boolean);
+            const fullAssistantMessages: Array<{ type: string; message?: { content?: unknown } }> = [];
             for (let i = allLines.length - 1; i >= 0; i--) {
               try {
                 const entry = JSON.parse(allLines[i]);
-                if (entry.type === 'user') {
+                if (!lastUserPreview && entry.type === 'user') {
                   const text = JSONLScanner.extractTextContent(entry.message?.content);
                   if (text) {
                     lastUserPreview = text.slice(0, 100);
-                    break;
                   }
+                }
+                if (!preview && entry.type === 'assistant') {
+                  fullAssistantMessages.unshift(entry);
                 }
                 // 全量 fallback 时也顺便收集 lastPrompt（如果 4KB 内没拿到）
                 if (entry.type === 'last-prompt' && !lastPrompt && entry.lastPrompt) {
                   lastPrompt = entry.lastPrompt;
                 }
               } catch {}
+            }
+            if (!preview && fullAssistantMessages.length > 0) {
+              const cleanedFromFull = JSONLScanner.cleanAssistantText(fullAssistantMessages, 240);
+              if (cleanedFromFull) preview = cleanedFromFull;
             }
           } catch (err) {
             logger.warn(`parseTail 全量 fallback 失败: ${filePath}: ${err}`);
@@ -439,8 +450,9 @@ export class JSONLScanner {
         ...(lastActive ? { last_active: lastActive } : {}),
         // 保留 100 字符（向后兼容 CLI/bot 多处复用）
         ...(lastMessagePreview ? { last_message_preview: lastMessagePreview } : {}),
-        // 新增 80 字符版（bot overview 卡片用）—— 与 parseFull 行为对齐
-        ...(preview ? { last_assistant_preview: preview.slice(0, 80) } : {}),
+        // 新增 240 字符版（bot overview 卡片用）—— cleanAssistantText 已经在内部截断到 240 字符，
+        // 这里不再二次 slice，避免砍掉 truncateByLine 添加的 '...'
+        ...(preview ? { last_assistant_preview: preview } : {}),
         ...(lastUserPreview ? { last_user_preview: lastUserPreview.slice(0, 80) } : {}),
       };
     } finally {
