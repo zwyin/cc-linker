@@ -95,8 +95,8 @@ describe('JSONLScanner parseTail user/assistant preview', () => {
     const entry = registry.get(sessionId);
     // last_message_preview: 100 字符（保留）
     expect(entry?.last_message_preview.length).toBe(100);
-    // last_assistant_preview: 80 字符（新增）
-    expect(entry?.last_assistant_preview?.length).toBe(80);
+    // last_assistant_preview: ≤ 240 字符（cleaned）
+    expect(entry?.last_assistant_preview?.length).toBeLessThanOrEqual(240);
   });
 
   it('truncates preview to 80 chars', () => {
