@@ -146,6 +146,24 @@ describe('JSONLScanner.cleanAssistantText', () => {
     expect(clean([])).toBeNull();
   });
 
+  it('returns null when all text blocks are empty strings', () => {
+    const messages = [
+      assistantMessage([
+        { type: 'text', text: '' },
+        { type: 'text', text: '' },
+      ]),
+    ];
+    expect(clean(messages)).toBeNull();
+  });
+
+  it('skips message with only whitespace text and returns earlier real answer', () => {
+    const messages = [
+      assistantMessage([{ type: 'text', text: '## 真正回复' }]),
+      assistantMessage([{ type: 'text', text: '   \n  \n' }]),  // 全空白
+    ];
+    expect(clean(messages)).toBe('真正回复');
+  });
+
   it('skips non-assistant messages (user, system, etc.)', () => {
     const messages = [
       { type: 'user', message: { content: [{ type: 'text', text: '不应该是这个' }] } },

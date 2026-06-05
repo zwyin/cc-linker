@@ -175,7 +175,7 @@ export class JSONLScanner {
    * 算法（与 JSDoc 严格对应）：
    * 1. 倒序遍历 messages
    * 2. 跳过非 assistant message
-   * 3. 跳过 content 不是数组的（防御性，覆盖 string content 形态）
+   * 3. 跳过 content 不是数组的（防御性，覆盖损坏 / 异常 JSONL 形态）
    * 4. 跳过中间态（has tool_use）
    * 5. 跳过无 text 块的（自然过滤 thinking-only / tool_use-only）
    * 6. 合并该 message 的所有 text 块（用 \n 连接）
@@ -205,7 +205,8 @@ export class JSONLScanner {
         .map((b: any) => b.text);
       if (textBlocks.length === 0) continue;
 
-      const raw = textBlocks.join('\n');
+      const raw = textBlocks.join('\n').trim();
+      if (raw.length === 0) continue;  // 全是空白 / 空字符串 → 跳过这条，往前找
       const cleaned = JSONLScanner.stripMarkdownNoise(raw);
       const truncated = JSONLScanner.truncateByLine(cleaned, maxLength);
 
