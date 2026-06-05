@@ -25,9 +25,9 @@ export const SessionEntrySchema = z.object({
 
   title: z.string().nullable(),
   message_count: z.number(),
-  last_message_preview: z.string(),                    // 100 字符，向后兼容 CLI/bot 多处复用
-  last_user_preview: z.string().max(80).optional(),     // scanner 在 jsonl.ts 强制 ≤ 80 字符，schema 也兜底
-  last_assistant_preview: z.string().max(80).optional(),// scanner 在 jsonl.ts 强制 ≤ 80 字符，schema 也兜底
+  last_message_preview: z.string(),                    // 100 字符 raw markdown（CLI / bot 多处复用，保留向后兼容）
+  last_user_preview: z.string().max(80).optional(),     // 80 字符 raw user prompt（向后兼容）
+  last_assistant_preview: z.string().max(80).optional(),// 240 字符 cleaned（去 ##/**/`/``` 后，bot 概览卡片专用）
   status: StatusSchema.optional(),
   lastKnownProvider: z.string().nullable().optional(), // Display-only: what model was used when session was created
 });
