@@ -44,7 +44,7 @@ describe('JSONLScanner.truncateByLine', () => {
 
   it('appends ... when no newline in first maxLength chars', () => {
     const text = 'a'.repeat(250);
-    expect(trunc(text, 240)).toBe('a'.repeat(240) + '...');
+    expect(trunc(text, 240)).toBe('a'.repeat(237) + '...');
   });
 
   it('truncates at last newline when newline is in latter half (>50%)', () => {
@@ -60,20 +60,20 @@ describe('JSONLScanner.truncateByLine', () => {
   });
 
   it('falls back to character truncation when newline in first half (<50%)', () => {
-    // 新行在 first half (<50% of maxLength)，按字符截断
+    // 新行在 first half (<50% of budget)，按字符截断
     // 30 chars + \n + 120 chars = 151 total, maxLength=100
-    // slice(0, 100) 的 \n 在位置 30 < 50（50% of 100）→ 走 fallback
+    // budget = 97，slice(0, 97) 的 \n 在位置 30 < 48.5（50% of 97）→ 走 fallback
     const text = 'a'.repeat(30) + '\n' + 'b'.repeat(120);
     const result = trunc(text, 100);
-    // 字符截断：slice(0, 100) + '...'
-    expect(result).toBe('a'.repeat(30) + '\n' + 'b'.repeat(69) + '...');
+    // 字符截断：slice(0, 97) + '...'（总长 100，≤ maxLength）
+    expect(result).toBe('a'.repeat(30) + '\n' + 'b'.repeat(66) + '...');
   });
 
   it('uses character truncation when maxLength=240 and text is 250 chars with no newline', () => {
     const text = 'a'.repeat(250);
     const result = trunc(text, 240);
-    expect(result).toBe('a'.repeat(240) + '...');
-    expect(result.length).toBe(243);
+    expect(result).toBe('a'.repeat(237) + '...');
+    expect(result.length).toBe(240);  // 关键不变量：≤ maxLength
   });
 });
 
@@ -244,7 +244,8 @@ describe('JSONLScanner.parseTail integration with cleanAssistantText', () => {
     const path = writeLargeJsonl([longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine, longLine]);
     const scanner = makeScanner();
     const result = (scanner as any).parseTail(path);
-    expect(result.last_assistant_preview).toBe('a'.repeat(240) + '...');
+    expect(result.last_assistant_preview).toBe('a'.repeat(237) + '...');
+    expect(result.last_assistant_preview?.length).toBeLessThanOrEqual(240);
   });
 
   it('falls back to full file read when tail 4KB has no final answer (large file scenario)', () => {
@@ -310,6 +311,7 @@ describe('JSONLScanner.parseFull integration with cleanAssistantText', () => {
     const path = writeJsonl(lines);
     const scanner = makeScanner();
     const result = (scanner as any).parseFull(path, 'session-parsefull');
-    expect(result.last_assistant_preview).toBe('b'.repeat(240) + '...');
+    expect(result.last_assistant_preview).toBe('b'.repeat(237) + '...');
+    expect(result.last_assistant_preview?.length).toBeLessThanOrEqual(240);
   });
 });
