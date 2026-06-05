@@ -129,6 +129,23 @@ export class JSONLScanner {
     return null;
   }
 
+  /**
+   * 清理 markdown 结构化噪声（standard 级别）
+   *
+   * 规则：
+   * - 行首标题符号（##、### 等）        去掉井号
+   * - 成对加粗（成对双星号）            去掉双星号
+   * - 行内代码 + 代码块边界（反引号）   去掉反引号
+   *
+   * 保留：标题文字、代码内容、列表 -、链接 [text](url)、blockquote >
+   */
+  private static stripMarkdownNoise(text: string): string {
+    return text
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\*\*/g, '')
+      .replace(/`/g, '');
+  }
+
   private parseFull(filePath: string, sessionId: string): Partial<SessionEntry> {
     const content = readFileSync(filePath, 'utf8');
     const lines = content.split('\n').filter(Boolean);
