@@ -6,6 +6,7 @@ import { SpoolQueue, SpoolMessage, TargetSnapshot } from '../queue/spool';
 import { ClaudeSessionManager, SendMessageResult } from '../proxy/session';
 import { sessionManager as defaultSessionManager } from '../proxy/session';
 import type { AgentViewManager } from '../agent-view/manager';
+import { isAgentViewValue } from '../agent-view/action';
 import { StreamChunk } from '../proxy/stream-parser';
 import { CardUpdater } from './card-updater';
 import { LiveProgressWatcher, isSessionProcessing, DEFAULT_LIVE_PROGRESS_CONFIG, type LiveProgressConfig } from './live-progress';
@@ -481,6 +482,51 @@ export class FeishuBot {
 
     if (valueObj && valueObj.type === 'cli_force_send') {
       return await this.handleForceSendCardAction(openId, valueObj, message?.message_id);
+    }
+
+    // Agent View card actions — dispatched to AgentViewManager.
+    // Guarded by `this.agentView` so the bot still works in deployments that
+    // haven't enabled agent_view. The 9 cases call methods that are stubbed
+    // on AgentViewManager (real impls land in T14-T22).
+    if (isAgentViewValue(valueObj)) {
+      if (!this.agentView) {
+        logger.warn(`agent_view card action 但 AgentViewManager 未启用: tag=${valueObj.tag}`);
+        return 'Agent View 未启用';
+      }
+      switch (valueObj.tag) {
+        case 'agent_view_refresh_list':
+          return await this.agentView.handleRefreshList(openId, messageId);
+        case 'agent_view_refresh_peek':
+          return await this.agentView.handleRefreshPeek(
+            openId, valueObj.shortId, valueObj.sessionId, messageId,
+          );
+        case 'agent_view_peek':
+          return await this.agentView.handlePeek(
+            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd,
+          );
+        case 'agent_view_attach':
+          return await this.agentView.handleAttach(
+            openId, valueObj.sessionId, valueObj.shortId, valueObj.name, valueObj.cwd,
+          );
+        case 'agent_view_reply_request':
+          return await this.agentView.handleReplyRequest(
+            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd,
+          );
+        case 'agent_view_cancel_reply':
+          return await this.agentView.handleCancelReply(openId, messageId);
+        case 'agent_view_stop':
+          return await this.agentView.handleStop(
+            openId, valueObj.shortId, valueObj.sessionId, valueObj.name,
+          );
+        case 'agent_view_stop_confirm':
+          return await this.agentView.handleStopConfirm(
+            openId, valueObj.shortId, valueObj.sessionId, messageId,
+          );
+        case 'agent_view_back_to_chat':
+          return await this.agentView.handleBackToChat(openId);
+        default:
+          return null;
+      }
     }
 
     const sessionId = value as string;

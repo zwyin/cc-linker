@@ -43,6 +43,78 @@ export class AgentViewManager {
     await this.deps.cardReplyFn(card, { openId });
   }
 
+  // ── Card action handlers (dispatched from FeishuBot.handleCardAction) ──
+  // Full implementations land in T14-T22. These stubs keep the bot's
+  // dispatch typecheck-clean while the real handlers are being written;
+  // calling them before T14-T22 throws so we notice in QA.
+
+  async handleRefreshList(_openId: string, _messageId?: string): Promise<string | null> {
+    throw new Error('AgentViewManager.handleRefreshList not implemented (T14)');
+  }
+
+  async handleRefreshPeek(
+    _openId: string,
+    _shortId: string,
+    _sessionId: string,
+    _messageId?: string,
+  ): Promise<string | null> {
+    throw new Error('AgentViewManager.handleRefreshPeek not implemented (T15)');
+  }
+
+  async handlePeek(
+    _openId: string,
+    _shortId: string,
+    _sessionId: string,
+    _cwd: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    throw new Error('AgentViewManager.handlePeek not implemented (T15)');
+  }
+
+  async handleAttach(
+    _openId: string,
+    _sessionId: string,
+    _shortId: string,
+    _name: string,
+    _cwd: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    throw new Error('AgentViewManager.handleAttach not implemented (T22)');
+  }
+
+  async handleReplyRequest(
+    _openId: string,
+    _shortId: string,
+    _sessionId: string,
+    _cwd: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    throw new Error('AgentViewManager.handleReplyRequest not implemented (T17)');
+  }
+
+  async handleCancelReply(_openId: string, _messageId?: string): Promise<string | null> {
+    throw new Error('AgentViewManager.handleCancelReply not implemented (T19)');
+  }
+
+  async handleStop(
+    _openId: string,
+    _shortId: string,
+    _sessionId: string,
+    _name: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    throw new Error('AgentViewManager.handleStop not implemented (T20)');
+  }
+
+  async handleStopConfirm(
+    _openId: string,
+    _shortId: string,
+    _sessionId: string,
+    _messageId?: string,
+  ): Promise<string | null> {
+    throw new Error('AgentViewManager.handleStopConfirm not implemented (T21)');
+  }
+
+  async handleBackToChat(_openId: string): Promise<string | null> {
+    throw new Error('AgentViewManager.handleBackToChat not implemented (T16)');
+  }
+
   /** R8 启动恢复钩子 */
   async restoreExpectedReplyStates(): Promise<void> {
     await this.expectedReply.restoreExpectedReplyStates();
