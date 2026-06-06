@@ -509,11 +509,13 @@ export class FeishuBot {
             openId, valueObj.sessionId, valueObj.shortId, valueObj.name, valueObj.cwd,
           );
         case 'agent_view_reply_request':
-          return await this.agentView.handleReplyRequest(
+          await this.agentView.handleReplyRequest(
             openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd,
           );
+          return null;
         case 'agent_view_cancel_reply':
-          return await this.agentView.handleCancelReply(openId, messageId);
+          await this.agentView.handleCancelReply(openId, messageId);
+          return null;
         case 'agent_view_stop':
           return await this.agentView.handleStop(
             openId, valueObj.shortId, valueObj.sessionId, valueObj.name,
@@ -523,7 +525,8 @@ export class FeishuBot {
             openId, valueObj.shortId, valueObj.sessionId, messageId,
           );
         case 'agent_view_back_to_chat':
-          return await this.agentView.handleBackToChat(openId);
+          await this.agentView.handleBackToChat(openId);
+          return null;
         default:
           return null;
       }

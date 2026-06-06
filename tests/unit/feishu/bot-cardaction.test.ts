@@ -105,7 +105,8 @@ describe('FeishuBot handleCardAction — agent_view_* dispatch (T13)', () => {
     const result = await env.bot.handleCardAction(cardAction('ou_user1', {
       tag: 'agent_view_reply_request', shortId: 's1', sessionId: 'uuid-1', cwd: '/tmp/proj',
     }));
-    expect(result).toBe('spy:reply_request');
+    // Handler returns void; dispatcher normalises to null.
+    expect(result).toBeNull();
     expect((agentView as any).handleReplyRequestCalls).toEqual([
       ['ou_user1', 's1', 'uuid-1', '/tmp/proj'],
     ]);
@@ -113,7 +114,7 @@ describe('FeishuBot handleCardAction — agent_view_* dispatch (T13)', () => {
 
   it('routes agent_view_cancel_reply', async () => {
     const result = await env.bot.handleCardAction(cardAction('ou_user1', { tag: 'agent_view_cancel_reply' }, 'm_cancel_1'));
-    expect(result).toBe('spy:cancel_reply');
+    expect(result).toBeNull();
     expect((agentView as any).handleCancelReplyCalls).toEqual([['ou_user1', 'm_cancel_1']]);
   });
 
@@ -139,7 +140,7 @@ describe('FeishuBot handleCardAction — agent_view_* dispatch (T13)', () => {
 
   it('routes agent_view_back_to_chat', async () => {
     const result = await env.bot.handleCardAction(cardAction('ou_user1', { tag: 'agent_view_back_to_chat' }));
-    expect(result).toBe('spy:back_to_chat');
+    expect(result).toBeNull();
     expect((agentView as any).handleBackToChatCalls).toEqual([['ou_user1']]);
   });
 

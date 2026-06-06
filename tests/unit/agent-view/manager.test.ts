@@ -398,3 +398,153 @@ describe('handleRefreshPeek', () => {
     expect(cardReplyFn).not.toHaveBeenCalled();
   });
 });
+
+describe('handleBackToChat', () => {
+  test('sends exit text via replyFn and does not touch cards', async () => {
+    const { mgr, replyFn, cardReplyFn, patchFn } = makeMgrWithSpies();
+    await mgr.handleBackToChat('ou_back_1');
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('已退出 Agent View');
+    expect(cardReplyFn).not.toHaveBeenCalled();
+    expect(patchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleReplyRequest (Step A)', () => {
+  test('rejects when status is not waiting', async () => {
+    const { mgr, replyFn, patchFn } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+
+    await mgr.handleReplyRequest('ou_rr_busy', busy.sessionId.slice(0, 8), busy.sessionId, busy.cwd);
+
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('不是 waiting');
+    // No card patched and no expectedReply set
+    expect(patchFn).not.toHaveBeenCalled();
+    expect(mgr.expectedReply.get('ou_rr_busy')).toBeUndefined();
+  });
+
+  test('sets expectedReply and patches the list card on success', async () => {
+    const { mgr, userManager, replyFn, patchFn, cardReplyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    // Seed a last_agent_list_card entry so handleReplyRequest patches it.
+    await mgr.handleList('ou_rr_ok');
+    const listEntry = userManager.getEntry('ou_rr_ok');
+    expect(listEntry?.type).toBe('last_agent_list_card');
+    patchFn.mockClear();
+    cardReplyFn.mockClear();
+    replyFn.mockClear();
+
+    await mgr.handleReplyRequest('ou_rr_ok', waiting.sessionId.slice(0, 8), waiting.sessionId, waiting.cwd);
+
+    // expectedReply set
+    const info = mgr.expectedReply.get('ou_rr_ok');
+    expect(info).toBeDefined();
+    expect(info?.sessionId).toBe(waiting.sessionId);
+    expect(info?.cwd).toBe(waiting.cwd);
+    // List card patched first with a waiting card (yellow template)
+    expect(patchFn).toHaveBeenCalledTimes(1);
+    expect(patchFn.mock.calls[0][0]).toBe('om_list_card_001');
+    const patched = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(patched.header.template).toBe('yellow');
+    // Prompt text sent
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('回复会话');
+
+    // Clean up timer
+    await mgr.expectedReply.clear('ou_rr_ok');
+  });
+});
+
+describe('handleReply (Step B)', () => {
+  test('no-op when no expectedReply pending', async () => {
+    const { mgr } = makeMgrWithSpies();
+    const runSpy = mock(async () => ({ result: {}, handler: {}, cardMessageId: '' }));
+    mgr.deps.runChatSDK = runSpy as any;
+    await mgr.handleReply('ou_reply_nop', 'hello');
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  test('clears expectedReply after runChatSDK success', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    await mgr.expectedReply.set('ou_reply_ok', {
+      shortId: waiting.sessionId.slice(0, 8),
+      sessionId: waiting.sessionId,
+      cwd: waiting.cwd,
+    });
+    const runSpy = mock(async () => ({ result: {}, handler: {}, cardMessageId: '' }));
+    mgr.deps.runChatSDK = runSpy as any;
+
+    await mgr.handleReply('ou_reply_ok', 'hello back');
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect((runSpy.mock.calls[0][0] as any).promptText).toBe('hello back');
+    expect(mgr.expectedReply.get('ou_reply_ok')).toBeUndefined();
+    expect(userManager.getEntry('ou_reply_ok')).toBeUndefined();
+  });
+
+  test('clears expectedReply even when runChatSDK throws (try/finally)', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    await mgr.expectedReply.set('ou_reply_err', {
+      shortId: waiting.sessionId.slice(0, 8),
+      sessionId: waiting.sessionId,
+      cwd: waiting.cwd,
+    });
+    mgr.deps.runChatSDK = (async () => {
+      throw new Error('runChatSDK boom');
+    }) as any;
+
+    // handleReply should swallow downstream errors so the user is not stuck;
+    // either way the expectedReply slot must be cleared.
+    let caught: any;
+    try {
+      await mgr.handleReply('ou_reply_err', 'kaboom');
+    } catch (err) {
+      caught = err;
+    }
+    // The try/finally re-throws; what matters is the slot was cleared.
+    expect(mgr.expectedReply.get('ou_reply_err')).toBeUndefined();
+    expect(userManager.getEntry('ou_reply_err')).toBeUndefined();
+    // We accept either swallowed or rethrown — assert behavior matches code: rethrows.
+    expect(caught?.message).toBe('runChatSDK boom');
+  });
+});
+
+describe('handleCancelReply', () => {
+  test('clears expectedReply and sends confirmation', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    await mgr.expectedReply.set('ou_cancel', {
+      shortId: waiting.sessionId.slice(0, 8),
+      sessionId: waiting.sessionId,
+      cwd: waiting.cwd,
+    });
+    expect(userManager.getEntry('ou_cancel')?.type).toBe('pending_agent_reply');
+
+    await mgr.handleCancelReply('ou_cancel');
+
+    expect(mgr.expectedReply.get('ou_cancel')).toBeUndefined();
+    expect(userManager.getEntry('ou_cancel')).toBeUndefined();
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('已取消等待');
+  });
+});

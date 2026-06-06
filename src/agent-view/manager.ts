@@ -240,17 +240,139 @@ export class AgentViewManager {
     throw new Error('AgentViewManager.handleAttach not implemented (T22)');
   }
 
+  /**
+   * Step A — set expectedReply and prompt the user to send the reply text.
+   * Three-way guard (fetch ok / session present / status === 'waiting') runs
+   * first; on success the trigger card (list or peek) is patched to a waiting
+   * card BEFORE the prompt text is sent, so the user sees the card transition
+   * before their input is requested. v2.2: patch order is patch -> reply.
+   */
   async handleReplyRequest(
-    _openId: string,
+    openId: string,
     _shortId: string,
-    _sessionId: string,
-    _cwd: string,
-  ): Promise<string | Record<string, unknown> | null> {
-    throw new Error('AgentViewManager.handleReplyRequest not implemented (T17)');
+    sessionId: string,
+    cwd: string,
+  ): Promise<void> {
+    // 1. 三重守卫
+    const result = await AgentSnapshotFetcher.fetch();
+    if (!result.ok) {
+      await this.deps.replyFn(`❌ ${result.reason}`, { openId });
+      return;
+    }
+    const session = result.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      await this.deps.replyFn('⚠️ 会话已不存在', { openId });
+      return;
+    }
+    if (session.status !== 'waiting') {
+      await this.deps.replyFn(
+        `⚠️ 该 session 不是 waiting 状态(当前 ${session.status}),无法 reply`,
+        { openId },
+      );
+      return;
+    }
+    // 2. 持久化 expectedReply
+    // ExpectedReplyState.set CAS-expects null, so any existing entry (e.g.
+    // last_agent_list_card from the /agents that triggered this Reply click)
+    // makes set() throw. Capture the trigger card's messageId first, then
+    // clear that entry to free the slot for set(). v2.2 intent: after set()
+    // succeeds we patch the captured cardMessageId to a waiting card BEFORE
+    // sending the prompt text.
+    const preListEntry = this.deps.userManager.getEntry(openId);
+    const triggerCardMessageId =
+      preListEntry?.type === 'last_agent_list_card' ? preListEntry.cardMessageId : undefined;
+    if (preListEntry?.type === 'last_agent_list_card') {
+      await this.deps.userManager.compareAndSwap(openId, preListEntry, null);
+    }
+    try {
+      await this.expectedReply.set(openId, { shortId: _shortId, sessionId, cwd });
+    } catch (_err: any) {
+      await this.deps.replyFn('⚠️ 另一端正在操作,请先在对方客户端取消', { openId });
+      return;
+    }
+    // 3. patch 触发的 list 卡为等待输入卡(v2.2 顺序:先 patch,后发文本)
+    if (triggerCardMessageId) {
+      const waitingCard = buildWaitingCard({
+        name: session.name,
+        status: session.status,
+        waitingFor: session.waitingFor,
+        cwd,
+      });
+      await this.deps.patchFn(triggerCardMessageId, waitingCard);
+    }
+    // 4. 发独立文本消息
+    await this.deps.replyFn(
+      `↩️ 回复会话: ${session.name}\n请直接发送文字消息作为回复(5 分钟内有效)\n可点 [取消等待] 按钮,或发 /cancel 取消`,
+      { openId },
+    );
   }
 
-  async handleCancelReply(_openId: string, _messageId?: string): Promise<string | null> {
-    throw new Error('AgentViewManager.handleCancelReply not implemented (T19)');
+  /**
+   * Step B — once a reply text arrives, CAS-claim the expectedReply slot,
+   * re-run the status guard, then proxy the text through runChatSDK. v2.2
+   * critical fix: wrap runChatSDK in try/finally so expectedReply is cleared
+   * even if it throws (otherwise the user stays stuck in waiting state until
+   * the 5-minute timeout).
+   */
+  async handleReply(openId: string, text: string): Promise<void> {
+    // 1. 检查 expectedReply
+    const info = this.expectedReply.get(openId);
+    if (!info) return;
+
+    // 2. CAS 抢占(改 casToken 标识"reply 开始了")
+    try {
+      const entry = this.deps.userManager.getEntry(openId);
+      if (entry?.type !== 'pending_agent_reply') return;
+      const casToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const ok = await this.deps.userManager.compareAndSwap(openId, entry, {
+        ...entry,
+        casToken,
+      });
+      if (!ok) return;
+    } catch (_err) {
+      return;
+    }
+
+    // 3. Step B 二次状态守卫
+    const result = await AgentSnapshotFetcher.fetch();
+    if (!result.ok) {
+      await this.expectedReply.clear(openId);
+      return;
+    }
+    const session = result.sessions.find(s => s.sessionId === info.sessionId);
+    if (!session) {
+      await this.expectedReply.clear(openId);
+      await this.deps.replyFn('⚠️ 会话已不存在', { openId });
+      return;
+    }
+    if (session.status !== 'waiting') {
+      await this.expectedReply.clear(openId);
+      await this.deps.replyFn(
+        `⚠️ Claude 已切换到 ${session.status},无法 reply`,
+        { openId },
+      );
+      return;
+    }
+
+    // 4. runChatSDK,try/finally 保证 clear 必发(v2.2 critical)
+    try {
+      await this.deps.runChatSDK({
+        openId,
+        sessionUuid: info.sessionId,
+        cwd: info.cwd,
+        promptText: text,
+        serialKey: info.sessionId,
+        isNew: false,
+      });
+    } finally {
+      await this.expectedReply.clear(openId);
+    }
+  }
+
+  /** Cancel an active waiting state. Idempotent — safe to call when no reply is pending. */
+  async handleCancelReply(openId: string, _messageId?: string): Promise<void> {
+    await this.expectedReply.clear(openId, 'user');
+    await this.deps.replyFn('✅ 已取消等待回复', { openId });
   }
 
   async handleStop(
@@ -271,8 +393,12 @@ export class AgentViewManager {
     throw new Error('AgentViewManager.handleStopConfirm not implemented (T21)');
   }
 
-  async handleBackToChat(_openId: string): Promise<string | null> {
-    throw new Error('AgentViewManager.handleBackToChat not implemented (T16)');
+  /** Drop the user out of Agent View — pure text reply, no state mutation. */
+  async handleBackToChat(openId: string): Promise<void> {
+    await this.deps.replyFn(
+      '已退出 Agent View,继续发送消息或 / 命令即可。下次进 /agents 视图重新打 /agents。',
+      { openId },
+    );
   }
 
   /** R8 启动恢复钩子 */
