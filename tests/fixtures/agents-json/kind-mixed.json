@@ -1,0 +1,5 @@
+[
+  {"pid":1,"cwd":"/a","kind":"background","startedAt":1000,"sessionId":"uuid-1","name":"t1","status":"busy"},
+  {"pid":2,"cwd":"/b","kind":"interactive","startedAt":2000,"sessionId":"uuid-2","name":"main","status":"busy"},
+  {"pid":3,"cwd":"/c","kind":"background","startedAt":3000,"sessionId":"uuid-3","name":"t3","status":"waiting"}
+]
