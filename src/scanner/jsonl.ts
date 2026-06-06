@@ -585,22 +585,54 @@ export function parseTailForPreview(jsonlPath: string): {
  * Pure helper: given a raw 4KB tail string, extract the most recent user prompt
  * and assistant text. Extracted from parseTailForPreview so the file-handling
  * try/finally block stays clean and readable.
+ *
+ * For the assistant side, we try (in order):
+ *   1. Most recent assistant text block (normal case)
+ *   2. Most recent tool_result stdout/text content from a user message
+ *      (covers bash-loop / shell-command tasks where the only "output" is in
+ *      tool_result blocks, not in assistant text)
  */
 function processTailForPreview(tail: string): { lastUser?: string; lastAssistant?: string } {
   const lines = tail.split('\n').filter(Boolean);
 
   let lastUser: string | undefined;
   let lastAssistant: string | undefined;
+  let lastToolResult: string | undefined;
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       const entry = JSON.parse(lines[i]);
-      if (entry.type === 'user' && !lastUser) {
-        const content = entry.message?.content;
-        if (typeof content === 'string') {
-          lastUser = content.slice(0, 100);
-        } else if (Array.isArray(content)) {
-          const textBlock = content.find((b: any) => b.type === 'text');
-          if (textBlock?.text) lastUser = textBlock.text.slice(0, 100);
+      if (entry.type === 'user') {
+        // 【user 内容】两条独立路径, 不能互斥:
+        //  1) lastUser: 纯 text 块 → "请你..."
+        //  2) lastToolResult: tool_result 块 → bash 输出 / 文件内容
+        if (!lastUser) {
+          const content = entry.message?.content;
+          if (typeof content === 'string') {
+            lastUser = content.slice(0, 100);
+          } else if (Array.isArray(content)) {
+            const textBlock = content.find((b: any) => b.type === 'text');
+            if (textBlock?.text) lastUser = textBlock.text.slice(0, 100);
+          }
+        }
+        if (!lastToolResult) {
+          const blocks = entry.message?.content;
+          if (Array.isArray(blocks)) {
+            for (const block of blocks) {
+              if (block.type === 'tool_result') {
+                const c = block.content;
+                if (typeof c === 'string' && c.trim()) {
+                  lastToolResult = c.trim().slice(0, 100);
+                  break;
+                } else if (Array.isArray(c)) {
+                  const tb = c.find((b: any) => b.type === 'text');
+                  if (tb?.text) {
+                    lastToolResult = tb.text.trim().slice(0, 100);
+                    break;
+                  }
+                }
+              }
+            }
+          }
         }
       } else if (entry.type === 'assistant' && !lastAssistant) {
         const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
@@ -610,6 +642,11 @@ function processTailForPreview(tail: string): { lastUser?: string; lastAssistant
     } catch {
       // 跳过损坏行
     }
+  }
+  // 优先用 assistant text, 没拿到就 fallback 到最近 tool_result stdout
+  // (bash 循环 / shell 命令型任务的"进度"都在 tool_result 里)
+  if (!lastAssistant && lastToolResult) {
+    lastAssistant = lastToolResult;
   }
   return { lastUser, lastAssistant };
 }

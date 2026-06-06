@@ -117,4 +117,36 @@ describe('parseTailForPreview', () => {
     const result = parseTailForPreview(path);
     expect(result.lastAssistant?.length).toBe(100);
   });
+
+  // 回归测试：bash 循环等任务的进度只在 tool_result stdout 里, 没 assistant text.
+  // lastAssistant 应该 fallback 到最近 tool_result content.
+  it('falls back to most recent tool_result stdout when no assistant text', () => {
+    const path = join(tmpDir, 'session.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', message: { content: '每 10s 打印时间' } }),
+      // 模拟 bash 循环: 只有 tool_use + tool_result + thinking, 没 assistant text
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'Sat Jun 6 16:32:31 HKT 2026\n' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: '迭代中' }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'Sat Jun 6 16:32:41 HKT 2026\n' }] } }),
+    ];
+    writeFileSync(path, lines.join('\n'));
+
+    const result = parseTailForPreview(path);
+    // 没有任何 assistant text → fallback 到最近 tool_result stdout
+    expect(result.lastAssistant).toBe('Sat Jun 6 16:32:41 HKT 2026');
+  });
+
+  it('prefers assistant text over tool_result when both exist', () => {
+    const path = join(tmpDir, 'session.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', message: { content: 'q' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'reply' }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'stdout1' }] } }),
+    ];
+    writeFileSync(path, lines.join('\n'));
+
+    const result = parseTailForPreview(path);
+    // assistant text 'reply' 比 tool_result 'stdout1' 优先
+    expect(result.lastAssistant).toBe('reply');
+  });
 });
