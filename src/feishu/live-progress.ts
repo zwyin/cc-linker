@@ -6,7 +6,6 @@
  * the latest user/assistant text from JSONL tail. See:
  * docs/superpowers/specs/2026-06-06-feishu-live-progress-card-design.md
  */
-import { readFileSync, statSync, openSync, closeSync } from 'fs';
 import { logger } from '../utils/logger';
 import { isSessionActive, SessionActivityCache } from '../utils/session-activity';
 import { parseTailForPreview } from '../scanner/jsonl';
@@ -30,10 +29,7 @@ export const DEFAULT_LIVE_PROGRESS_CONFIG: LiveProgressConfig = {
  * Read the last user prompt and last assistant text from JSONL tail.
  * Wraps parseTailForPreview with try/catch — never throws.
  */
-export function extractLivePreview(jsonlPath: string | null): {
-  lastUser?: string;
-  lastAssistant?: string;
-} {
+export function extractLivePreview(jsonlPath: string | null): LivePreview {
   if (!jsonlPath) return {};
   try {
     return parseTailForPreview(jsonlPath);
