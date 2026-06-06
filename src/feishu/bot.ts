@@ -28,6 +28,18 @@ import {
   cleanupOldImages,
 } from './image';
 
+/**
+ * Detect if a message is a Feishu command (e.g. "/list", "/switch uuid").
+ *
+ * A command is any text starting with "/" whose second character is not
+ * whitespace. We use a /\s/ regex (not just `' ' !==`) so that tabs, NBSP,
+ * and other Unicode separators are also treated as non-commands — matching
+ * the /\s+/ split used downstream in handleCommand and parseNewCommand.
+ */
+export function isCommandMessage(text: string): boolean {
+  return text.startsWith('/') && text.length > 1 && !/\s/.test(text[1] ?? '');
+}
+
 export type FeishuMessageEvent = {
   open_id: string;
   message_id: string;
@@ -235,7 +247,7 @@ export class FeishuBot {
       return;
     }
 
-    const isCommand = text.startsWith('/') && text.length > 1 && text[1] !== ' ';
+    const isCommand = isCommandMessage(text);
     const target = isCommand
       ? { type: 'no_target' as const, openId: event.open_id, mappingVersion: this.userManager.getVersion() }
       : await this.resolveChatTarget(event.open_id, event.message_id);
@@ -334,12 +346,14 @@ export class FeishuBot {
     };
   }
 
-  /** Stop the user's live watcher if any. Idempotent. */
-  stopLiveWatcher(openId: string, reason: string): void {
+  /** Stop the user's live watcher if any. Idempotent.
+   *  Async so callers can await clean shutdown (avoids cutting off in-flight
+   *  patchCard when the daemon receives SIGTERM). */
+  async stopLiveWatcher(openId: string, reason: string): Promise<void> {
     const w = this.liveWatchers.get(openId);
     if (w) {
-      w.stop(reason);
       this.liveWatchers.delete(openId);
+      await w.stop(reason);  // onStop callback handles the (no-op) re-delete
     }
   }
 
@@ -356,12 +370,13 @@ export class FeishuBot {
     });
   }
 
-  /** Stop all live watchers — called from graceful shutdown */
-  shutdown(): void {
-    for (const [openId, watcher] of this.liveWatchers) {
-      watcher.stop('bot_shutdown');
-    }
+  /** Stop all live watchers — called from graceful shutdown.
+   *  Async + Promise.all so we wait for every in-flight tick to settle
+   *  before the daemon exits. */
+  async shutdown(): Promise<void> {
+    const watchers = Array.from(this.liveWatchers.values());
     this.liveWatchers.clear();
+    await Promise.all(watchers.map(w => w.stop('bot_shutdown')));
   }
 
   requestStop(): void {
@@ -644,8 +659,7 @@ export class FeishuBot {
   private async handleClaimed(msg: SpoolMessage): Promise<void> {
     // 【live progress】用户发新消息（非 command）→ 停止该用户的 live watcher
     // 命令（/list / /status 等）不打断 watcher，因为用户可能切到 session 后想查进展
-    const isCommandMsg = (msg.text?.startsWith('/') ?? false) && (msg.text?.length ?? 0) > 1 && (msg.text?.[1] !== ' ');
-    if (!isCommandMsg) {
+    if (!isCommandMessage(msg.text)) {
       this.stopLiveWatcher(msg.openId, 'user_new_message');
     }
 
@@ -681,7 +695,7 @@ export class FeishuBot {
     try {
       if (msg.responseText) {
         await this.replyAndFinalize(msg, msg.responseText);
-      } else if (msg.text.startsWith('/') && msg.text.length > 1 && msg.text[1] !== ' ') {
+      } else if (isCommandMessage(msg.text)) {
         await this.handleCommand(msg);
       } else {
         await this.handleChat(msg);
@@ -2089,9 +2103,11 @@ export class FeishuBot {
         this.spoolQueue.recordReceipt(messageId ?? '');
       }
 
-      // 启动 live watcher（仅 isRunning=true 时）
+      // 【live progress】总是先停止旧 watcher (防止 /switch A→B 后 A 的 watcher 残留)
+      this.stopLiveWatcher(openId, 'new_switch');
+
+      // 启动新 watcher（仅 isRunning=true 时）
       if (isRunning) {
-        this.stopLiveWatcher(openId, 'new_switch');
         const watcher = new LiveProgressWatcher({
           uuid,
           openId,
@@ -2374,7 +2390,7 @@ function buildSessionOverviewCard(
     elements: [
       { tag: 'markdown', content: `**${titlePrefix}${liveHint}**\nID: \`${uuid.slice(0, 8)}\`\n📁 \`${esc(entry.cwd ?? '-')}\`` },
       ...(lastUser ? [{ tag: 'markdown', content: `**💬 最后提问：**\n> ${esc(lastUser)}` }] : []),
-      ...(lastAssistant ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ${esc(lastAssistant)}${liveHint}` }] : []),
+      ...(lastAssistant ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ${esc(lastAssistant)}` }] : []),
       { tag: 'hr' },
       // 元信息行：消息数 + 时间 + 来源/状态（与 list 卡片保持一致）
       // 非 active status 显示中文标签（如 '已损坏'）—— ITEM-6 修复
