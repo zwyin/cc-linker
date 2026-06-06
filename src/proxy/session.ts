@@ -779,12 +779,20 @@ export class ClaudeSessionManager {
           adapter.adapt(message as SDKMessage, (chunk: SDKStreamChunk) => {
             if (chunk.type === 'result') {
               lastResult = chunk;
+              // 新 session (sessionUuid 启动时是 null) 等 SDK 返回 result 才拿到 session_id.
+              // 此时写 start marker, 让 isSessionProcessing 能识别.
+              if (!sessionUuid && chunk.session_id) {
+                writeActivityMarker(chunk.session_id, 'feishu', 'start', process.pid);
+                this.activityCache?.invalidate(`feishu-detects-cli:${chunk.session_id}`);
+              }
             } else if (chunk.type !== 'permission_request') {
               onProgress(chunk);
             }
-            if ((chunk.type === 'thinking' || chunk.type === 'text') && sessionUuid) {
-              writeActivityMarker(sessionUuid, 'feishu', 'heartbeat', process.pid);
-              this.activityCache?.invalidate(`feishu-detects-cli:${sessionUuid}`);
+            // heartbeat 用 effective sessionUuid: 优先用原始 sessionUuid, 新 session 用 SDK 返回的
+            const effectiveUuid = sessionUuid || (lastResult?.session_id ?? null);
+            if ((chunk.type === 'thinking' || chunk.type === 'text') && effectiveUuid) {
+              writeActivityMarker(effectiveUuid, 'feishu', 'heartbeat', process.pid);
+              this.activityCache?.invalidate(`feishu-detects-cli:${effectiveUuid}`);
             }
           });
 
@@ -819,9 +827,11 @@ export class ClaudeSessionManager {
         };
       } finally {
         if (hardTimer) clearTimeout(hardTimer);
-        if (sessionUuid) {
-          writeActivityMarker(sessionUuid, 'feishu', 'end', process.pid);
-          this.activityCache?.invalidate(`feishu-detects-cli:${sessionUuid}`);
+        // end marker: 新 session 用 SDK 返回的 session_id (因为原始 sessionUuid 是 null)
+        const endUuid = sessionUuid || (lastResult?.session_id ?? null);
+        if (endUuid) {
+          writeActivityMarker(endUuid, 'feishu', 'end', process.pid);
+          this.activityCache?.invalidate(`feishu-detects-cli:${endUuid}`);
         }
       }
 
