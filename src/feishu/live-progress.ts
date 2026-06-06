@@ -94,13 +94,21 @@ export class LiveProgressWatcher {
   private patchFailureCount = 0;
   private stopped = false;
   private startedAt = Date.now();
+  /** Promise of the in-flight tick (if any), so setInterval can skip overlap
+   *  and stop() can await a clean shutdown. */
+  private inFlightTick: Promise<void> | null = null;
 
   constructor(private deps: WatcherDeps) {}
 
   start(): void {
     this.intervalHandle = setInterval(
       () => {
-        this.tick().catch(err => logger.error(`LiveProgressWatcher tick error: ${err}`));
+        // Skip if previous tick is still in-flight (slow patchCard etc.)
+        // 否则 patchFailureCount 等共享状态会被并发 tick 竞争破坏
+        if (this.inFlightTick) return;
+        this.inFlightTick = this.tick()
+          .catch(err => logger.error(`LiveProgressWatcher tick error: ${err}`))
+          .finally(() => { this.inFlightTick = null; });
       },
       this.deps.config.intervalMs,
     );
@@ -173,12 +181,23 @@ export class LiveProgressWatcher {
     }
   }
 
-  stop(reason: string): void {
+  async stop(reason: string): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     if (this.intervalHandle) {
       clearInterval(this.intervalHandle);
       this.intervalHandle = null;
+    }
+    // 等待 in-flight tick 完成（最多 5s），避免 SIGTERM/process.exit 截断 patchCard
+    if (this.inFlightTick) {
+      try {
+        await Promise.race([
+          this.inFlightTick,
+          new Promise<void>(resolve => setTimeout(resolve, 5000)),
+        ]);
+      } catch {
+        // tick 内部已经 catch + log, 不会再抛; 这里只是防御
+      }
     }
     const elapsedSec = Math.floor((Date.now() - this.startedAt) / 1000);
     logger.info(
