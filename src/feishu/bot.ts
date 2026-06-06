@@ -743,7 +743,8 @@ export class FeishuBot {
     }
   }
 
-  private async handleCommand(msg: SpoolMessage): Promise<void> {
+  /** Dispatch a `/` command message to the appropriate handler. */
+  async handleCommand(msg: SpoolMessage): Promise<void> {
     const parts = msg.text.split(/\s+/);
     const cmd = parts[0]?.replace(/^\/+/, '')?.toLowerCase();
 
@@ -786,6 +787,14 @@ export class FeishuBot {
 
       case 'whoami':
         await this.replyAndFinalize(msg, `你的 open_id: ${msg.openId}\n\n将其填入 config.toml 的 feishu_bot.owner_open_id 可限制仅你本人使用。`);
+        return;
+
+      case 'agents':
+        if (!this.agentView) {
+          await this.replyAndFinalize(msg, 'Agent View 未启用(检查 config.toml [agent_view].enabled)');
+          return;
+        }
+        await this.agentView.handleList(msg.openId, msg.messageId);
         return;
 
       default:
@@ -1962,6 +1971,7 @@ export class FeishuBot {
       '  /resume <序号|UUID>                - 获取安全恢复建议',
       '  /status                            - 查看状态',
       '  /whoami                            - 获取你的 open_id',
+      '  /agents                            - 查看 agent 列表 (Agent View)',
     ].join('\n');
   }
 
