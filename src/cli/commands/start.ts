@@ -430,8 +430,12 @@ async function createBotRuntime(
 
           log('INFO', `[card callback] tag=${tag}, sessionId=${sessionId}, openId=${openId}, messageId=${messageId || '(empty)'}`);
           const reply = await bot.handleCardAction(action);
-          const replyStr = typeof reply === 'string' ? reply : JSON.stringify(reply).slice(0, 80);
-          log('INFO', `[card callback] reply=${reply ? replyStr : 'null'}`);
+          const replyStr = typeof reply === 'string'
+            ? reply
+            : reply
+              ? `OBJECT[${JSON.stringify(reply).slice(0, 200)}]`
+              : 'null';
+          log('INFO', `[card callback] reply=${replyStr}`);
 
           // If handleCardAction returns a card object, return it directly.
           // The SDK will base64-encode it and send it back via WebSocket.

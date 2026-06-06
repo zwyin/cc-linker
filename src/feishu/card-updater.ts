@@ -3,7 +3,7 @@ import { config } from '../utils/config';
 import type { ActivityResult } from '../utils/session-activity';
 import { esc } from './markdown-escape';
 
-export type CardState = 'processing' | 'streaming' | 'complete' | 'error';
+export type CardState = 'processing' | 'streaming' | 'complete' | 'error' | 'cancelled';
 
 interface CardUpdaterOptions {
   throttle_ms?: number;
@@ -93,6 +93,12 @@ export class CardUpdater {
     await this.flushPending();
     await this.patchCard(this.buildErrorCard(message));
     this.state = 'error';
+  }
+
+  async cancel(reason?: string): Promise<void> {
+    await this.flushPending();
+    await this.patchCard(this.buildCancelledCard(reason));
+    this.state = 'cancelled';
   }
 
   shouldFallbackToText(content: string): boolean {
@@ -395,7 +401,20 @@ export class CardUpdater {
     return {
       config: { wide_screen_mode: true, update_multi: true },
       header: { title: { tag: 'plain_text', content: '⏳ 正在处理...' }, template: 'blue' },
-      elements: [{ tag: 'markdown', content: 'Claude 正在处理你的请求，预计 **2-10 秒**...' }],
+      elements: [
+        { tag: 'markdown', content: 'Claude 正在处理你的请求，预计 **2-10 秒**...' },
+        {
+          tag: 'action',
+          actions: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '🛑 停止处理' },
+              type: 'danger',
+              value: { tag: 'stop' },
+            },
+          ],
+        },
+      ],
     };
   }
 
@@ -412,6 +431,17 @@ export class CardUpdater {
       elements.push({ tag: 'markdown', content: `**回复：**\n${esc(truncateBytes(text, maxTextBytes))}` });
     }
     elements.push({ tag: 'markdown', content: `⏱ 已用时 ${elapsedSec}s` });
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🛑 停止处理' },
+          type: 'danger',
+          value: { tag: 'stop' },
+        },
+      ],
+    });
     return {
       config: { wide_screen_mode: true, update_multi: true },
       header: { title: { tag: 'plain_text', content: '💭 处理中' }, template: 'blue' },
@@ -442,6 +472,17 @@ export class CardUpdater {
       config: { wide_screen_mode: true, update_multi: true },
       header: { title: { tag: 'plain_text', content: '❌ 处理失败' }, template: 'red' },
       elements: [{ tag: 'markdown', content: `错误原因：**${esc(message)}**\n\n请检查 Claude CLI 是否可用，或稍后重试。` }],
+    };
+  }
+
+  private buildCancelledCard(reason?: string): Record<string, unknown> {
+    const content = reason
+      ? `**${esc(reason)}**\n\n你可以随时发送新消息继续对话。`
+      : '**处理已被取消。**\n\n你可以随时发送新消息继续对话。';
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { title: { tag: 'plain_text', content: '🛑 已取消' }, template: 'grey' },
+      elements: [{ tag: 'markdown', content }],
     };
   }
 }

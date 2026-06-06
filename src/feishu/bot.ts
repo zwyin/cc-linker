@@ -110,6 +110,12 @@ export class FeishuBot {
    * can't fire later and overwrite the final state.
    */
   private activePermissionCardTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Set of messageIds that the user explicitly cancelled (via /stop or card button).
+   * Checked by streaming catch blocks to distinguish user-initiated cancellation
+   * from actual errors — avoids showing "处理失败" when the user chose to stop.
+   */
+  private cancelledMessageIds = new Set<string>();
   private lastImageCleanup = 0;
 
   /** Live progress watchers, keyed by openId. One watcher per user. */
@@ -507,6 +513,9 @@ export class FeishuBot {
         await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
         return reply;
       }
+      case 'stop': {
+        return await this.doStop(openId, messageId);
+      }
       default: {
         const reply = `未知操作: ${tag}`;
         await this.replyFn(reply, { messageId, openId, requestUuid: uniqueUuid() });
@@ -763,6 +772,10 @@ export class FeishuBot {
         await this.handleStatus(msg);
         return;
 
+      case 'stop':
+        await this.handleStop(msg);
+        return;
+
       case 'whoami':
         await this.replyAndFinalize(msg, `你的 open_id: ${msg.openId}\n\n将其填入 config.toml 的 feishu_bot.owner_open_id 可限制仅你本人使用。`);
         return;
@@ -953,7 +966,11 @@ export class FeishuBot {
 
       // Finalize card
       if (cardUpdater) {
-        if (cardUpdater.shouldFallbackToText(text)) {
+        const wasCancelled = this.cancelledMessageIds.has(msg.messageId);
+        if (wasCancelled) {
+          this.cancelledMessageIds.delete(msg.messageId);
+          await cardUpdater.cancel();
+        } else if (cardUpdater.shouldFallbackToText(text)) {
           const truncated = cardUpdater.truncateContent(text);
           await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = text.slice(truncated.length);
@@ -991,19 +1008,10 @@ export class FeishuBot {
       // JSONL repair
       const jlPath = result.jsonlPath ?? currentEntry?.jsonl_path;
       if (jlPath) { try { repairJsonlLastPrompt(jlPath); } catch {} }
+
+      this.cancelledMessageIds.delete(msg.messageId);
     } catch (err: any) {
-      if (cardUpdater) {
-        await cardUpdater.error(err.message ?? 'Unknown error');
-        cardMessageId = cardUpdater.getCardMessageId();
-        cardUpdater.dispose();
-      } else if (!cardInitFailed) {
-        await this.replyFn(`处理失败: ${err.message}`, { messageId: msg.messageId, openId: msg.openId });
-      }
-      if (cardMessageId) {
-        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, cardMessageId, 1);
-      }
-      this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
-      this.spoolQueue.markFailed(msg.messageId, msg.serialKey, String(err));
+      cardMessageId = await this._handleStreamError(msg, err, cardUpdater, cardInitFailed, cardMessageId, false);
     }
   }
 
@@ -1086,7 +1094,11 @@ export class FeishuBot {
       const finalText = text || result.response || '(空回复)';
 
       if (cardUpdater) {
-        if (cardUpdater.shouldFallbackToText(finalText)) {
+        const wasCancelled = this.cancelledMessageIds.has(msg.messageId);
+        if (wasCancelled) {
+          this.cancelledMessageIds.delete(msg.messageId);
+          await cardUpdater.cancel();
+        } else if (cardUpdater.shouldFallbackToText(finalText)) {
           const truncated = cardUpdater.truncateContent(finalText);
           await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = finalText.slice(truncated.length);
@@ -1145,19 +1157,10 @@ export class FeishuBot {
 
       const jlPath = result.jsonlPath ?? currentEntry?.jsonl_path;
       if (jlPath) { try { repairJsonlLastPrompt(jlPath); } catch {} }
+
+      this.cancelledMessageIds.delete(msg.messageId);
     } catch (err: any) {
-      if (cardUpdater) {
-        await cardUpdater.error(err.message ?? 'Unknown error');
-        cardMessageId = cardUpdater.getCardMessageId();
-        cardUpdater.dispose();
-      } else if (!cardInitFailed) {
-        await this.replyFn(`处理失败: ${err.message}`, { messageId: msg.messageId, openId: msg.openId });
-      }
-      if (cardMessageId) {
-        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, cardMessageId, 1);
-      }
-      this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
-      this.spoolQueue.markFailed(msg.messageId, msg.serialKey, String(err));
+      cardMessageId = await this._handleStreamError(msg, err, cardUpdater, cardInitFailed, cardMessageId, false);
     } finally {
       // Only delete handler when all permission prompts are resolved.
       // If a prompt is still awaiting user input, keep the handler so the click can resolve.
@@ -1178,6 +1181,46 @@ export class FeishuBot {
       return (prompt.toolInput as any).url ?? String(prompt.toolInput);
     }
     return JSON.stringify(prompt.toolInput);
+  }
+
+  /**
+   * Shared error handling for all streaming/SDK paths.
+   * Distinguishes user-initiated cancellation from real errors,
+   * updates card state, records delivery, and moves spool message to failed.
+   * Returns the final cardMessageId (may differ from input if cardUpdater created one).
+   */
+  private async _handleStreamError(
+    msg: SpoolMessage,
+    err: any,
+    cardUpdater: CardUpdater | null,
+    cardInitFailed: boolean,
+    cardMessageId: string | null,
+    isNewSession: boolean,
+  ): Promise<string | null> {
+    const isCancelled = this.cancelledMessageIds.has(msg.messageId);
+    if (isCancelled) this.cancelledMessageIds.delete(msg.messageId);
+
+    let finalCardId = cardMessageId;
+    if (cardUpdater) {
+      if (isCancelled) {
+        await cardUpdater.cancel();
+      } else {
+        await cardUpdater.error(err.message ?? 'Unknown error');
+      }
+      finalCardId = cardUpdater.getCardMessageId();
+      cardUpdater.dispose();
+    } else if (!cardInitFailed) {
+      const replyText = isCancelled
+        ? (isNewSession ? '创建已取消。' : '处理已取消。')
+        : (isNewSession ? `创建失败: ${err.message}` : `处理失败: ${err.message}`);
+      await this.replyFn(replyText, { messageId: msg.messageId, openId: msg.openId });
+    }
+    if (finalCardId) {
+      this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, finalCardId, 1);
+    }
+    this.spoolQueue.markReplied(msg.messageId, msg.serialKey, finalCardId ?? undefined);
+    this.spoolQueue.markFailed(msg.messageId, msg.serialKey, isCancelled ? '用户已取消' : String(err));
+    return finalCardId;
   }
 
   /** Streaming path for new session creation */
@@ -1249,7 +1292,11 @@ export class FeishuBot {
 
       // Finalize card
       if (cardUpdater) {
-        if (cardUpdater.shouldFallbackToText(text)) {
+        const wasCancelled = this.cancelledMessageIds.has(msg.messageId);
+        if (wasCancelled) {
+          this.cancelledMessageIds.delete(msg.messageId);
+          await cardUpdater.cancel();
+        } else if (cardUpdater.shouldFallbackToText(text)) {
           const truncated = cardUpdater.truncateContent(text);
           await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = text.slice(truncated.length);
@@ -1303,19 +1350,10 @@ export class FeishuBot {
 
       // JSONL repair
       if (result.jsonlPath) { try { repairJsonlLastPrompt(result.jsonlPath); } catch {} }
+
+      this.cancelledMessageIds.delete(msg.messageId);
     } catch (err: any) {
-      if (cardUpdater) {
-        await cardUpdater.error(err.message ?? 'Unknown error');
-        cardMessageId = cardUpdater.getCardMessageId();
-        cardUpdater.dispose();
-      } else if (!cardInitFailed) {
-        await this.replyFn(`创建失败: ${err.message}`, { messageId: msg.messageId, openId: msg.openId });
-      }
-      if (cardMessageId) {
-        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, cardMessageId, 1);
-      }
-      this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
-      this.spoolQueue.markFailed(msg.messageId, msg.serialKey, String(err));
+      cardMessageId = await this._handleStreamError(msg, err, cardUpdater, cardInitFailed, cardMessageId, true);
     }
   }
 
@@ -1422,7 +1460,11 @@ export class FeishuBot {
       const finalText = text || result.response || '(空回复)';
 
       if (cardUpdater) {
-        if (cardUpdater.shouldFallbackToText(finalText)) {
+        const wasCancelled = this.cancelledMessageIds.has(msg.messageId);
+        if (wasCancelled) {
+          this.cancelledMessageIds.delete(msg.messageId);
+          await cardUpdater.cancel();
+        } else if (cardUpdater.shouldFallbackToText(finalText)) {
           const truncated = cardUpdater.truncateContent(finalText);
           await cardUpdater.complete(truncated, result.tokensIn ?? 0, result.tokensOut ?? 0, result.durationMs, 1);
           const remainder = finalText.slice(truncated.length);
@@ -1496,19 +1538,10 @@ export class FeishuBot {
       this.spoolQueue.markDone(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
 
       if (result.jsonlPath) { try { repairJsonlLastPrompt(result.jsonlPath); } catch {} }
+
+      this.cancelledMessageIds.delete(msg.messageId);
     } catch (err: any) {
-      if (cardUpdater) {
-        await cardUpdater.error(err.message ?? 'Unknown error');
-        cardMessageId = cardUpdater.getCardMessageId();
-        cardUpdater.dispose();
-      } else if (!cardInitFailed) {
-        await this.replyFn(`创建失败: ${err.message}`, { messageId: msg.messageId, openId: msg.openId });
-      }
-      if (cardMessageId) {
-        this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, cardMessageId, 1);
-      }
-      this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
-      this.spoolQueue.markFailed(msg.messageId, msg.serialKey, String(err));
+      cardMessageId = await this._handleStreamError(msg, err, cardUpdater, cardInitFailed, cardMessageId, true);
     } finally {
       // Only delete handler when all permission prompts are resolved.
       // If a prompt is still awaiting user input, keep the handler so the click can resolve.
@@ -1671,6 +1704,65 @@ export class FeishuBot {
     if (reply) await this.replyAndFinalize(msg, reply);
   }
 
+  /**
+   * Stop the user's current processing: kill Claude process (even during
+   * `/new` flow where sessionUuid is still null), mark processing messages
+   * as cancelled, stop live watcher.
+   * Returns { stopped: boolean, hasTarget: boolean }.
+   */
+  private async _stopUserSession(openId: string): Promise<{ stopped: boolean; hasTarget: boolean }> {
+    const entry = this.userManager.getEntry(openId);
+    logger.info(`[stop] _stopUserSession: openId=${openId}, entry.type=${entry?.type ?? 'none'}, sessionUuid=${entry?.type === 'session' ? entry.sessionUuid?.slice(0, 8) : 'n/a'}`);
+    const sessionUuid = entry?.type === 'session' ? entry.sessionUuid : null;
+    const hasTarget = Boolean(sessionUuid) || entry?.type === 'pending_new_session_claimed';
+
+    if (!hasTarget) {
+      logger.info(`[stop] no target entry, returning early`);
+      return { stopped: false, hasTarget: false };
+    }
+
+    let stopped = false;
+    if (sessionUuid) {
+      logger.info(`[stop] calling stopSession(${sessionUuid})`);
+      stopped = this.sessionManager.stopSession(sessionUuid);
+      logger.info(`[stop] stopSession result: ${stopped}`);
+    }
+    // If no sessionUuid yet (e.g. /new flow mid-creation), kill all active
+    // processes. Single-user instance — only one Claude process at a time.
+    if (!stopped) {
+      logger.info(`[stop] calling stopAllSessions`);
+      const killed = this.sessionManager.stopAllSessions('user_stop');
+      stopped = killed > 0;
+      logger.info(`[stop] stopAllSessions killed ${killed} processes`);
+    }
+
+    const serialKeyForCancel = sessionUuid ?? `new:${openId}`;
+    const processingMsgs = this.spoolQueue.listProcessing()
+      .filter(m => m.serialKey === serialKeyForCancel && m.openId === openId);
+    logger.info(`[stop] found ${processingMsgs.length} processing message(s) for serialKey=${serialKeyForCancel}`);
+    for (const pMsg of processingMsgs) {
+      this.cancelledMessageIds.add(pMsg.messageId);
+      this.spoolQueue.markFailed(pMsg.messageId, pMsg.serialKey, '用户已取消');
+    }
+
+    await this.stopLiveWatcher(openId, 'user_stop');
+    return { stopped, hasTarget: true };
+  }
+
+  private async handleStop(msg: SpoolMessage): Promise<void> {
+    const { stopped, hasTarget } = await this._stopUserSession(msg.openId);
+
+    if (!hasTarget) {
+      await this.replyAndFinalize(msg, '⚠️ 当前没有活跃会话，无需停止。');
+      return;
+    }
+
+    const reply = stopped
+      ? '✅ 已停止当前会话的处理。'
+      : 'ℹ️ 当前会话没有正在运行的处理任务。';
+    await this.replyAndFinalize(msg, reply);
+  }
+
   private async handleModel(msg: SpoolMessage, target: string): Promise<void> {
     if (!target) {
       const entry = this.userManager.getEntry(msg.openId);
@@ -1774,6 +1866,7 @@ export class FeishuBot {
       '  /new [路径] [-- prompt]            - 创建新会话',
       '  /new [路径] --model <别名> [-- p]  - 指定模型创建会话',
       '  /switch <序号|UUID>                - 切换会话',
+      '  /stop                              - 停止当前会话的处理',
       '  /model                             - 查看可用模型和默认设置',
       '  /model <序号|别名>                  - 设置默认模型',
       '  /model --clear                     - 清除默认设置',
@@ -2325,6 +2418,35 @@ export class FeishuBot {
       `映射状态: ${entry?.type ?? 'none'}`,
       `默认模型: ${provider ? `${provider.name} (${provider.alias})` : '未设置（跟随 Claude 全局配置）'}`,
     ].join('\n');
+  }
+
+  /** Handle stop action from card button. Returns card for WS response. */
+  private async doStop(openId: string, _messageId?: string): Promise<string | Record<string, unknown> | null> {
+    logger.info(`[stop] doStop called: openId=${openId}, messageId=${_messageId}`);
+    const { stopped, hasTarget } = await this._stopUserSession(openId);
+    logger.info(`[stop] doStop result: hasTarget=${hasTarget}, stopped=${stopped}`);
+
+    if (!hasTarget) {
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: 'ℹ️ 无需停止' }, template: 'grey' },
+        elements: [{ tag: 'markdown', content: '当前没有活跃会话。' }],
+      };
+    }
+
+    if (stopped) {
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: '✅ 已停止' }, template: 'green' },
+        elements: [{ tag: 'markdown', content: '已停止当前会话的处理。\n\n你可以随时发送新消息继续对话。' }],
+      };
+    }
+
+    return {
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: 'ℹ️ 无运行中任务' }, template: 'grey' },
+      elements: [{ tag: 'markdown', content: '当前会话没有正在运行的处理任务。' }],
+    };
   }
 }
 

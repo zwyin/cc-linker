@@ -130,6 +130,14 @@ interface SessionLock {
 
 export class ClaudeSessionManager {
   private activeProcesses = new Map<string, ClaudeSession>();
+  /**
+   * AbortControllers for SDK-mode (sendSDKMessage) processes, keyed by
+   * trackKey (same scheme as activeProcesses). The SDK @anthropic-ai/claude-agent-sdk
+   * manages the child process internally — we have no PID — so we abort via
+   * AbortController. stopSession/stopAllSessions call .abort() on these to
+   * actually stop a running Claude.
+   */
+  private sdkAbortControllers = new Map<string, AbortController>();
   private sessionLocks = new Map<string, SessionLock>();
   private runningProcesses = 0;
   private processWaiters: Array<() => void> = [];
@@ -359,7 +367,19 @@ export class ClaudeSessionManager {
       }
     }, 1000);
 
-    await Promise.race([exitPromise, sleep(hardTimeout + 5000)]);
+    // fastExit: if process is already dead, don't wait full hardTimeout
+    const fastExit = (async () => {
+      while (true) {
+        await sleep(100);
+        try {
+          process.kill(procPid, 0);
+        } catch {
+          await sleep(2000);
+          return;
+        }
+      }
+    })();
+    await Promise.race([exitPromise, fastExit, sleep(hardTimeout + 5000)]);
     clearInterval(timeoutCheck);
 
     await readPromise;
@@ -601,7 +621,19 @@ export class ClaudeSessionManager {
       }
     }, 1000);
 
-    await Promise.race([exitPromise, sleep(hardTimeout + 5000)]);
+    // fastExit: if process is already dead, don't wait full hardTimeout
+    const fastExit = (async () => {
+      while (true) {
+        await sleep(100);
+        try {
+          process.kill(procPid, 0);
+        } catch {
+          await sleep(2000);
+          return;
+        }
+      }
+    })();
+    await Promise.race([exitPromise, fastExit, sleep(hardTimeout + 5000)]);
     clearInterval(timeoutCheck);
     await Promise.allSettled([stdoutPromise, stderrPromise]);
 
@@ -759,6 +791,12 @@ export class ClaudeSessionManager {
           `cwd=${expandedCwd}, settings=${settingsPath ?? 'none'}`
       );
 
+      // Register AbortController for stopSession/stopAllSessions. SDK mode
+      // doesn't expose a PID (it manages the child process internally), so
+      // we have to abort via the controller. trackKey mirrors sendStreamingMessage.
+      const trackKey = sessionId ?? `pid:sdk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.sdkAbortControllers.set(trackKey, abortController);
+
       try {
         hardTimer = setTimeout(() => {
           if (!abortController.signal.aborted) {
@@ -827,6 +865,8 @@ export class ClaudeSessionManager {
         };
       } finally {
         if (hardTimer) clearTimeout(hardTimer);
+        // Unregister AbortController (no-op if already removed by stopSession)
+        this.sdkAbortControllers.delete(trackKey);
         // end marker: 新 session 用 SDK 返回的 session_id (因为原始 sessionUuid 是 null)
         const endUuid = sessionUuid || (lastResult?.session_id ?? null);
         if (endUuid) {
@@ -936,6 +976,55 @@ export class ClaudeSessionManager {
     this.runningProcesses--;
     const waiter = this.processWaiters.shift();
     if (waiter) waiter();
+  }
+
+  /** Stop a running session by its sessionId. Returns true if a process was killed. */
+  stopSession(sessionId: string): boolean {
+    let stopped = false;
+    for (const [key, session] of this.activeProcesses.entries()) {
+      if (session.sessionId === sessionId) {
+        logger.info(`Stopping session ${sessionId} (PID: ${session.pid})`);
+        terminateProcessTree(session.pid);
+        this.activeProcesses.delete(key);
+        // Also clean session lock to prevent deadlock on next message
+        this.sessionLocks.delete(key);
+        stopped = true;
+      }
+    }
+    // Also abort any SDK-mode sessions matching this sessionId
+    for (const [key, controller] of this.sdkAbortControllers.entries()) {
+      if (key === sessionId || key.endsWith(`:${sessionId}`)) {
+        logger.info(`Aborting SDK session ${key} (matched sessionId=${sessionId})`);
+        controller.abort();
+        this.sdkAbortControllers.delete(key);
+        stopped = true;
+      }
+    }
+    return stopped;
+  }
+
+  /**
+   * Kill all currently-active processes regardless of session.
+   * Used when the user explicitly stops during a not-yet-bound session
+   * (e.g. `/new` flow where sessionUuid is still null while Claude runs).
+   */
+  stopAllSessions(reason: string): number {
+    const procCount = this.activeProcesses.size;
+    const sdkCount = this.sdkAbortControllers.size;
+    if (procCount === 0 && sdkCount === 0) return 0;
+    logger.warn(`stopAllSessions: killing ${procCount} proc(s) + aborting ${sdkCount} SDK session(s) (${reason})`);
+    for (const [key, session] of this.activeProcesses.entries()) {
+      logger.info(`Killing session ${session.sessionId || '(unresolved)'} (PID: ${session.pid})`);
+      terminateProcessTree(session.pid);
+      this.activeProcesses.delete(key);
+      this.sessionLocks.delete(key);
+    }
+    for (const [key, controller] of this.sdkAbortControllers.entries()) {
+      logger.info(`Aborting SDK session ${key}`);
+      controller.abort();
+      this.sdkAbortControllers.delete(key);
+    }
+    return procCount + sdkCount;
   }
 
   /** List currently tracked active processes/sessions */
