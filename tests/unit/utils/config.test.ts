@@ -69,3 +69,37 @@ describe('ConfigManager.setRuntimeOverride', () => {
     expect(cm.get('runtime.cli_process_detection_enabled', true)).toBe(false);
   });
 });
+
+describe('ConfigManager.agent_view', () => {
+  afterEach(() => {
+    // 清理 env 残留,防止污染其它 test
+    for (const k of [
+      'CC_LINKER_AGENT_VIEW_ENABLED',
+      'CC_LINKER_AGENT_VIEW_REFRESH_MIN_INTERVAL_MS',
+      'CC_LINKER_AGENT_VIEW_PEEK_LINES',
+      'CC_LINKER_AGENT_VIEW_PEEK_MAX_BYTES',
+      'CC_LINKER_AGENT_VIEW_EXPECTED_REPLY_TIMEOUT_MS',
+      'CC_LINKER_AGENT_VIEW_BACKGROUND_ONLY',
+      'CC_LINKER_AGENT_VIEW_STOP_REQUIRES_CONFIRM',
+      'CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS',
+    ]) {
+      delete process.env[k];
+    }
+  });
+
+  test('agent_view defaults to enabled=true', () => {
+    const cm = new ConfigManager();
+    expect(cm.get<boolean>('agent_view.enabled')).toBe(true);
+  });
+
+  test('agent_view.reply_throttle_ms default 500', () => {
+    const cm = new ConfigManager();
+    expect(cm.get<number>('agent_view.reply_throttle_ms')).toBe(500);
+  });
+
+  test('CC_LINKER_AGENT_VIEW_ENABLED env override', () => {
+    process.env.CC_LINKER_AGENT_VIEW_ENABLED = 'false';
+    const cm = new ConfigManager();
+    expect(cm.get<boolean>('agent_view.enabled')).toBe(false);
+  });
+});

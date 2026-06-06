@@ -80,6 +80,19 @@ interface ConfigData {
     max_size_bytes: number;
     cleanup_max_age_hours: number;
   };
+  agent_view: AgentViewConfig;
+}
+
+export interface AgentViewConfig {
+  enabled: boolean;
+  refresh_min_interval_ms: number;
+  peek_lines: number;
+  peek_max_bytes: number;
+  expected_reply_timeout_ms: number;
+  background_only: boolean;
+  stop_requires_confirm: boolean;
+  min_claude_version: string;
+  reply_throttle_ms: number;
 }
 
 const DEFAULTS: ConfigData = {
@@ -160,6 +173,17 @@ const DEFAULTS: ConfigData = {
     max_size_bytes: 10 * 1024 * 1024,
     cleanup_max_age_hours: 24,
   },
+  agent_view: {
+    enabled: true,
+    refresh_min_interval_ms: 2000,
+    peek_lines: 30,
+    peek_max_bytes: 2048,
+    expected_reply_timeout_ms: 300000,
+    background_only: true,
+    stop_requires_confirm: true,
+    min_claude_version: '2.1.139',
+    reply_throttle_ms: 500,
+  },
 };
 
 function cloneDefaults(): ConfigData {
@@ -176,6 +200,7 @@ function cloneDefaults(): ConfigData {
     claude: { ...DEFAULTS.claude },
     sdk: { ...DEFAULTS.sdk },
     images: { ...DEFAULTS.images },
+    agent_view: { ...DEFAULTS.agent_view },
   };
 }
 
@@ -253,6 +278,14 @@ export class ConfigManager {
       ['CC_LINKER_IMAGES_ENABLED', 'images', 'enabled'],
       ['CC_LINKER_IMAGES_MAX_SIZE', 'images', 'max_size_bytes'],
       ['CC_LINKER_IMAGES_CLEANUP_HOURS', 'images', 'cleanup_max_age_hours'],
+      ['CC_LINKER_AGENT_VIEW_ENABLED', 'agent_view', 'enabled'],
+      ['CC_LINKER_AGENT_VIEW_REFRESH_MIN_INTERVAL_MS', 'agent_view', 'refresh_min_interval_ms'],
+      ['CC_LINKER_AGENT_VIEW_PEEK_LINES', 'agent_view', 'peek_lines'],
+      ['CC_LINKER_AGENT_VIEW_PEEK_MAX_BYTES', 'agent_view', 'peek_max_bytes'],
+      ['CC_LINKER_AGENT_VIEW_EXPECTED_REPLY_TIMEOUT_MS', 'agent_view', 'expected_reply_timeout_ms'],
+      ['CC_LINKER_AGENT_VIEW_BACKGROUND_ONLY', 'agent_view', 'background_only'],
+      ['CC_LINKER_AGENT_VIEW_STOP_REQUIRES_CONFIRM', 'agent_view', 'stop_requires_confirm'],
+      ['CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS', 'agent_view', 'reply_throttle_ms'],
     ];
 
     // Parse array env vars for Claude tools
