@@ -248,4 +248,80 @@ describe('Feishu live progress integration', () => {
       (env.sessionManager as any).listSessions = origList;
     }
   });
+
+  // 回归测试：修复 V1 (onStop callback 必须 identity check, 否则旧 A watcher in-flight
+  // 时 /switch B 会让 A 的 onStop 误删 B)
+  it('regression V1: watcher A in-flight + /switch B → B preserved by identity check', async () => {
+    env.registry.upsert('uuid-a', {
+      origin: 'feishu', cwd: '/tmp/a', project_name: 'proj', jsonl_path: null, project_dir: null,
+      created_at: '2026-01-01T00:00:00Z', last_active: new Date().toISOString(),
+      title: 'A', message_count: 1, last_message_preview: 'p',
+    });
+    env.registry.upsert('uuid-b', {
+      origin: 'feishu', cwd: '/tmp/b', project_name: 'proj', jsonl_path: null, project_dir: null,
+      created_at: '2026-01-01T00:00:00Z', last_active: new Date().toISOString(),
+      title: 'B', message_count: 1, last_message_preview: 'p',
+    });
+
+    // A 初始 running
+    const origList = env.sessionManager.listSessions.bind(env.sessionManager);
+    (env.sessionManager as any).listSessions = () => [
+      { sessionId: 'uuid-a', pid: 1, cwd: '/tmp/a', createdAt: Date.now(), lastOutputAt: Date.now(), isNew: false },
+    ];
+
+    try {
+      (env.bot as any).cardReplyFn = async () => 'fake-card-msg-id';
+
+      // Switch to A → watcher A starts
+      await env.bot.onMessage({
+        open_id: 'ou_user1', message_id: 'om_switch_a_v1',
+        content: JSON.stringify({ text: '/switch uuid-a' }),
+        chat_type: 'p2p', message_type: 'text',
+      });
+      await env.bot.dispatch();
+
+      const watchers = (env.bot as any).liveWatchers as Map<string, any>;
+      const watcherA = watchers.get('ou_user1');
+      expect(watcherA).toBeDefined();
+      expect(watcherA.deps.uuid).toBe('uuid-a');
+
+      // 模拟 A 的 tick 在 in-flight (永远不 resolve 直到 cleanup)
+      let resolveAInFlight: () => void = () => {};
+      const aInFlightPromise = new Promise<void>(r => { resolveAInFlight = r; });
+      (watcherA as any).inFlightTick = aInFlightPromise;
+
+      // 现在 A 和 B 都 running
+      (env.sessionManager as any).listSessions = () => [
+        { sessionId: 'uuid-a', pid: 1, cwd: '/tmp/a', createdAt: Date.now(), lastOutputAt: Date.now(), isNew: false },
+        { sessionId: 'uuid-b', pid: 2, cwd: '/tmp/b', createdAt: Date.now(), lastOutputAt: Date.now(), isNew: false },
+      ];
+
+      // Switch to B → doSwitch: stopLiveWatcher(A) (无 await) → sync delete A → set B
+      await env.bot.onMessage({
+        open_id: 'ou_user1', message_id: 'om_switch_b_v1',
+        content: JSON.stringify({ text: '/switch uuid-b' }),
+        chat_type: 'p2p', message_type: 'text',
+      });
+      await env.bot.dispatch();
+
+      // B 在 map 里 (doSwitch 同步 set)
+      const watcherB = watchers.get('ou_user1');
+      expect(watcherB).toBeDefined();
+      expect(watcherB.deps.uuid).toBe('uuid-b');
+      expect(watcherB).not.toBe(watcherA);
+
+      // 关键: A 已经在 map 外 (被 stopLiveWatcher line 355 删了), B 在 map 里
+      // 等待 A 的 stop() 内部 onStop 触发 (V5 reorder: onStop 在 await 前同步触发)
+      await new Promise(r => setTimeout(r, 50));
+
+      // 验证: B 仍在 map (V1 identity check 阻止了 A 的 onStop 误删 B)
+      expect(watchers.get('ou_user1')).toBe(watcherB);
+
+      // Cleanup: resolve A 的 in-flight, 让 A 的 stop() 完成
+      resolveAInFlight();
+      await new Promise(r => setTimeout(r, 50));
+    } finally {
+      (env.sessionManager as any).listSessions = origList;
+    }
+  });
 });
