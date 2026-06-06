@@ -230,14 +230,109 @@ export class AgentViewManager {
     return null;
   }
 
-  async handleAttach(
+  /**
+   * Step A: 二次确认(发独立卡)
+   * 当用户点 [Stop] 按钮时,先弹一张红色确认卡,避免误触。
+   * 卡内带 [确认停止] 按钮触发 handleStopConfirm(T21)。
+   */
+  async handleStop(
     _openId: string,
+    shortId: string,
+    sessionId: string,
+    name: string,
+  ): Promise<string | Record<string, unknown> | null> {
+    const card = buildStopConfirmCard(name, shortId, sessionId);
+    return await this.deps.cardReplyFn(card, { openId: _openId });
+  }
+
+  /**
+   * Step B: 真执行 `claude stop <shortId>` + 等 1s + 刷新列表。
+   * 失败时回复 `❌ Stop 失败:<err>`。
+   */
+  async handleStopConfirm(
+    openId: string,
+    shortId: string,
     _sessionId: string,
+    _messageId?: string,
+  ): Promise<string | null> {
+    try {
+      const cp = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileP = promisify(cp.execFile);
+      await execFileP('claude', ['stop', shortId], { timeout: 5000 });
+      // 等 supervisor 收尾
+      await new Promise(r => setTimeout(r, 1000));
+      await this.deps.replyFn(`✅ 已停止 ${shortId}`, { openId });
+      // 重新拉并 patch 列表卡
+      await this.handleList(openId);
+      return null;
+    } catch (err: any) {
+      await this.deps.replyFn(`❌ Stop 失败:${err.message}`, { openId });
+      return null;
+    }
+  }
+
+  /**
+   * Attach 到一个 background session。
+   * v2.2 关键:必须用**两步 CAS**:
+   *   1. 清旧 entry(如果有)→ entriesMatch(oldEntry, null) 在 entriesMatch 中
+   *      视为 (non-null, null) 不匹配,所以不能直接 CAS(null → new)。
+   *   2. 写新 session entry。
+   * 保留旧 entry 的 defaultProvider(用户级配置,不应因 attach 重置)。
+   * 失败:实时守卫(会话已不存在)/ CAS 冲突。
+   */
+  async handleAttach(
+    openId: string,
+    sessionId: string,
     _shortId: string,
     _name: string,
-    _cwd: string,
+    cwd: string,
   ): Promise<string | Record<string, unknown> | null> {
-    throw new Error('AgentViewManager.handleAttach not implemented (T22)');
+    // 0. 实时守卫
+    const result = await AgentSnapshotFetcher.fetch();
+    if (!result.ok || !result.sessions.find(s => s.sessionId === sessionId)) {
+      await this.deps.replyFn('⚠️ 会话已不存在', { openId });
+      return null;
+    }
+    // 1. 清除 expectedReply(如果有)
+    await this.expectedReply.clear(openId, 'overwrite');
+    // 2. CAS 1: 清旧 entry
+    const oldEntry = this.deps.userManager.getEntry(openId);
+    if (oldEntry) {
+      const ok1 = await this.deps.userManager.compareAndSwap(openId, oldEntry, null);
+      if (!ok1) {
+        await this.deps.replyFn('⚠️ 状态冲突,请重试', { openId });
+        return null;
+      }
+    }
+    // 3. CAS 2: 写新 session entry
+    const newEntry: MappingEntry = {
+      type: 'session',
+      sessionUuid: sessionId,
+      cwd,
+      createdAt: new Date().toISOString(),
+      // 保留用户级 defaultProvider,不要因 attach 丢失
+      defaultProvider: oldEntry?.defaultProvider,
+    };
+    const ok2 = await this.deps.userManager.compareAndSwap(openId, null, newEntry);
+    if (!ok2) {
+      await this.deps.replyFn('⚠️ 状态冲突,请重试', { openId });
+      return null;
+    }
+    // 4. 发确认文本(busy/waiting 状态加提示)
+    const session = result.sessions.find(s => s.sessionId === sessionId)!;
+    const warning = session.status === 'busy' ? '\n⚠️ 该 session 正在处理中' : '';
+    const waitingInfo =
+      session.status === 'waiting' && session.waitingFor
+        ? `\n等待原因: ${session.waitingFor}`
+        : '';
+    await this.deps.replyFn(
+      `📎 已 Attach 到 \`${session.name}\`${warning}${waitingInfo}\n` +
+        `Status: ${session.status} · CWD: ${cwd}\n` +
+        `💡 提示:发 /new 创建新会话,或 /agents 返回列表。`,
+      { openId },
+    );
+    return null;
   }
 
   /**
@@ -373,24 +468,6 @@ export class AgentViewManager {
   async handleCancelReply(openId: string, _messageId?: string): Promise<void> {
     await this.expectedReply.clear(openId, 'user');
     await this.deps.replyFn('✅ 已取消等待回复', { openId });
-  }
-
-  async handleStop(
-    _openId: string,
-    _shortId: string,
-    _sessionId: string,
-    _name: string,
-  ): Promise<string | Record<string, unknown> | null> {
-    throw new Error('AgentViewManager.handleStop not implemented (T20)');
-  }
-
-  async handleStopConfirm(
-    _openId: string,
-    _shortId: string,
-    _sessionId: string,
-    _messageId?: string,
-  ): Promise<string | null> {
-    throw new Error('AgentViewManager.handleStopConfirm not implemented (T21)');
   }
 
   /** Drop the user out of Agent View — pure text reply, no state mutation. */

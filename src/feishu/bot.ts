@@ -853,6 +853,44 @@ export class FeishuBot {
   }
 
   private async handleChat(msg: SpoolMessage): Promise<void> {
+    // v2.2 修正:Agent View expectedReply 检查(spec §5.3)
+    // - /cancel  → handleCancelReply(总是,无视只读白名单)
+    // - /<cmd>   → 只读命令(/help /status /whoami)透传 handleCommand,不清 expectedReply
+    //              写命令 清 expectedReply + 提示"已自动取消",再走 handleCommand
+    // - 普通文本 → expectedReply 激活时 → handleReply,否则走原 switch
+    if (this.agentView) {
+      if (msg.text === '/cancel') {
+        await this.agentView.handleCancelReply(msg.openId, msg.messageId);
+        return;
+      }
+      if (msg.text.startsWith('/')) {
+        const cmd = msg.text.split(/\s+/)[0]?.replace(/^\/+/, '').toLowerCase();
+        const isReadOnly = ['help', 'status', 'whoami'].includes(cmd || '');
+        if (!isReadOnly) {
+          // 写命令:清 expectedReply + 提示"已自动取消"
+          const info = this.agentView.expectedReply.get(msg.openId);
+          if (info) {
+            await this.agentView.expectedReply.clear(msg.openId, 'overwrite');
+            await this.replyFn(
+              `⏱ 等待输入已自动取消(因你跑了 /${cmd})`,
+              { openId: msg.openId, requestUuid: uniqueUuid() },
+            );
+          }
+          // 写命令:走原 handleCommand 分发
+          await this.handleCommand(msg);
+          return;
+        }
+        // 只读命令:不清 expectedReply,继续按命令分发
+        await this.handleCommand(msg);
+        return;
+      }
+      // 非 / 开头普通消息:检查 expectedReply
+      const info = this.agentView.expectedReply.get(msg.openId);
+      if (info) {
+        await this.agentView.handleReply(msg.openId, msg.text);
+        return;
+      }
+    }
     switch (msg.target.type) {
       case 'session': {
         const sessionUuid = msg.target.sessionUuid ?? '';

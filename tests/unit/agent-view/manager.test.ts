@@ -548,3 +548,282 @@ describe('handleCancelReply', () => {
     expect(replyFn.mock.calls[0][0]).toContain('已取消等待');
   });
 });
+
+describe('handleStop (T20)', () => {
+  test('sends a stop confirm card via cardReplyFn', async () => {
+    const { mgr, cardReplyFn, replyFn } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    const shortId = busy.sessionId.slice(0, 8);
+
+    const result = await mgr.handleStop('ou_stop_1', shortId, busy.sessionId, busy.name);
+
+    // cardReplyFn was called with a stop-confirm card (red template, has
+    // agent_view_stop_confirm button) and returns the new messageId
+    expect(cardReplyFn).toHaveBeenCalledTimes(1);
+    const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+    expect(sentCard.header.template).toBe('red');
+    expect(sentCard.header.title.content).toContain(busy.name);
+    const actions = sentCard.elements.flatMap((e: any) =>
+      e.tag === 'action' ? e.actions : [],
+    );
+    const tags = actions.map((a: any) => a.value?.tag);
+    expect(tags).toContain('agent_view_stop_confirm');
+    // 确认按钮要带 shortId + sessionId
+    const confirmBtn = actions.find(
+      (a: any) => a.value?.tag === 'agent_view_stop_confirm',
+    );
+    expect(confirmBtn.value.shortId).toBe(shortId);
+    expect(confirmBtn.value.sessionId).toBe(busy.sessionId);
+    // replyFn 没被调(确认卡是独立卡)
+    expect(replyFn).not.toHaveBeenCalled();
+    // 返回值是 cardMessageId
+    expect(result).toBe('om_list_card_001');
+  });
+});
+
+describe('handleStopConfirm (T21)', () => {
+  test('calls execFile with claude stop <shortId>, sleeps 1s, replies + refreshes list', async () => {
+    const { mgr, cardReplyFn, replyFn } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    const shortId = busy.sessionId.slice(0, 8);
+
+    // Mock fetch to return one session so handleList is a happy path
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+    // Capture execFile invocations
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    execFileMock.mockImplementation((cmd, args, cb) => {
+      calls.push({ cmd, args });
+      cb(null, '', '');
+    });
+
+    await mgr.handleStopConfirm('ou_stop_c_1', shortId, busy.sessionId);
+
+    // execFile('claude', ['stop', shortId]) was called
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe('claude');
+    expect(calls[0].args).toEqual(['stop', shortId]);
+    // replyFn 发出 ✅ 已停止 <shortId>
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('已停止');
+    expect(replyFn.mock.calls[0][0]).toContain(shortId);
+    // cardReplyFn 被调(由 handleList 内部发列表卡)
+    expect(cardReplyFn).toHaveBeenCalledTimes(1);
+  });
+
+  test('replies with ❌ on execFile error and does not call handleList', async () => {
+    const { mgr, cardReplyFn, replyFn } = makeMgrWithSpies();
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(new Error('claude binary not found'), '', 'not found');
+    });
+
+    await mgr.handleStopConfirm('ou_stop_c_err', 'shortid', 'session');
+
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('Stop 失败');
+    expect(replyFn.mock.calls[0][0]).toContain('claude binary not found');
+    // 没有触发 handleList(cardReplyFn 不被调)
+    expect(cardReplyFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleAttach (T22 — two-step CAS)', () => {
+  test('attaches a fresh user (no prior entry) and writes a session entry', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+
+    await mgr.handleAttach('ou_attach_1', busy.sessionId, busy.sessionId.slice(0, 8), busy.name, busy.cwd);
+
+    // 写入了 session entry
+    const entry = userManager.getEntry('ou_attach_1');
+    expect(entry).toBeDefined();
+    expect(entry?.type).toBe('session');
+    expect(entry?.sessionUuid).toBe(busy.sessionId);
+    expect(entry?.cwd).toBe(busy.cwd);
+    // 回复里含 "已 Attach 到" + busy name
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    const replyText = replyFn.mock.calls[0][0] as string;
+    expect(replyText).toContain('已 Attach 到');
+    expect(replyText).toContain(busy.name);
+    expect(replyText).toContain('Status: busy');
+    expect(replyText).toContain('正在处理中'); // busy 状态警告
+  });
+
+  test('two-step CAS: clears old entry FIRST, then writes new session entry', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+
+    // Seed an old session entry that we'll replace
+    await userManager.compareAndSwap('ou_attach_swap', null, {
+      type: 'session',
+      sessionUuid: 'old-session-uuid',
+      createdAt: new Date().toISOString(),
+    });
+    const oldEntry = userManager.getEntry('ou_attach_swap');
+    expect(oldEntry?.type).toBe('session');
+    expect(oldEntry?.sessionUuid).toBe('old-session-uuid');
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    await mgr.handleAttach('ou_attach_swap', waiting.sessionId, waiting.sessionId.slice(0, 8), waiting.name, waiting.cwd);
+
+    // New session entry is in place
+    const newEntry = userManager.getEntry('ou_attach_swap');
+    expect(newEntry?.type).toBe('session');
+    expect(newEntry?.sessionUuid).toBe(waiting.sessionId);
+    expect(newEntry?.cwd).toBe(waiting.cwd);
+    // waiting 状态:含 "等待原因"
+    const replyText = replyFn.mock.calls[0][0] as string;
+    expect(replyText).toContain('等待原因');
+    expect(replyText).toContain(waiting.waitingFor);
+  });
+
+  test('preserves defaultProvider from old entry when swapping', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    // Seed an old entry WITH defaultProvider
+    await userManager.compareAndSwap('ou_attach_dp', null, {
+      type: 'session',
+      sessionUuid: 'old-session-uuid',
+      createdAt: new Date().toISOString(),
+      defaultProvider: 'sonnet',
+    });
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    await mgr.handleAttach('ou_attach_dp', waiting.sessionId, waiting.sessionId.slice(0, 8), waiting.name, waiting.cwd);
+
+    const newEntry = userManager.getEntry('ou_attach_dp');
+    expect(newEntry?.defaultProvider).toBe('sonnet');
+  });
+
+  test('replies "会话已不存在" when target session is not in snapshot', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [], // no sessions
+    }));
+
+    await mgr.handleAttach('ou_attach_gone', 'missing-session', 'shortid', 'whatever', '/tmp');
+
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('会话已不存在');
+    // 没有写 entry
+    expect(userManager.getEntry('ou_attach_gone')).toBeUndefined();
+  });
+
+  test('replies "状态冲突" when first CAS fails (concurrent modification)', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+
+    // Seed old entry
+    await userManager.compareAndSwap('ou_attach_cas_fail', null, {
+      type: 'session',
+      sessionUuid: 'old-session-uuid',
+      createdAt: new Date().toISOString(),
+    });
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    // 模拟并发:在 handleAttach 的 CAS 1 之前,外部已经改了 entry
+    // 用一个 spy 替换 getEntry 让它在 handleAttach 调用时返回"过期的" entry
+    // 简化:直接 inject 一个 stale snapshot — 跳过复杂 mock
+    // 我们改用:第一次 getEntry 返回老 entry,handleAttach CAS 1 调用前 mutate
+    let firstGetEntry = true;
+    const origGetEntry = userManager.getEntry.bind(userManager);
+    userManager.getEntry = (openId: string) => {
+      if (firstGetEntry && openId === 'ou_attach_cas_fail') {
+        firstGetEntry = false;
+        // 返回被外部 mutate 过的 entry(handleAttach 拿到这个去 CAS 会失败)
+        const e = origGetEntry(openId);
+        if (e) {
+          // 模拟外部在 handleAttach 调 getEntry 之后立即把 entry CAS 改了
+          // 我们用 setTimeout 在下一个 tick 改
+          setTimeout(() => {
+            // 同步 mutate:直接把 oldEntry.casToken 改掉(CAS token 是 entriesMatch 的字段之一)
+            // — 但更可靠的是:我们直接让 compareAndSwap 失败(改 expected)
+            // 这里用更直接的方式:替换 getEntry 的二次调用,让它在 compareAndSwap 内部
+            // 看到的 current 不匹配 expected。
+            void e; // unused — see below
+          }, 0);
+        }
+        return e;
+      }
+      return origGetEntry(openId);
+    };
+    // 更直接地:把 handleAttach 内部的 CAS 1 失败通过重写 compareAndSwap 来模拟
+    let casCallCount = 0;
+    const origCas = userManager.compareAndSwap.bind(userManager);
+    userManager.compareAndSwap = async (...args: any[]): Promise<boolean> => {
+      casCallCount++;
+      if (casCallCount === 1) {
+        // CAS 1 (clear old entry) 失败:模拟外部已抢先改了
+        return false;
+      }
+      return origCas(...args);
+    };
+
+    await mgr.handleAttach('ou_attach_cas_fail', waiting.sessionId, waiting.sessionId.slice(0, 8), waiting.name, waiting.cwd);
+
+    // 第一次 CAS 失败时,应发 "状态冲突"
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('状态冲突');
+    // entry 仍然是旧的(没有被清掉)
+    const entry = userManager.getEntry('ou_attach_cas_fail');
+    expect(entry?.sessionUuid).toBe('old-session-uuid');
+
+    // restore
+    userManager.getEntry = origGetEntry;
+    userManager.compareAndSwap = origCas;
+  });
+
+  test('replies "状态冲突" when second CAS (write new) fails', async () => {
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    // Seed an old entry so CAS 1 is invoked
+    await userManager.compareAndSwap('ou_attach_cas2', null, {
+      type: 'session',
+      sessionUuid: 'old-session-uuid',
+      createdAt: new Date().toISOString(),
+    });
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    // Mock:第一次 CAS 成功(清空),第二次 CAS 失败(写新 entry 失败)
+    let casCallCount = 0;
+    const origCas = userManager.compareAndSwap.bind(userManager);
+    userManager.compareAndSwap = async (...args: any[]): Promise<boolean> => {
+      casCallCount++;
+      if (casCallCount === 2) return false;
+      return origCas(...args);
+    };
+
+    await mgr.handleAttach('ou_attach_cas2', waiting.sessionId, waiting.sessionId.slice(0, 8), waiting.name, waiting.cwd);
+
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('状态冲突');
+    // entry 不应该是 session(第一次清空后第二次 CAS 失败,没写回)
+    const entry = userManager.getEntry('ou_attach_cas2');
+    expect(entry?.type).not.toBe('session');
+
+    userManager.compareAndSwap = origCas;
+  });
+});
