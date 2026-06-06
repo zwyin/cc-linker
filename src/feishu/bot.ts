@@ -7,6 +7,7 @@ import { ClaudeSessionManager } from '../proxy/session';
 import { sessionManager as defaultSessionManager } from '../proxy/session';
 import { StreamChunk } from '../proxy/stream-parser';
 import { CardUpdater } from './card-updater';
+import { LiveProgressWatcher, DEFAULT_LIVE_PROGRESS_CONFIG, type LiveProgressConfig } from './live-progress';
 import { PermissionHandler, type PermissionPrompt } from '../proxy/permission-handler';
 import { esc } from './markdown-escape';
 import { RegistryManager } from '../registry';
@@ -98,6 +99,9 @@ export class FeishuBot {
    */
   private activePermissionCardTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private lastImageCleanup = 0;
+
+  /** Live progress watchers, keyed by openId. One watcher per user. */
+  private liveWatchers = new Map<string, LiveProgressWatcher>();
 
   /** Maximum time to wait for user to click "force-send" on busy card before
    *  auto-processing the message as force-send. Prevents infinite accumulation
@@ -319,6 +323,45 @@ export class FeishuBot {
     } finally {
       this.running = false;
     }
+  }
+
+  /** Read live_progress config with defaults. */
+  private get liveConfig(): LiveProgressConfig {
+    return {
+      intervalMs: config.get<number>('feishu_bot.live_progress.interval_ms', DEFAULT_LIVE_PROGRESS_CONFIG.intervalMs),
+      maxTicks: config.get<number>('feishu_bot.live_progress.max_ticks', DEFAULT_LIVE_PROGRESS_CONFIG.maxTicks),
+      maxPatchFailures: config.get<number>('feishu_bot.live_progress.max_patch_failures', DEFAULT_LIVE_PROGRESS_CONFIG.maxPatchFailures),
+    };
+  }
+
+  /** Stop the user's live watcher if any. Idempotent. */
+  stopLiveWatcher(openId: string, reason: string): void {
+    const w = this.liveWatchers.get(openId);
+    if (w) {
+      w.stop(reason);
+      this.liveWatchers.delete(openId);
+    }
+  }
+
+  /** Build overview card with live data — used by LiveProgressWatcher.tick() */
+  buildLiveOverviewCard(
+    uuid: string,
+    entry: Pick<SessionEntry, 'title' | 'cwd' | 'message_count' | 'last_active' | 'origin' | 'status' | 'last_user_preview' | 'last_assistant_preview'>,
+    isRunning: boolean,
+    live: { lastUser?: string; lastAssistant?: string },
+  ): Record<string, unknown> {
+    return buildSessionOverviewCard(uuid, entry, isRunning, {
+      lastUserPreview: live.lastUser,
+      lastAssistantPreview: live.lastAssistant,
+    });
+  }
+
+  /** Stop all live watchers — called from graceful shutdown */
+  shutdown(): void {
+    for (const [openId, watcher] of this.liveWatchers) {
+      watcher.stop('bot_shutdown');
+    }
+    this.liveWatchers.clear();
   }
 
   requestStop(): void {
