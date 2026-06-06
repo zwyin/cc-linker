@@ -642,6 +642,13 @@ export class FeishuBot {
   /**
   /** Process a claimed message (already moved to processing dir). */
   private async handleClaimed(msg: SpoolMessage): Promise<void> {
+    // 【live progress】用户发新消息（非 command）→ 停止该用户的 live watcher
+    // 命令（/list / /status 等）不打断 watcher，因为用户可能切到 session 后想查进展
+    const isCommandMsg = (msg.text?.startsWith('/') ?? false) && (msg.text?.length ?? 0) > 1 && (msg.text?.[1] !== ' ');
+    if (!isCommandMsg) {
+      this.stopLiveWatcher(msg.openId, 'user_new_message');
+    }
+
     if (this.spoolQueue.hasSentDelivery(msg.messageId)) {
       this.spoolQueue.markReplied(msg.messageId, msg.serialKey, msg.replyMessageId);
       this.spoolQueue.markDone(msg.messageId, msg.serialKey, msg.replyMessageId);
