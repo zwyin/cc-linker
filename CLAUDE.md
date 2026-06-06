@@ -123,6 +123,16 @@ await syncBeforeCommand(registry);
 
 The `withSync()` helper in `src/index.ts` wraps this. Some commands skip sync with `--no-sync`.
 
+### Agent View (Remote Session Takeover)
+
+`src/agent-view/` lets users from Feishu inspect and steer any background `claude` session running on the terminal. It depends on the `claude agents --json` interface and uses `claude logs <shortId>` / `claude stop <shortId>` for per-session actions.
+
+- `AgentSnapshotFetcher.fetch()` (`snapshot-fetcher.ts`) shells out to `claude agents --json` (version-guarded via `VersionGuard`, daemon-presence-checked via `DaemonProbe`); `snapshot.ts` parses the JSON into `AgentSession[]` keyed by status (`busy` / `waiting` / `idle`).
+- `AgentViewManager` (`manager.ts`) owns the user-facing flow: `handleList` → `handlePeek` → `handleReplyRequest` (Step A) → `handleReply` (Step B, re-runs status guard) → `handleStop` (with `handleStopConfirm` two-step) → `handleAttach`. Step B re-fetches the snapshot before proxying the user's reply text through `runChatSDK` to defend against a status flip between the click and the text.
+- `ExpectedReplyState` (`expected-reply-state.ts`) persists `pending_agent_reply` in `user-mapping.json` with CAS, sets a 5-minute timeout, and restores on bot startup.
+- Card builders (`card.ts`) emit Feishu interactive cards; `Refresh` actions are debounced by 2s and the original `messageId` is verified before patching to avoid stomping on an already-overwritten card.
+- All knobs (debounce, peek tail, reply timeout, min Claude version, etc.) live in `[agent_view]` in `config.toml` with env var overrides (see `src/utils/config.ts`).
+
 ## Key Patterns
 
 **Error handling**: Use `CCLinkerError(code, message)` from `src/utils/errors.ts`. Error codes have user-facing suggestions in `handleError()`.
@@ -151,6 +161,10 @@ The `withSync()` helper in `src/index.ts` wraps this. Some commands skip sync wi
 | `src/feishu/mapping.ts` | User state with CAS updates |
 | `src/runtime/state-coordinator.ts` | Single-process lock |
 | `src/scanner/index.ts` | Pre-command sync orchestration |
+| `src/agent-view/manager.ts` | AgentViewManager — `/agents` list / Peek / Reply / Stop / Attach flow |
+| `src/agent-view/snapshot-fetcher.ts` | Live session snapshot via `claude agents --json` |
+| `src/agent-view/expected-reply-state.ts` | Per-user `pending_agent_reply` slot (CAS-protected) |
+| `src/agent-view/card.ts` | Feishu interactive card builders (list / peek / waiting / stop-confirm / error / empty) |
 | `src/utils/config.ts` | Config manager with env overrides |
 | `src/utils/paths.ts` | All path constants |
 

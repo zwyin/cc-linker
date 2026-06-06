@@ -183,6 +183,73 @@ cc-linker status                    # 查看桥接状态
 | `cc-linker daemon uninstall` | 移除开机自启 |
 | `cc-linker daemon status` | 查看后台服务状态 |
 
+## 🛰 Agent View 集成
+
+Agent View 是 cc-linker 的"远端会话接管"能力:在飞书里查看终端后台 `claude` session 的实时状态,直接 Peek 日志、Reply 文字、Stop 进程或 Attach 回主对话流。依赖 `claude agents --json` 接口(需 Claude Code CLI ≥ 2.1.139)。
+
+### 命令与按钮语义
+
+| 入口 | 行为 |
+|------|------|
+| `/agents` | 拉取所有 background session 快照,按 busy / waiting / idle 分组,发一张可交互列表卡 |
+| 列表卡 `[Peek]` | 抓 session 元信息 + `claude logs <shortId>` 尾部 30 行(最多 2KB),发独立 peek 卡 |
+| 列表卡 `[Reply]` | 仅 waiting 状态出现:写 `pending_agent_reply` 状态 + patch 触发的卡为等待输入卡,提示用户发文字 |
+| 列表卡 `[Stop]` | 仅 busy 状态出现:先弹二次确认卡(防误触),确认后 `claude stop <shortId>` |
+| 列表卡 `[Attach]` | 把 openId 切到该 session,后续普通消息自动走 SDK 注入(保留用户级 defaultProvider) |
+| 列表卡 `[Refresh]` | patch 原卡(2 秒防抖);messageId 不匹配则发新卡,避免误 patch 已被覆盖的旧卡 |
+| 列表卡 `[返回聊天]` | 纯文本回复,无状态变更,退回到普通消息流 |
+| Peek 卡 `[取消等待]` | 清除 `pending_agent_reply` 状态 |
+| `/cancel` | 同上(文字版) |
+
+### 配置
+
+`config.toml` 新增 `[agent_view]` 段(全部可选项,默认值已适用大多数场景):
+
+```toml
+[agent_view]
+# 总开关。设为 false 关闭 /agents 命令和所有 card action 处理
+# enabled = true
+
+# /agents 列表卡 [Refresh] 按钮防抖间隔(ms)
+# refresh_min_interval_ms = 2000
+
+# Peek 卡取最近多少行 claude logs 输出
+# peek_lines = 30
+
+# Peek 卡截到多少字节(超出按字符截断,避免飞书卡片体积超限)
+# peek_max_bytes = 2048
+
+# waiting → 用户多久不发文字就自动取消(ms)
+# expected_reply_timeout_ms = 300000
+
+# 是否只允许 kind=background 的 session 出现在列表
+# background_only = true
+
+# Stop 按钮是否需要二次确认卡
+# stop_requires_confirm = true
+
+# Claude CLI 最低版本要求,低于则不启用 Agent View
+# min_claude_version = "2.1.139"
+
+# Reply 路径下相邻两个 reply 之间的最小间隔(ms),防止 spam
+# reply_throttle_ms = 500
+```
+
+对应环境变量(优先级高于配置文件):
+
+| 变量 | 字段 |
+|------|------|
+| `CC_LINKER_AGENT_VIEW_ENABLED` | `enabled` |
+| `CC_LINKER_AGENT_VIEW_REFRESH_MIN_INTERVAL_MS` | `refresh_min_interval_ms` |
+| `CC_LINKER_AGENT_VIEW_PEEK_LINES` | `peek_lines` |
+| `CC_LINKER_AGENT_VIEW_PEEK_MAX_BYTES` | `peek_max_bytes` |
+| `CC_LINKER_AGENT_VIEW_EXPECTED_REPLY_TIMEOUT_MS` | `expected_reply_timeout_ms` |
+| `CC_LINKER_AGENT_VIEW_BACKGROUND_ONLY` | `background_only` |
+| `CC_LINKER_AGENT_VIEW_STOP_REQUIRES_CONFIRM` | `stop_requires_confirm` |
+| `CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS` | `reply_throttle_ms` |
+
+> **前提条件**:本机需运行 `claude` daemon(>= `agent_view.min_claude_version`)。`/agents` 会先用 `claude --version` 做版本守卫,再 `claude agents --json` 拉快照。版本不达标时返回红色错误卡,不污染用户主流程。
+
 ## 🔧 接入飞书（第一个支持的聊天平台）
 
 cc-linker 的架构设计支持接入多种聊天应用，**飞书是第一个已实现的平台**。后续可扩展支持其他 IM 平台。

@@ -170,6 +170,73 @@ Send these in a Feishu private chat with the Bot:
 | `cc-linker daemon uninstall` | Remove auto-start on boot |
 | `cc-linker daemon status` | Check background service status |
 
+## Agent View Integration
+
+Agent View is cc-linker's "remote session takeover" capability: from Feishu, inspect live status of any background `claude` session running on your terminal, then Peek its log tail, Reply with text, Stop the process, or Attach it back into the main chat flow. It depends on the `claude agents --json` interface (Claude Code CLI >= 2.1.139 required).
+
+### Commands and Button Semantics
+
+| Entry | Behavior |
+|-------|----------|
+| `/agents` | Fetch all background sessions, group by busy / waiting / idle, send an interactive list card |
+| List card `[Peek]` | Grab session metadata + tail 30 lines of `claude logs <shortId>` (capped at 2KB), send as a peek card |
+| List card `[Reply]` | Shown only on waiting sessions: writes `pending_agent_reply` state, patches the trigger card to a waiting card, prompts the user to send text |
+| List card `[Stop]` | Shown only on busy sessions: first shows a confirmation card (to prevent mis-clicks), then `claude stop <shortId>` on confirm |
+| List card `[Attach]` | Switches the openId to that session; subsequent plain messages go through the SDK (preserves the user's defaultProvider) |
+| List card `[Refresh]` | Patches the original card (2s debounce); if messageId mismatches, sends a new card to avoid patching a stale card that was already overwritten |
+| List card `[Back to chat]` | Plain text reply, no state change, drops back into the regular message flow |
+| Peek card `[Cancel wait]` | Clears the `pending_agent_reply` state |
+| `/cancel` | Same as above (text form) |
+
+### Configuration
+
+A new `[agent_view]` section in `config.toml` (all keys optional — defaults are tuned for most setups):
+
+```toml
+[agent_view]
+# Master switch. Set to false to disable /agents and all related card actions
+# enabled = true
+
+# /agents list card [Refresh] debounce interval (ms)
+# refresh_min_interval_ms = 2000
+
+# How many recent lines of `claude logs` output the peek card shows
+# peek_lines = 30
+
+# Peek card byte cap (over the cap is truncated by character; avoids Feishu card size limits)
+# peek_max_bytes = 2048
+
+# waiting → how long to wait for the user's reply text before auto-cancelling (ms)
+# expected_reply_timeout_ms = 300000
+
+# Whether only `kind=background` sessions appear in the list
+# background_only = true
+
+# Whether the Stop button needs a confirmation card
+# stop_requires_confirm = true
+
+# Minimum Claude CLI version required; below this, Agent View is disabled
+# min_claude_version = "2.1.139"
+
+# Minimum gap between two replies on the Reply path (ms), anti-spam
+# reply_throttle_ms = 500
+```
+
+Corresponding environment variables (take precedence over the config file):
+
+| Variable | Field |
+|----------|-------|
+| `CC_LINKER_AGENT_VIEW_ENABLED` | `enabled` |
+| `CC_LINKER_AGENT_VIEW_REFRESH_MIN_INTERVAL_MS` | `refresh_min_interval_ms` |
+| `CC_LINKER_AGENT_VIEW_PEEK_LINES` | `peek_lines` |
+| `CC_LINKER_AGENT_VIEW_PEEK_MAX_BYTES` | `peek_max_bytes` |
+| `CC_LINKER_AGENT_VIEW_EXPECTED_REPLY_TIMEOUT_MS` | `expected_reply_timeout_ms` |
+| `CC_LINKER_AGENT_VIEW_BACKGROUND_ONLY` | `background_only` |
+| `CC_LINKER_AGENT_VIEW_STOP_REQUIRES_CONFIRM` | `stop_requires_confirm` |
+| `CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS` | `reply_throttle_ms` |
+
+> **Prerequisite**: a `claude` daemon must be running locally (>= `agent_view.min_claude_version`). `/agents` first runs a `claude --version` version guard, then `claude agents --json` to grab the snapshot. When the version is too old, it returns a red error card without polluting the user's main flow.
+
 ## Feishu Integration (First Supported Platform)
 
 cc-linker's architecture supports multiple chat apps — **Feishu is the first implemented platform**. More IM platforms can be added in the future.
