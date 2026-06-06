@@ -102,22 +102,132 @@ export class AgentViewManager {
     return null;
   }
 
-  async handleRefreshPeek(
-    _openId: string,
-    _shortId: string,
-    _sessionId: string,
-    _messageId?: string,
-  ): Promise<string | null> {
-    throw new Error('AgentViewManager.handleRefreshPeek not implemented (T15)');
+  /** Find a session in the latest snapshot by sessionId. Returns null if absent. */
+  private async findSession(_openId: string, sessionId: string): Promise<AgentSession | null> {
+    const result = await AgentSnapshotFetcher.fetch();
+    if (!result.ok) return null;
+    return result.sessions.find(s => s.sessionId === sessionId) ?? null;
   }
 
+  /**
+   * /agents 列表卡 → [Peek] 按钮入口。
+   * 抓 session 元信息(name/status/waitingFor/pid/startedAt),execFile `claude logs <shortId>` 拿尾部输出,
+   * strip ANSI + 取后 30 行 + 截到 2048 bytes,buildPeekCard 通过 cardReplyFn 发出。
+   */
   async handlePeek(
-    _openId: string,
-    _shortId: string,
-    _sessionId: string,
-    _cwd: string,
+    openId: string,
+    shortId: string,
+    sessionId: string,
+    cwd: string,
   ): Promise<string | Record<string, unknown> | null> {
-    throw new Error('AgentViewManager.handlePeek not implemented (T15)');
+    const session = await this.findSession(openId, sessionId);
+    if (!session) {
+      await this.deps.replyFn('⚠️ 会话已不存在', { openId });
+      return null;
+    }
+    let raw: string;
+    try {
+      const cp = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileP = promisify(cp.execFile);
+      const result = await execFileP('claude', ['logs', shortId], { timeout: 3000 });
+      raw = result.stdout;
+    } catch (err: any) {
+      await this.deps.replyFn(`❌ claude logs 失败:${err.message}`, { openId });
+      return null;
+    }
+    // strip ANSI + 取后 30 行 + 截到 2048 bytes
+    const { stripAnsi } = await import('./ansi-strip');
+    const stripped = stripAnsi(raw);
+    const lines = stripped.split('\n').slice(-30).join('\n');
+    // agent-view 自己实现 truncateBytes(简单,避免跨模块依赖 card-updater private)
+    const truncated = truncateBytes(lines, 2048);
+    const buttons = {
+      peek: true,
+      attach: true,
+      reply: session.status === 'waiting',
+      stop: session.status === 'busy',
+      refresh: true,
+    };
+    const card = buildPeekCard({
+      name: session.name,
+      status: session.status,
+      waitingFor: session.waitingFor,
+      shortId,
+      sessionId,
+      cwd,
+      pid: session.pid,
+      startedAt: session.startedAt,
+      recentOutput: truncated,
+      buttons,
+    });
+    return await this.deps.cardReplyFn(card, { openId });
+  }
+
+  /**
+   * Peek 卡 → [Refresh] 按钮入口。校验 messageId 后,跟 handlePeek 类似流程
+   * 但用 patchFn patch 现有 peek 卡。session 不存在时 patch 错误卡提示"已自动刷新列表"。
+   */
+  async handleRefreshPeek(
+    openId: string,
+    shortId: string,
+    sessionId: string,
+    messageId?: string,
+  ): Promise<string | null> {
+    if (!messageId) return null;
+    const session = await this.findSession(openId, sessionId);
+    if (!session) {
+      await this.deps.patchFn(
+        messageId,
+        buildErrorCard({
+          title: '⚠️ 会话已不存在',
+          body: '已自动刷新列表',
+        }),
+      );
+      return null;
+    }
+    let raw: string;
+    try {
+      const cp = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileP = promisify(cp.execFile);
+      const result = await execFileP('claude', ['logs', shortId], { timeout: 3000 });
+      raw = result.stdout;
+    } catch (err: any) {
+      await this.deps.patchFn(
+        messageId,
+        buildErrorCard({
+          title: '❌ claude logs 失败',
+          body: err.message,
+        }),
+      );
+      return null;
+    }
+    const { stripAnsi } = await import('./ansi-strip');
+    const stripped = stripAnsi(raw);
+    const lines = stripped.split('\n').slice(-30).join('\n');
+    const truncated = truncateBytes(lines, 2048);
+    const buttons = {
+      peek: true,
+      attach: true,
+      reply: session.status === 'waiting',
+      stop: session.status === 'busy',
+      refresh: true,
+    };
+    const card = buildPeekCard({
+      name: session.name,
+      status: session.status,
+      waitingFor: session.waitingFor,
+      shortId,
+      sessionId,
+      cwd: session.cwd,
+      pid: session.pid,
+      startedAt: session.startedAt,
+      recentOutput: truncated,
+      buttons,
+    });
+    await this.deps.patchFn(messageId, card);
+    return null;
   }
 
   async handleAttach(
@@ -177,4 +287,22 @@ export class AgentViewManager {
     this.lastRefreshAt = now;
     return true;
   }
+}
+
+/**
+ * Truncate a string to at most `max` UTF-8 bytes.
+ * Used by Peek cards to keep recent log output under the 2KB message-size budget.
+ * Inline (not imported from card-updater) to avoid cross-module coupling.
+ */
+function truncateBytes(s: string, max: number): string {
+  return new TextEncoder().encode(s).length <= max
+    ? s
+    : (() => {
+        let acc = '';
+        for (const ch of s) {
+          if (new TextEncoder().encode(acc + ch).length > max) break;
+          acc += ch;
+        }
+        return acc;
+      })();
 }

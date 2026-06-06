@@ -8,6 +8,50 @@ import { config } from '../../../src/utils/config';
 import { AgentSnapshotFetcher } from '../../../src/agent-view/snapshot-fetcher';
 import type { AgentSession } from '../../../src/agent-view/types';
 
+// Mock node:child_process for handlePeek/handleRefreshPeek (T15).
+// Plan pattern from snapshot-fetcher.test.ts: re-export real module + override
+// execFile. handlePeek uses `await import('node:child_process')` and then
+// `promisify(cp.execFile)`, so the mock's execFile must accept the
+// (cmd, args, cb) signature and call cb(err, stdout, stderr).
+//
+// Critical: Node's real execFile exposes `util.promisify.custom` which returns
+// `{stdout, stderr}`. Without it, `promisify(execFile)` falls back to the
+// generic single-value form, so `result.stdout` is undefined and the call site
+// throws. We attach the same symbol so the test mirrors production behavior.
+import { promisify } from 'node:util';
+const execFileMock = Object.assign(
+  mock(
+    (
+      _cmd: string,
+      _args: string[],
+      cb: (err: any, stdout: string, stderr: string) => void,
+    ) => {
+      cb(null, '', '');
+    },
+  ),
+  {
+    [promisify.custom]: (
+      cmd: string,
+      args: string[],
+      opts?: any,
+    ): Promise<{ stdout: string; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        execFileMock(cmd, args, (err: any, stdout: string, stderr: string) => {
+          if (err) reject(err);
+          else resolve({ stdout, stderr });
+        });
+      }),
+  },
+);
+
+mock.module('node:child_process', () => {
+  const real = require('node:child_process');
+  return {
+    ...real,
+    execFile: execFileMock,
+  };
+});
+
 let tmpDir: string;
 
 // Snapshot of the original fetch — restored in afterAll so other test files
@@ -17,6 +61,10 @@ const origFetch = AgentSnapshotFetcher.fetch;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'agent-view-mgr-'));
   (config as any).data.feishu_bot.owner_open_id = '';
+  execFileMock.mockReset();
+  execFileMock.mockImplementation((_cmd, _args, cb) => {
+    cb(null, '', '');
+  });
 });
 
 afterAll(() => {
@@ -230,5 +278,123 @@ describe('handleRefreshList', () => {
     patchFn.mockClear();
     await mgr.handleRefreshList('ou_test_6', 'om_list_card_001');
     expect(patchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('handlePeek', () => {
+  test('builds peek card with session info and stripped log output', async () => {
+    const { mgr, cardReplyFn, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    // ANSI-tagged log output; stripAnsi should remove escape sequences
+    const rawLog = [
+      '\x1b[32mready\x1b[0m',
+      'thinking...',
+      '\x1b[1;33mabout to ask user\x1b[0m',
+    ].join('\n');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, rawLog, '');
+    });
+
+    const shortId = waiting.sessionId.slice(0, 8);
+    await mgr.handlePeek('ou_peek_1', shortId, waiting.sessionId, waiting.cwd);
+
+    // cardReplyFn was called exactly once with a peek card
+    expect(cardReplyFn).toHaveBeenCalledTimes(1);
+    const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+    // Peek card header references the session name
+    expect(sentCard.header.title.content).toContain('waiting-task');
+    // waitingFor appears in markdown body
+    const bodyText = sentCard.elements.map((e: any) => e.content || '').join('\n');
+    expect(bodyText).toContain('awaiting user reply');
+    // ANSI escapes were stripped from the recent output
+    const codeBlock = sentCard.elements.find((e: any) => /Recent output/.test(e.content || ''));
+    expect(codeBlock).toBeDefined();
+    expect(codeBlock.content).not.toContain('\x1b[');
+    expect(codeBlock.content).toContain('ready');
+    expect(codeBlock.content).toContain('thinking...');
+    // reply button is shown (waiting status) and stop is hidden
+    const actions = sentCard.elements.flatMap((e: any) =>
+      e.tag === 'action' ? e.actions : [],
+    );
+    const tags = actions.map((a: any) => a.value?.tag);
+    expect(tags).toContain('agent_view_reply_request');
+    expect(tags).not.toContain('agent_view_stop');
+    // replyFn was not called (we have a session)
+    expect(replyFn).not.toHaveBeenCalled();
+  });
+
+  test('falls back to replyFn with "会话已不存在" when session is gone', async () => {
+    const { mgr, cardReplyFn, replyFn } = makeMgrWithSpies();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [], // session vanished
+    }));
+
+    await mgr.handlePeek('ou_peek_gone', 'shortid', 'missing-session', '/tmp/whatever');
+
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('会话已不存在');
+    expect(cardReplyFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleRefreshPeek', () => {
+  test('patches peek card with fresh logs when session still exists', async () => {
+    const { mgr, cardReplyFn, patchFn, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    const rawLog = '\x1b[36m[refreshed]\x1b[0m line-A\nline-B';
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, rawLog, '');
+    });
+
+    const shortId = waiting.sessionId.slice(0, 8);
+    await mgr.handleRefreshPeek('ou_rpeek_1', shortId, waiting.sessionId, 'om_peek_001');
+
+    // patchFn called once with the right messageId; cardReplyFn NOT called
+    expect(patchFn).toHaveBeenCalledTimes(1);
+    expect(patchFn.mock.calls[0][0]).toBe('om_peek_001');
+    expect(cardReplyFn).not.toHaveBeenCalled();
+    expect(replyFn).not.toHaveBeenCalled();
+
+    const sentCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    // Header still references the session name
+    expect(sentCard.header.title.content).toContain('waiting-task');
+    // Recent output (stripped) appears in the body
+    const bodyText = sentCard.elements.map((e: any) => e.content || '').join('\n');
+    expect(bodyText).toContain('[refreshed]');
+    expect(bodyText).not.toContain('\x1b[');
+  });
+
+  test('no-ops when messageId is missing', async () => {
+    const { mgr, patchFn, cardReplyFn } = makeMgrWithSpies();
+    await mgr.handleRefreshPeek('ou_rpeek_noop', 'shortid', 'session', undefined);
+    expect(patchFn).not.toHaveBeenCalled();
+    expect(cardReplyFn).not.toHaveBeenCalled();
+  });
+
+  test('patches an error card when session has disappeared', async () => {
+    const { mgr, patchFn, cardReplyFn } = makeMgrWithSpies();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [],
+    }));
+
+    await mgr.handleRefreshPeek('ou_rpeek_gone', 'shortid', 'missing', 'om_peek_002');
+
+    expect(patchFn).toHaveBeenCalledTimes(1);
+    expect(patchFn.mock.calls[0][0]).toBe('om_peek_002');
+    const sentCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    // Error card template=red with "会话已不存在" header
+    expect(sentCard.header.template).toBe('red');
+    expect(sentCard.header.title.content).toContain('会话已不存在');
+    expect(cardReplyFn).not.toHaveBeenCalled();
   });
 });
