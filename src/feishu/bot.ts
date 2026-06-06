@@ -363,10 +363,13 @@ export class FeishuBot {
     entry: Pick<SessionEntry, 'title' | 'cwd' | 'message_count' | 'last_active' | 'origin' | 'status' | 'last_user_preview' | 'last_assistant_preview'>,
     isRunning: boolean,
     live: { lastUser?: string; lastAssistant?: string },
+    runtime: { elapsedMs?: number; sinceLastOutputMs?: number } = {},
   ): Record<string, unknown> {
     return buildSessionOverviewCard(uuid, entry, isRunning, {
       lastUserPreview: live.lastUser,
       lastAssistantPreview: live.lastAssistant,
+      elapsedMs: runtime.elapsedMs,
+      sinceLastOutputMs: runtime.sinceLastOutputMs,
     });
   }
 
@@ -2379,6 +2382,8 @@ function buildListCard(
 interface OverviewCardOverrides {
   lastUserPreview?: string;
   lastAssistantPreview?: string;
+  elapsedMs?: number;
+  sinceLastOutputMs?: number;
 }
 
 function buildSessionOverviewCard(
@@ -2394,6 +2399,15 @@ function buildSessionOverviewCard(
   const runningTag = isRunning ? '🔴 处理中 · ' : '';
   const titlePrefix = `${runningTag}${esc(truncateTitleForCard(entry.title))}`;
 
+  // 构建状态提示行（运行时间 / 输出等待提示）
+  const statusLines: string[] = [];
+  if (isRunning && overrides.elapsedMs !== undefined) {
+    statusLines.push(`⏱️ 已运行 ${formatDuration(overrides.elapsedMs)}`);
+  }
+  if (isRunning && overrides.sinceLastOutputMs !== undefined && overrides.sinceLastOutputMs > 30_000) {
+    statusLines.push(`⏳ ${formatDuration(overrides.sinceLastOutputMs)} 未收到新输出`);
+  }
+
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -2402,8 +2416,10 @@ function buildSessionOverviewCard(
     },
     elements: [
       { tag: 'markdown', content: `**${titlePrefix}${liveHint}**\nID: \`${uuid.slice(0, 8)}\`\n📁 \`${esc(entry.cwd ?? '-')}\`` },
+      ...(statusLines.length > 0 ? [{ tag: 'markdown', content: statusLines.join(' · ') }] : []),
       ...(lastUser ? [{ tag: 'markdown', content: `**💬 最后提问：**\n> ${esc(lastUser)}` }] : []),
       ...(lastAssistant ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ${esc(lastAssistant)}` }] : []),
+      ...(isRunning && !lastAssistant ? [{ tag: 'markdown', content: `**🤖 最后回复：**\n> ⏳ 正在处理中，请稍候...` }] : []),
       { tag: 'hr' },
       // 元信息行：消息数 + 时间 + 来源/状态（与 list 卡片保持一致）
       // 非 active status 显示中文标签（如 '已损坏'）—— ITEM-6 修复
@@ -2554,6 +2570,19 @@ function buildSessionTitle(text: string): string {
 function truncateTitleForCard(s: string | null | undefined): string {
   if (!s) return 'Untitled';
   return s.length > 50 ? s.slice(0, 50) + '...' : s;
+}
+
+/** Format milliseconds into Chinese human-readable duration.
+ *  Used by live progress card to show elapsed time / stale hints. */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins > 0 ? `${hours} 小时 ${mins} 分` : `${hours} 小时`;
 }
 
 function normalizeCwd(cwd: string): string {

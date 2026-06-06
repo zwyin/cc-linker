@@ -21,7 +21,7 @@ export interface LiveProgressConfig {
 }
 
 export const DEFAULT_LIVE_PROGRESS_CONFIG: LiveProgressConfig = {
-  intervalMs: 15_000,
+  intervalMs: 10_000,
   maxTicks: 400,
   maxPatchFailures: 3,
 };
@@ -140,10 +140,29 @@ export class LiveProgressWatcher {
     // 2) 读最新 preview
     const live = extractLivePreview(entry.jsonl_path);
 
+    // 2.5) 从 sessionManager 获取运行信息（用于展示已运行时间 / 最后输出时间）
+    let elapsedMs: number | undefined;
+    let sinceLastOutputMs: number | undefined;
+    try {
+      const sessions = (this.deps.bot as any).sessionManager.listSessions();
+      const activeSession = sessions.find((s: any) => s.sessionId === this.deps.uuid);
+      if (activeSession) {
+        const now = Date.now();
+        elapsedMs = now - activeSession.createdAt;
+        sinceLastOutputMs = now - activeSession.lastOutputAt;
+      } else {
+        // CLI session 或 sessionManager 中无记录：用 watcher 自身启动时间估算
+        elapsedMs = Date.now() - this.startedAt;
+      }
+    } catch {
+      // sessionManager.listSessions() 可能不可用，fallback 到 watcher 启动时间
+      elapsedMs = Date.now() - this.startedAt;
+    }
+
     // 3) 重新构建卡片（isRunning=true + 实时标签）
-    //    buildLiveOverviewCard 在 PR 2 扩展第 4 参
+    //    buildLiveOverviewCard 扩展第 5 参（运行时间信息）
     const card = (this.deps.bot as any).buildLiveOverviewCard(
-      this.deps.uuid, entry, true, live,
+      this.deps.uuid, entry, true, live, { elapsedMs, sinceLastOutputMs },
     );
 
     // 4) patch
@@ -176,7 +195,7 @@ export class LiveProgressWatcher {
     );
     if (!stillProcessing) {
       const finalCard = (this.deps.bot as any).buildLiveOverviewCard(
-        this.deps.uuid, entry, false, live,
+        this.deps.uuid, entry, false, live, {},
       );
       try {
         const updater: any = new CardUpdater(this.deps.feishuClient, { throttle_ms: 0 });
