@@ -116,7 +116,7 @@ describe('attachRosterSources (v2.2.1)', () => {
   });
 });
 
-describe('filterUserDispatched (v2.2.1)', () => {
+describe('filterUserDispatched (v2.2.2)', () => {
   function mk(over: Partial<AgentSession>): AgentSession {
     return {
       pid: 1,
@@ -131,7 +131,9 @@ describe('filterUserDispatched (v2.2.1)', () => {
     };
   }
 
-  test('keeps only slash + unknown; drops spare + fleet (sub-agents)', () => {
+  test('keeps slash AND fleet; drops only spare (sub-agents)', () => {
+    // v2.2.2 修正:TUI 也展示 fleet(例如已完成内部任务),
+    // 我们的 Agent View 必须跟 TUI 对齐,只过滤掉真正的 sub-agent(spare)。
     const sessions = [
       mk({ sessionId: 's1-aaaa-bbbb-cccc-dddddddddddd', source: 'slash', name: 'user-dispatched' }),
       mk({ sessionId: 's2-aaaa-bbbb-cccc-dddddddddddd', source: 'spare', name: 'sub-agent' }),
@@ -139,16 +141,28 @@ describe('filterUserDispatched (v2.2.1)', () => {
       mk({ sessionId: 's4-aaaa-bbbb-cccc-dddddddddddd', source: 'unknown', name: 'no-roster' }),
     ];
     const result = filterUserDispatched(sessions);
-    expect(result).toHaveLength(2);
-    expect(result.map(s => s.name).sort()).toEqual(['no-roster', 'user-dispatched']);
+    expect(result).toHaveLength(3);
+    expect(result.map(s => s.name).sort()).toEqual(['daemon-internal', 'no-roster', 'user-dispatched']);
+    // 显式断言 spare 被过滤、slash / fleet 都保留(回归保护)
+    expect(result.some(s => s.source === 'spare')).toBe(false);
+    expect(result.some(s => s.source === 'slash')).toBe(true);
+    expect(result.some(s => s.source === 'fleet')).toBe(true);
   });
 
-  test('returns empty array when all sessions are sub-agents (degenerate)', () => {
-    const sessions = [
+  test('filters out only spare when all sessions are non-user sources', () => {
+    // 退化场景:全是 spare(不可能真实发生)→ 返回空
+    const allSpare = [
       mk({ sessionId: 's1-aaaa-bbbb-cccc-dddddddddddd', source: 'spare' }),
-      mk({ sessionId: 's2-aaaa-bbbb-cccc-dddddddddddd', source: 'fleet' }),
+      mk({ sessionId: 's2-aaaa-bbbb-cccc-dddddddddddd', source: 'spare' }),
     ];
-    expect(filterUserDispatched(sessions)).toEqual([]);
+    expect(filterUserDispatched(allSpare)).toEqual([]);
+
+    // 真实场景:全是 fleet → 全部保留(原 v2.2.1 会全丢,这是 bug)
+    const allFleet = [
+      mk({ sessionId: 's1-aaaa-bbbb-cccc-dddddddddddd', source: 'fleet', name: 'a' }),
+      mk({ sessionId: 's2-aaaa-bbbb-cccc-dddddddddddd', source: 'fleet', name: 'b' }),
+    ];
+    expect(filterUserDispatched(allFleet)).toHaveLength(2);
   });
 
   test('keeps all sessions when roster is empty (daemon not running)', () => {

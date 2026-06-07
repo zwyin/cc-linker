@@ -48,11 +48,13 @@ export function attachRosterSources(
 }
 
 /**
- * v2.2.1 新增:过滤掉 sub-agent,保留用户派发 + 不可识别的 session。
- * 规则:只丢弃显式标记为 'spare' / 'fleet' 的 session;
- *       'slash'(用户派发)和 'unknown'(roster 读不到,daemon 没跑)
- *       都保留(graceful degradation,避免误清空)。
+ * v2.2.2 修正:只过滤掉显式标记为 'spare' 的 sub-agent;
+ * 保留 'slash'(用户派发)、'fleet'(daemon 内部任务,TUI 显示为 Completed,Agent View 也展示)
+ * 和 'unknown'(roster 读不到,daemon 没跑)三类。
+ * 原 v2.2.1 把 fleet 一并过滤掉,导致 Agent View 比 TUI 少一行(fleet 任务 TUI 可见);
+ * 实测 fleet 是合法展示项,例如 "timer command response" 这种已完成内部任务。
+ * 'unknown' 保留是 graceful degradation,避免 daemon 短暂不在时把整张列表清空。
  */
 export function filterUserDispatched(sessions: AgentSession[]): AgentSession[] {
-  return sessions.filter(s => s.source === 'slash' || s.source === 'unknown');
+  return sessions.filter(s => s.source !== 'spare');
 }

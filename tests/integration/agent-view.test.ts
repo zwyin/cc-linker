@@ -264,12 +264,12 @@ describe('Agent View end-to-end', () => {
     expect(userManager.getEntry('ou_e2e_busy')).toBeUndefined();
   });
 
-  test('v2.2.1: sub-agents (spare/fleet) are filtered out of list when roster has source info', async () => {
+  test('v2.2.2: only sub-agents (spare) are filtered; slash and fleet are kept (TUI parity)', async () => {
     // 这个 test 走真 fetch 路径:
     //   1) execFile('claude', ['agents', '--json']) 返回 3 个 session
     //   2) 通过把 HOME 指向带 controlled roster.json 的 tmpdir,让真 readRoster()
     //      读到我们造的 roster(slash/spare/fleet 各一)
-    // 期望:list 卡里只能看到 slash 那个 session
+    // 期望:list 卡里能看到 slash + fleet(跟 TUI 一致),只过滤掉 spare
     // worker key 必须等于 sessionId 的前 8 字符(实跑 roster.json 的规律)
     const agentsJson = JSON.stringify([
       { pid: 1, cwd: '/a', kind: 'background', startedAt: 1000, sessionId: 'slash000-1111-2222-3333-444444444444', name: 'user-dispatched-task', status: 'busy' },
@@ -313,10 +313,10 @@ describe('Agent View end-to-end', () => {
         .filter(e => e.tag === 'markdown')
         .map(e => e.content)
         .join('\n');
-      // 留下的只有 slash 那个
+      // v2.2.2:slash + fleet 都要展示,只 spare 被过滤
       expect(md).toContain('user-dispatched-task');
+      expect(md).toContain('daemon-internal-fleet');
       expect(md).not.toContain('sub-agent-spare');
-      expect(md).not.toContain('daemon-internal-fleet');
       // v2.2.1 tooltip 也要在
       expect(md).toContain('claude agents --json');
     } finally {
