@@ -1,6 +1,6 @@
 {
   "name": "cc-linker",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Bridge mobile chat apps and Claude Code CLI sessions — seamless conversation switching between terminal and IM",
   "license": "MIT",
   "author": "wuyujun",

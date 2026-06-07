@@ -4,6 +4,35 @@ All notable changes to cc-linker are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/), version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-06-08
+
+### 飞书 /list 过滤 Task tool 派生的 subagent sessions
+
+飞书 `/list` 命令之前会展示 Task tool 派生的 subagent sessions,跟 Agent View
+已经做的 `source='spare'` 过滤不一致。这一波让两边行为对齐。
+
+#### Added
+- **scanner 检测 subagent**:扫 JSONL 时检查任何条目 `isSidechain === true`(Claude
+  内部约定:Task tool 派生的 subagent 所有对话条目都标这个),命中就设
+  `is_subagent: true` 到 SessionEntry
+- **`is_subagent` 字段**:SessionEntrySchema 加可选 `is_subagent: z.boolean().optional()`。
+  z.object 默认 non-strict,老 entry 自动通过验证,无需 schema version bump
+- **/list 过滤**:`doCardList` 加 `.filter(([_, e]) => e.is_subagent !== true)`,
+  === true 才过滤(=== false / undefined 保留,跟 Agent View 的 `source !== 'spare'`
+  模式对齐)
+
+#### Why isSidechain, not roster
+- `dispatch.source` 只在 `roster.json` 里跟踪活跃 bg worker,settled 后 roster
+  可能就清掉了,没法用于历史 sessions
+- `isSidechain` 是 claude 自己写到 JSONL 每个 user/assistant 条目的字段,
+  Task tool 派生的 subagent 全部 `true`,顶层 session 始终 `false`/缺失。
+  这是 claude 内部约定,**最可靠**
+- 扫一次 JSONL 就够,不依赖外部状态
+
+#### Tests
+- +2 v0.4.1 case:有 / 无 `isSidechain:true` 条目时的 is_subagent 设置
+- 720 pass / 0 fail
+
 ## [0.4.0] - 2026-06-08
 
 ### 飞书 Agent View — 完整稳定
