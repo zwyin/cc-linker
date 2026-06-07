@@ -340,12 +340,20 @@ export class AgentViewManager {
       await this.deps.replyFn('⚠️ 会话已不存在', { openId });
       return null;
     }
-    // 1. 清除 expectedReply(如果有)
-    await this.expectedReply.clear(openId, 'overwrite');
-    // 2. CAS 1: 清旧 entry
+    // v2.2 修正:只清除 expectedReply IF oldEntry 本身就是 pending_agent_reply。
+    // 旧逻辑:无条件 expectedReply.clear() 早于 CAS 1/2 — 如果 CAS 1 或 2 失败,用户
+    //   已经丢失了 pending reply(白白丢弃)。新逻辑:CAS 1 失败时 expectedReply 仍在,
+    //   用户下次 handleReply 仍能正常工作。
+    // 1. CAS 1 准备:如果旧 entry 就是 expectedReply,先 clear 它(它会自己做 CAS pending_agent_reply → null)
+    //    然后重新读 entry(防止中间并发修改)。
     const oldEntry = this.deps.userManager.getEntry(openId);
-    if (oldEntry) {
-      const ok1 = await this.deps.userManager.compareAndSwap(openId, oldEntry, null);
+    if (oldEntry && oldEntry.type === 'pending_agent_reply') {
+      await this.expectedReply.clear(openId, 'overwrite');
+    }
+    // 2. CAS 1: 清旧 entry
+    const currentEntry = this.deps.userManager.getEntry(openId);
+    if (currentEntry) {
+      const ok1 = await this.deps.userManager.compareAndSwap(openId, currentEntry, null);
       if (!ok1) {
         await this.deps.replyFn('⚠️ 状态冲突,请重试', { openId });
         return null;

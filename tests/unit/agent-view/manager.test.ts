@@ -947,4 +947,104 @@ describe('handleAttach (T22 — two-step CAS)', () => {
 
     userManager.compareAndSwap = origCas;
   });
+
+  // v2.2 修正:expectedReply.clear() 不再无条件早于 CAS 1/CAS 2
+  test('v2.2: preserves expectedReply on CAS 1 failure when old entry was a SESSION (not pending_agent_reply)', async () => {
+    // 关键:旧 entry 是普通 session,不是 pending_agent_reply
+    // 旧逻辑会在 CAS 1 之前无条件 expectedReply.clear() — 这里不应该有 pending reply 被清掉
+    // 新逻辑:仅当 oldEntry.type === 'pending_agent_reply' 时才 clear
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+
+    // Seed a SESSION entry (not pending_agent_reply)
+    await userManager.compareAndSwap('ou_attach_v22_preserve', null, {
+      type: 'session',
+      sessionUuid: 'old-session-uuid',
+      createdAt: new Date().toISOString(),
+    });
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    // Make CAS 1 fail
+    const origCas = userManager.compareAndSwap.bind(userManager);
+    userManager.compareAndSwap = async (...args: any[]): Promise<boolean> => {
+      return false; // 第一次就失败
+    };
+
+    let expectedReplyCleared = false;
+    // 由于 oldEntry 不是 pending_agent_reply,expectedReply.clear() 不会做任何事
+    // (ExpectedReplyState.clear 检查 current?.type !== 'pending_agent_reply' 直接 return)
+    // 这里我们 spy clear 来验证它是否被调用
+    const origClear = mgr.expectedReply.clear.bind(mgr.expectedReply);
+    mgr.expectedReply.clear = async (...args: any[]): Promise<void> => {
+      expectedReplyCleared = true;
+      return origClear(...args);
+    };
+
+    await mgr.handleAttach(
+      'ou_attach_v22_preserve',
+      waiting.sessionId,
+      waiting.sessionId.slice(0, 8),
+      waiting.name,
+      waiting.cwd,
+    );
+
+    // CAS 1 失败时,expectedReply.clear() 不应该被调用(oldEntry 是 session 不是 pending_agent_reply)
+    expect(expectedReplyCleared).toBe(false);
+    expect(replyFn).toHaveBeenCalledTimes(1);
+    expect(replyFn.mock.calls[0][0]).toContain('状态冲突');
+
+    userManager.compareAndSwap = origCas;
+    mgr.expectedReply.clear = origClear;
+  });
+
+  test('v2.2: clears expectedReply when old entry IS pending_agent_reply (transition case)', async () => {
+    // 当 oldEntry 是 pending_agent_reply,必须先 clear 它才能 CAS 到 session
+    // 这是 spec 描述的过渡 case
+    const { mgr, userManager, replyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+
+    // Seed a pending_agent_reply entry
+    await userManager.compareAndSwap('ou_attach_v22_pending', null, {
+      type: 'pending_agent_reply',
+      sessionUuid: 'old-session-uuid',
+      shortId: 's1',
+      cwd: '/tmp',
+      createdAt: new Date().toISOString(),
+      timeoutMs: 300_000,
+    });
+
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    let expectedReplyCleared = false;
+    const origClear = mgr.expectedReply.clear.bind(mgr.expectedReply);
+    mgr.expectedReply.clear = async (...args: any[]): Promise<void> => {
+      expectedReplyCleared = true;
+      return origClear(...args);
+    };
+
+    await mgr.handleAttach(
+      'ou_attach_v22_pending',
+      waiting.sessionId,
+      waiting.sessionId.slice(0, 8),
+      waiting.name,
+      waiting.cwd,
+    );
+
+    // expectedReply.clear() 必须被调用(它会做自己的 CAS 把 pending_agent_reply 清掉)
+    expect(expectedReplyCleared).toBe(true);
+    // 写入了 session entry
+    const entry = userManager.getEntry('ou_attach_v22_pending');
+    expect(entry?.type).toBe('session');
+    expect(entry?.sessionUuid).toBe(waiting.sessionId);
+    expect(replyFn.mock.calls[0][0]).toContain('已 Attach 到');
+
+    mgr.expectedReply.clear = origClear;
+  });
 });
