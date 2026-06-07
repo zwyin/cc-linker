@@ -25,7 +25,7 @@ function extractTextFromEntry(entry: JsonlEntry): string {
   return '';
 }
 
-function isCommandOutput(text: string): boolean {
+export function isCommandOutput(text: string): boolean {
   return text.includes('<local-command-stdout>') ||
     text.includes('<command-name>') ||
     text.includes('<local-command-caveat>');

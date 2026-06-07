@@ -42,16 +42,20 @@ mock.module('../../../src/agent-view/daemon-log-reader', () => ({
   readClaimedSources: readClaimedSourcesMock,
 }));
 
-// v2.2.6: name-cache 的真实实现会写 ~/.cc-linker/agent-names-cache.json。
-// 不用 mock.module(bun 已知限制:跨文件不可撤销,会污染 name-cache.test.ts),
-// 改成 swap snapshot-fetcher 暴露的 _nameCacheHooks(普通 object,可写)。
+// v2.2.6 + v2.2.7: name-cache 和 JSONL 兜底的真实实现会写 / 读真实文件。
+// 不用 mock.module(bun 已知限制:跨文件不可撤销,会污染 name-cache.test.ts /
+// jsonl-name.test.ts),改成 swap snapshot-fetcher 暴露的 _nameCacheHooks(普通对象)。
 import { _nameCacheHooks } from '../../../src/agent-view/snapshot-fetcher';
 const origCaptureNames = _nameCacheHooks.captureNames;
 const origLookupName = _nameCacheHooks.lookupName;
+const origDeriveNameFromJsonl = _nameCacheHooks.deriveNameFromJsonl;
 const captureNamesMock = mock(
   (_sessions: Array<{ sessionId: string; name: string }>, _now?: number, _path?: string) => {},
 );
 const lookupNameMock = mock((_short: string, _path?: string): string | undefined => undefined);
+const deriveNameFromJsonlMock = mock(
+  (_short: string): { name: string; sessionId: string } | null => null,
+);
 
 const fixtureDir = join(import.meta.dir, '..', '..', 'fixtures', 'agents-json');
 
@@ -82,9 +86,12 @@ beforeEach(() => {
   captureNamesMock.mockReset();
   lookupNameMock.mockReset();
   lookupNameMock.mockImplementation(() => undefined);
+  deriveNameFromJsonlMock.mockReset();
+  deriveNameFromJsonlMock.mockImplementation(() => null);
   // swap the mutable hooks (works across test files where mock.module wouldn't)
   _nameCacheHooks.captureNames = captureNamesMock;
   _nameCacheHooks.lookupName = lookupNameMock;
+  _nameCacheHooks.deriveNameFromJsonl = deriveNameFromJsonlMock;
 });
 
 afterAll(() => {
@@ -92,6 +99,7 @@ afterAll(() => {
   (AgentSnapshotFetcher as any).fetch = origFetch;
   _nameCacheHooks.captureNames = origCaptureNames;
   _nameCacheHooks.lookupName = origLookupName;
+  _nameCacheHooks.deriveNameFromJsonl = origDeriveNameFromJsonl;
   mock.restore(); // Restore all mock.module() replacements
 });
 
@@ -206,12 +214,7 @@ describe('AgentSnapshotFetcher.fetch', () => {
     execFileSyncMock.mockImplementation(() => '2.1.163\n');
     (DaemonProbe as any).check = () => true;
     const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
-    execFileMock.mockImplementation((cmd, _args, cb) => {
-      // Route the `claude logs <short>` calls execFileP makes for completed sessions
-      if (cmd === 'claude' && _args[0] === 'logs') {
-        cb(new Error("No job matching"), '', '');
-        return;
-      }
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
       cb(null, raw, '');
     });
     // 3 completed sessions, all `done`: spare (must drop), slash (keep), fleet (keep)
@@ -244,24 +247,20 @@ describe('AgentSnapshotFetcher.fetch', () => {
     }
   });
 
-  test('v2.2.6: name falls back to short hash (no suffix) when both cache miss and claude logs fail', async () => {
+  test('v2.2.7: name falls back to short hash when both cache and JSONL miss', async () => {
     execFileSyncMock.mockImplementation(() => '2.1.163\n');
     (DaemonProbe as any).check = () => true;
     const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
-    execFileMock.mockImplementation((cmd, args, cb) => {
-      if (cmd === 'claude' && args[0] === 'logs') {
-        // Simulate `claude logs <short>` failing — typical for settled sessions
-        cb(new Error("No job matching 'd54a475a'"), '', '');
-        return;
-      }
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
       cb(null, raw, '');
     });
     readCompletedSessionsMock.mockImplementation(
       () => new Map([['d54a475a', { short: 'd54a475a', settledAt: 1000, status: 'done' }]]),
     );
     readClaimedSourcesMock.mockImplementation(() => new Map([['d54a475a', 'slash']]));
-    // cache miss → falls all the way through to short hash (no "(logs unavailable)" suffix)
+    // both fallbacks miss → short hash, no "(logs unavailable)" suffix
     lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(() => null);
 
     const result = await AgentSnapshotFetcher.fetch();
 
@@ -274,17 +273,11 @@ describe('AgentSnapshotFetcher.fetch', () => {
     }
   });
 
-  test('v2.2.6: name-cache hit short-circuits the `claude logs` exec', async () => {
+  test('v2.2.6: name-cache hit short-circuits all subsequent fallbacks', async () => {
     execFileSyncMock.mockImplementation(() => '2.1.163\n');
     (DaemonProbe as any).check = () => true;
     const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
-    execFileMock.mockImplementation((cmd, args, cb) => {
-      if (cmd === 'claude' && args[0] === 'logs') {
-        // If the implementation ever falls through to claude logs, this would replace the
-        // name — making the assertion below fail. The cache hit must short-circuit it.
-        cb(null, 'wrong name from logs\n', '');
-        return;
-      }
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
       cb(null, raw, '');
     });
     readCompletedSessionsMock.mockImplementation(
@@ -294,6 +287,11 @@ describe('AgentSnapshotFetcher.fetch', () => {
     lookupNameMock.mockImplementation(short =>
       short === 'timer001' ? 'timer command response' : undefined,
     );
+    // Even if JSONL would have a wrong answer, cache hit must short-circuit it
+    deriveNameFromJsonlMock.mockImplementation(() => ({
+      name: 'wrong name from jsonl',
+      sessionId: 'timer001-uuid-zzzz',
+    }));
 
     const result = await AgentSnapshotFetcher.fetch();
 
@@ -302,6 +300,80 @@ describe('AgentSnapshotFetcher.fetch', () => {
       const completed = result.sessions.find(s => s.sessionId === 'timer001');
       expect(completed?.name).toBe('✅ timer command response');
     }
+    // JSONL lookup must NOT have been called when cache hit
+    expect(deriveNameFromJsonlMock).not.toHaveBeenCalled();
+  });
+
+  test('v2.2.7: JSONL fallback resolves real name and writes it back to cache', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    readCompletedSessionsMock.mockImplementation(
+      () => new Map([['3a41fe73', { short: '3a41fe73', settledAt: 1000, status: 'done' }]]),
+    );
+    readClaimedSourcesMock.mockImplementation(() => new Map([['3a41fe73', 'fleet']]));
+    // cache miss → JSONL hit → real name surfaces + cache write-back
+    lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(short =>
+      short === '3a41fe73'
+        ? { name: '你的当前模型是？', sessionId: '3a41fe73-0951-470a-bd2f-fb5a9f0fbe6b' }
+        : null,
+    );
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // JSONL hit upgrades sessionId from short hash to full UUID
+      const completed = result.sessions.find(s =>
+        s.sessionId === '3a41fe73-0951-470a-bd2f-fb5a9f0fbe6b',
+      );
+      expect(completed).toBeDefined();
+      expect(completed?.name).toBe('✅ 你的当前模型是？');
+      expect(completed?.completed).toBe(true);
+    }
+    // captureNames must have been called at least twice:
+    //  - once for the 2 active sessions from busy.json
+    //  - once for the JSONL write-back of 3a41fe73
+    expect(captureNamesMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // The write-back call carries our JSONL-derived entry
+    const writebackCall = captureNamesMock.mock.calls.find(call => {
+      const arg = call[0] as Array<{ sessionId: string; name: string }>;
+      return Array.isArray(arg) && arg.some(s => s.sessionId === '3a41fe73-0951-470a-bd2f-fb5a9f0fbe6b');
+    });
+    expect(writebackCall).toBeDefined();
+  });
+
+  test('v2.2.7: `claude logs` is no longer invoked for any completed session', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    let claudeLogsCalled = false;
+    execFileMock.mockImplementation((cmd, args, cb) => {
+      if (cmd === 'claude' && args[0] === 'logs') {
+        claudeLogsCalled = true; // tripwire
+      }
+      cb(null, raw, '');
+    });
+    readCompletedSessionsMock.mockImplementation(
+      () =>
+        new Map([
+          ['settle01', { short: 'settle01', settledAt: 1000, status: 'done' }],
+          ['settle02', { short: 'settle02', settledAt: 2000, status: 'done' }],
+        ]),
+    );
+    readClaimedSourcesMock.mockImplementation(
+      () => new Map([['settle01', 'slash'], ['settle02', 'fleet']]),
+    );
+    lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(() => null);
+
+    await AgentSnapshotFetcher.fetch();
+
+    expect(claudeLogsCalled).toBe(false);
   });
 
   test('v2.2.6: captureNames is invoked with the parsed active session list', async () => {
@@ -329,11 +401,7 @@ describe('AgentSnapshotFetcher.fetch', () => {
     execFileSyncMock.mockImplementation(() => '2.1.163\n');
     (DaemonProbe as any).check = () => true;
     const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
-    execFileMock.mockImplementation((cmd, args, cb) => {
-      if (cmd === 'claude' && args[0] === 'logs') {
-        cb(new Error('No job matching'), '', '');
-        return;
-      }
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
       cb(null, raw, '');
     });
     // roster has no entry for 'fleet088' (typical for completed) — but daemon.log does.

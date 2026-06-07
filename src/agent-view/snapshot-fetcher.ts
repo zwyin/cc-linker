@@ -6,22 +6,24 @@ import { parseAgentsJson, attachRosterSources, filterUserDispatched } from './sn
 import { readRoster, buildRosterSourceMap } from './roster-source';
 import { readCompletedSessions, readClaimedSources } from './daemon-log-reader';
 import { captureNames, lookupName } from './name-cache';
+import { deriveNameFromJsonl } from './jsonl-name';
 import type { AgentSession, AgentSessionSource } from './types';
 
 export type FetchResult =
   | { ok: true; sessions: AgentSession[] }
   | { ok: false; reason: string };
 
-// v2.2.6: 内部测试 hook —— 不直接 import { captureNames, lookupName } 调用,
-// 走这个 mutable 对象,测试 swap 它的字段就能拦截。绕开 bun 的 mock.module
-// 跨文件不可撤销限制,避免污染 name-cache.test.ts。
+// v2.2.6 + v2.2.7: 内部测试 hook —— 不直接 import 调用,走 mutable 对象,
+// 测试 swap 字段就能拦截。绕开 bun 的 mock.module 跨文件不可撤销限制,
+// 避免污染 name-cache.test.ts / jsonl-name.test.ts。
 export const _nameCacheHooks = {
   captureNames,
   lookupName,
+  deriveNameFromJsonl,
 };
 
 /**
- * v2.2.4 新增 / v2.2.5 修正 / v2.2.6 接入 name-cache:
+ * v2.2.4 新增 / v2.2.5 修正 / v2.2.6 接入 name-cache / v2.2.7 加 JSONL 兜底:
  * 为已 settled (status='done') 的 session 拼装 AgentSession。
  *
  * - 跳过仍然在 active(--json)列表中的,避免和 active session 重复
@@ -29,12 +31,12 @@ export const _nameCacheHooks = {
  * - source 优先级:roster(仍在飞)> daemon.log claimed 事件 > 'unknown'
  *   这样能在 settled 之后还原最初的 dispatch.source,用于在 filterUserDispatched
  *   把 'spare' 完成项正确过滤掉。
- * - name 优先级(v2.2.6):
- *     1) name-cache(snapshot-fetcher 之前 fetch active 时存的)
- *     2) `claude logs <short>` 首行 (3s 超时)
- *     3) short hash (无后缀,保持显示干净)
- *   v2.2.5 给找不到 name 的退化加了 `(logs unavailable)` 后缀,实际几乎所有 settled
- *   都会命中,反而成了噪音 —— 移除该后缀,保持 short hash 干净。
+ * - name 优先级(v2.2.7):
+ *     1) name-cache(v2.2.6 hot path,active 期被 observe 过的 session)
+ *     2) JSONL 直读 + 写回 cache(v2.2.7 新增,bot 启动之前就 settled 的 session)
+ *     3) short hash 兜底
+ *   v2.2.4 的 `claude logs <short>` 这一层 v2.2.7 整段删掉 —— 它对 settled session
+ *   100% 失败(daemon 已清 worker),只贡献 3s timeout 没有任何成功案例。
  */
 async function enrichCompletedSessions(
   completed: Map<string, { short: string; settledAt: number; status: 'done' | 'killed' }>,
@@ -51,21 +53,16 @@ async function enrichCompletedSessions(
     const source: AgentSessionSource =
       rosterSourceMap.get(short) ?? daemonLogSourceMap.get(short) ?? 'unknown';
 
-    // Name: cache hit → `claude logs` → short hash
+    // Name: cache hit → JSONL direct read → short hash
     let name = _nameCacheHooks.lookupName(short);
+    let resolvedSessionId: string | undefined;
     if (!name) {
-      try {
-        const cp = await import('node:child_process');
-        const { promisify } = await import('node:util');
-        const execFileP = promisify(cp.execFile);
-        const r = await execFileP('claude', ['logs', short], { timeout: 3000 });
-        const firstLine = r.stdout
-          .split('\n')
-          .map(l => l.trim())
-          .find(l => l && !l.startsWith('<'));
-        if (firstLine) name = firstLine.slice(0, 60);
-      } catch {
-        // claude logs failed (typical for settled sessions) — fall through to short
+      const fromJsonl = _nameCacheHooks.deriveNameFromJsonl(short);
+      if (fromJsonl) {
+        name = fromJsonl.name;
+        resolvedSessionId = fromJsonl.sessionId;
+        // 写回 cache,下次同一 short 走 hot path
+        _nameCacheHooks.captureNames([{ sessionId: fromJsonl.sessionId, name: fromJsonl.name }]);
       }
     }
     if (!name) name = short;
@@ -75,7 +72,8 @@ async function enrichCompletedSessions(
       cwd: '',
       kind: 'background',
       startedAt: settledAt,
-      sessionId: short, // 不是真实 UUID,用 short hash 当 fallback
+      // 拿到 full UUID 时用 full UUID,否则继续退化到 short hash
+      sessionId: resolvedSessionId ?? short,
       name: `✅ ${name}`,
       status: 'idle',
       source,
