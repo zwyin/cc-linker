@@ -54,16 +54,24 @@ async function enrichCompletedSessions(
       rosterSourceMap.get(short) ?? daemonLogSourceMap.get(short) ?? 'unknown';
 
     // Name: cache hit → JSONL direct read → short hash
-    let name = _nameCacheHooks.lookupName(short);
+    let name: string | undefined;
     let resolvedSessionId: string | undefined;
-    if (!name) {
-      const fromJsonl = _nameCacheHooks.deriveNameFromJsonl(short);
-      if (fromJsonl) {
-        name = fromJsonl.name;
-        resolvedSessionId = fromJsonl.sessionId;
-        // 写回 cache,下次同一 short 走 hot path
-        _nameCacheHooks.captureNames([{ sessionId: fromJsonl.sessionId, name: fromJsonl.name }]);
-      }
+    // v2.2.16: 缓存里 NameCacheEntry 已有 sessionId 字段(由 v2.2.6 captureNames
+    // 写入),先取 name + 短时间复用 short 解析出来的 full UUID。如果缓存条目
+    // 自带 full UUID(v2.2.6 之后写的),直接用,不必再走 JSONL lookup。
+    const cached = _nameCacheHooks.lookupName(short);
+    if (cached) {
+      name = cached;
+    }
+    // 无论缓存是否命中,都跑一遍 deriveNameFromJsonl —— 缓存只保存 name,full
+    // UUID 派生在 v2.2.6 capture 时如果当时快照 sessionId 是 short 也不会存进 cache。
+    // 这里重新派生,确保有 full UUID 用。
+    const fromJsonl = _nameCacheHooks.deriveNameFromJsonl(short);
+    if (fromJsonl) {
+      if (!name) name = fromJsonl.name;
+      resolvedSessionId = fromJsonl.sessionId;
+      // 写回 cache,下次走 hot path(同时存 name + sessionId)
+      _nameCacheHooks.captureNames([{ sessionId: fromJsonl.sessionId, name: fromJsonl.name }]);
     }
     if (!name) name = short;
 

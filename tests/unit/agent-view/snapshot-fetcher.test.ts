@@ -287,7 +287,8 @@ describe('AgentSnapshotFetcher.fetch', () => {
     lookupNameMock.mockImplementation(short =>
       short === 'timer001' ? 'timer command response' : undefined,
     );
-    // Even if JSONL would have a wrong answer, cache hit must short-circuit it
+    // v2.2.16: 即使缓存命中也会调 JSONL —— 缓存条目只存 name,需要 JSONL 派生
+    // full UUID。但 name 优先用缓存的(下面断言验证)
     deriveNameFromJsonlMock.mockImplementation(() => ({
       name: 'wrong name from jsonl',
       sessionId: 'timer001-uuid-zzzz',
@@ -297,11 +298,15 @@ describe('AgentSnapshotFetcher.fetch', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const completed = result.sessions.find(s => s.sessionId === 'timer001');
+      // v2.2.16: 缓存命中 + JSONL fallback 跑过后,sessionId 升级为 full UUID
+      const completed = result.sessions.find(s => s.sessionId === 'timer001-uuid-zzzz');
+      // v2.2.16: 缓存 name 优先于 JSONL 派生 name(避免被错误覆盖)
       expect(completed?.name).toBe('✅ timer command response');
+      // 但 sessionId 应该升级到 full UUID(关键修复)
+      expect(completed?.sessionId).toBe('timer001-uuid-zzzz');
     }
-    // JSONL lookup must NOT have been called when cache hit
-    expect(deriveNameFromJsonlMock).not.toHaveBeenCalled();
+    // v2.2.16: 每次都调一次 JSONL 拿 full sessionId(即使缓存命中)
+    expect(deriveNameFromJsonlMock).toHaveBeenCalled();
   });
 
   test('v2.2.7: JSONL fallback resolves real name and writes it back to cache', async () => {
