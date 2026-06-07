@@ -465,3 +465,144 @@ describe('FeishuBot.runChatSDK — v2.2.11 bg-conflict refuse card', () => {
     expect(stopBtn.value.hasParent).toBe(true);
   });
 });
+
+describe('FeishuBot.runChatSDK — v2.2.14 short→full expansion', () => {
+  let env: TestBot;
+  let bot: FeishuBot;
+
+  beforeEach(() => {
+    env = createTestBot({
+      tmpDirPrefix: 'bot-runsdk-short-',
+      extraConfigMutations: {
+        'feishu_bot.default_cwd': '',
+        'security.allowed_roots': [],
+        'security.denied_roots': [],
+        'stream.enabled': false,
+        'sdk.enabled': true,
+      },
+    });
+    bot = env.bot;
+    readRosterMock.mockReset();
+    readRosterMock.mockImplementation(() => null);
+    lookupResumeFromPathMock.mockReset();
+    lookupResumeFromPathMock.mockImplementation(() => null);
+    _bgConflictHooks.readRoster = readRosterMock;
+    _bgConflictHooks.lookupResumeFromPath = lookupResumeFromPathMock;
+  });
+
+  afterEach(() => {
+    env.cleanup();
+  });
+
+  function stubSdkAndCapture() {
+    const calls: Array<{ sessionId: string | null }> = [];
+    const origSessionManager = (bot as any).sessionManager;
+    (bot as any).sessionManager = {
+      sendSDKMessage: async (sessionId: string | null, ..._rest: any[]) => {
+        calls.push({ sessionId });
+        return {
+          result: {
+            response: 'stub-ok',
+            tokensIn: 0,
+            tokensOut: 0,
+            durationMs: 0,
+            sessionStatus: 'active' as const,
+            error: null,
+            jsonlPath: null,
+            sessionId,
+          },
+          handler: { getUnresolvedCount: () => 0, getHandlerId: () => 'stub' },
+        };
+      },
+    };
+    return {
+      calls,
+      restore: () => { (bot as any).sessionManager = origSessionManager; },
+    };
+  }
+
+  it('expands short sessionUuid to full UUID via JsonlIndex lookup', async () => {
+    // 模拟:UserManager 残留 short(历史 settled bg 种下),bot runChatSDK 时
+    // 自动通过 JsonlIndex 查全 UUID 再下发 SDK。
+    // 这里用一个 tmp dir mock JsonlIndex 不容易,改成直接 stub sessionManager
+    // 并 stub JSONL 文件查找路径;实际我们让 JsonlIndex 走真实 CLAUDE_PROJECTS_DIR,
+    // 选一个不冲突的 short(假设 00000000 不会命中),但用 roster-source 路径
+    // 不太合适 —— 改用真实路径 /Users/wuyujun/.claude/projects 测试全流程。
+    //
+    // 简化:验证 short 通过 stub 后**会被 expand** —— 我们 mock JsonlIndex 没办法,
+    // 改用 6a6cba85 这种 demo short + 在真实 projects 里找一个存在的 UUID。
+    // 实际上,我们干脆把 short 选成 daemon roster 里已存在的 session 的 short,
+    // 看 bot 是否能展开。
+    //
+    // 更简单:验证 short + 不存在 → 不 expand(直接传给 SDK,失败由 SDK 报告)。
+    // 验证 short + 存在 → 走 expand(由真实 JSONL 存在证明)。
+    // 这里我们只测"short 时 SDK 收到的不是原 short"行为:
+    //   - 选一个不存在的 short (ffffffff),不期望 expand
+    //   - 选一个真实存在的 short (3a41fe73),期望 expand 到 full UUID
+
+    // Case A: short 不在 JsonlIndex 里,SDK 收到原 short(然后 SDK 拒,但 bot 不该 silent 失败)
+    const fakeShort = 'ffffffff';
+    const { calls, restore } = stubSdkAndCapture();
+    try {
+      await bot.runChatSDK({
+        openId: 'ou_user_fake_short',
+        sessionUuid: fakeShort,
+        cwd: '/Users/wuyujun',
+        promptText: 'hi',
+        serialKey: fakeShort,
+        isNew: false,
+      });
+    } catch (_e) {}
+    restore();
+
+    // JsonlIndex 找不到 → 不展开,SDK 收到原 short(交给 SDK 报错)
+    expect(calls.length).toBe(1);
+    expect(calls[0].sessionId).toBe(fakeShort);
+
+    // Case B: short 在 JsonlIndex 里,SDK 收到 full UUID
+    const realShort = '3a41fe73';
+    const realFull = '3a41fe73-0951-470a-bd2f-fb5a9f0fbe6b';
+    const calls2: Array<{ sessionId: string | null }> = [];
+    const origSessionManager2 = (bot as any).sessionManager;
+    (bot as any).sessionManager = {
+      sendSDKMessage: async (sessionId: string | null, ..._rest: any[]) => {
+        calls2.push({ sessionId });
+        return {
+          result: {
+            response: 'stub-ok', tokensIn: 0, tokensOut: 0, durationMs: 0,
+            sessionStatus: 'active' as const, error: null, jsonlPath: null, sessionId,
+          },
+          handler: { getUnresolvedCount: () => 0, getHandlerId: () => 'stub' },
+        };
+      },
+    };
+    // Seed UserManager entry with short so CAS update path is exercised
+    await env.userManager.compareAndSwap('ou_user_real_short', null, {
+      type: 'session',
+      sessionUuid: realShort,
+      cwd: '/Users/wuyujun',
+      createdAt: new Date().toISOString(),
+    });
+
+    try {
+      await bot.runChatSDK({
+        openId: 'ou_user_real_short',
+        sessionUuid: realShort,
+        cwd: '/Users/wuyujun',
+        promptText: 'hi',
+        serialKey: realShort,
+        isNew: false,
+      });
+    } catch (_e) {}
+    (bot as any).sessionManager = origSessionManager2;
+
+    // SDK 收到 expanded full UUID
+    expect(calls2.length).toBe(1);
+    expect(calls2[0].sessionId).toBe(realFull);
+
+    // UserManager entry 已 CAS 切到 full UUID
+    const updated = env.userManager.getEntry('ou_user_real_short');
+    expect(updated?.type).toBe('session');
+    expect((updated as any).sessionUuid).toBe(realFull);
+  });
+});

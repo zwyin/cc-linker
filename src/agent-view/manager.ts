@@ -366,6 +366,25 @@ export class AgentViewManager {
     _name: string,
     cwd: string,
   ): Promise<string | Record<string, unknown> | null> {
+    // 0. 实时守卫前先 normalize sessionId。
+    // v2.2.14:settled bg session(没 JSONL fallback 命中)会把 short 8 字符塞进
+    // `sessionId` 字段(`snapshot-fetcher.ts:76 sessionId: resolvedSessionId ?? short`)。
+    // `claude -p --resume <short>` 会被 SDK 拒("Provided value ... is not a UUID")。
+    // 在这里用 JsonlIndex 把 short 展开成 full UUID;找不到 full UUID 通常意味着
+    // 这个 session 真的不存在(daemon 也无 record),让下面守卫自然挂掉。
+    let resolvedSessionId = sessionId;
+    if (/^[0-9a-f]{8}$/.test(sessionId)) {
+      const idx = new JsonlIndex();
+      const jsonlPath = idx.lookup(sessionId);
+      if (jsonlPath) {
+        const base = jsonlPath.split('/').pop() ?? '';
+        const full = base.replace(/\.jsonl$/, '');
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(full)) {
+          resolvedSessionId = full;
+        }
+      }
+    }
+    sessionId = resolvedSessionId; // 下面所有代码用 full UUID
     // 0. 实时守卫
     const result = await AgentSnapshotFetcher.fetch();
     if (!result.ok || !result.sessions.find(s => s.sessionId === sessionId)) {

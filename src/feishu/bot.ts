@@ -1255,7 +1255,39 @@ export class FeishuBot {
     serialKey: string;
     isNew?: boolean;
   }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null }> {
-    const { openId, sessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false } = params;
+    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false } = params;
+    // v2.2.14: defense-in-depth —— UserManager.sessionUuid 可能是 8 字符 short hash
+    // (历史 settled bg 走旧 snapshot-fetcher 路径时种下),`claude -p --resume <short>`
+    // 会被 SDK 拒(报 "Provided value ... is not a UUID")。handleAttach 已尝试
+    // short→full 转换,但 runChatSDK 也可能被 Reply / 旧 UserManager entry
+    // 直接调用,所以这里再做一次保险转换,顺便 CAS 回写 UserManager。
+    let sessionUuid = inputSessionUuid;
+    if (sessionUuid && /^[0-9a-f]{8}$/.test(sessionUuid)) {
+      try {
+        const { JsonlIndex } = await import('../agent-view/jsonl-name');
+        const idx = new JsonlIndex();
+        const path = idx.lookup(sessionUuid);
+        if (path) {
+          const base = path.split('/').pop() ?? '';
+          const full = base.replace(/\.jsonl$/, '');
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(full)) {
+            logger.info(
+              `runChatSDK: sessionUuid=${sessionUuid} 是 short hash,通过 JsonlIndex 展开为 ${full}`,
+            );
+            sessionUuid = full;
+            // CAS 回写 UserManager:用 inputSessionUuid(short) 跟 oldEntry 比,匹配才更新。
+            // 注意:此时 sessionUuid 已经是 full,直接比 sessionUuid 会跟 oldEntry 不匹配。
+            const oldEntry = this.userManager.getEntry(openId);
+            if (oldEntry?.type === 'session' && oldEntry.sessionUuid === inputSessionUuid) {
+              const newEntry = { ...oldEntry, sessionUuid: full };
+              await this.userManager.compareAndSwap(openId, oldEntry, newEntry);
+            }
+          }
+        }
+      } catch (err: any) {
+        logger.debug(`runChatSDK: short→full 展开失败 (graceful): ${err?.message ?? err}`);
+      }
+    }
     const startTime = Date.now();
     let thinking = '';
     let text = '';
