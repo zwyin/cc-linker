@@ -657,6 +657,17 @@ describe('handleCancelReply', () => {
     expect(replyFn).toHaveBeenCalledTimes(1);
     expect(replyFn.mock.calls[0][0]).toContain('已取消等待');
   });
+
+  test('silent when nothing is pending (no spam "已取消" reply)', async () => {
+    const { mgr, replyFn } = makeMgrWithSpies();
+    // No expectedReply set for this openId
+    expect(mgr.expectedReply.get('ou_cancel_nop')).toBeUndefined();
+
+    await mgr.handleCancelReply('ou_cancel_nop');
+
+    // replyFn 未被调 — 用户没要求取消任何东西
+    expect(replyFn).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleStop (T20)', () => {

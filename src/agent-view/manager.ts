@@ -497,10 +497,19 @@ export class AgentViewManager {
     }
   }
 
-  /** Cancel an active waiting state. Idempotent — safe to call when no reply is pending. */
+  /**
+   * Cancel an active waiting state. Idempotent — safe to call when no
+   * reply is pending. v2.2: if nothing was pending, stay SILENT — don't
+   * spam a "已取消" reply that confuses the user (they didn't ask to
+   * cancel anything).
+   */
   async handleCancelReply(openId: string, _messageId?: string): Promise<void> {
+    const wasPending = !!this.expectedReply.get(openId);
     await this.expectedReply.clear(openId, 'user');
-    await this.deps.replyFn('✅ 已取消等待回复', { openId });
+    if (wasPending) {
+      await this.deps.replyFn('✅ 已取消等待回复', { openId });
+    }
+    // else: silent — no reply was pending, no need to confirm
   }
 
   /** Drop the user out of Agent View — pure text reply, no state mutation.
