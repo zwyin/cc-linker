@@ -39,6 +39,11 @@ const origProbeCheck = DaemonProbe.check;
 // into this file when both run in the same `bun test` invocation.
 const origFetch = AgentSnapshotFetcher.fetch;
 
+// v2.2.1: snapshot-fetcher 内部会调 readRoster() 读 ~/.claude/daemon/roster.json。
+// 这个测试用 fixture sessionIds("uuid-1", "uuid-2"),通常不匹配本机 roster,
+// 此时所有 session 的 source 会变成 'unknown',filterUserDispatched 会保留它们
+// (graceful degradation)。所以不需要 mock roster-source。
+
 beforeEach(() => {
   (DaemonProbe as any).check = origProbeCheck;
   (AgentSnapshotFetcher as any).fetch = origFetch;

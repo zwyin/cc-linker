@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { VersionGuard } from './version-guard';
 import { DaemonProbe } from './daemon-probe';
-import { parseAgentsJson, attachRosterSources } from './snapshot';
+import { parseAgentsJson, attachRosterSources, filterUserDispatched } from './snapshot';
 import { readRoster, buildRosterSourceMap } from './roster-source';
 import type { AgentSession } from './types';
 
@@ -42,11 +42,14 @@ export const AgentSnapshotFetcher = {
     }
 
     try {
-      // v2.2.1: 先 parse,再用 roster.json 给每个 session 打 source 标签
-      // (roster 读不到时退化为 source='unknown',不影响主流程)
+      // v2.2.1: 先 parse → 打 source 标签 → 过滤 sub-agent
+      // (roster 读不到时退化为 source='unknown',filterUserDispatched 会保留这些,
+      //  避免 daemon 短暂不在时把整张列表清空。)
       const roster = readRoster();
       const sourceMap = buildRosterSourceMap(roster);
-      const sessions = attachRosterSources(parseAgentsJson(stdout), sourceMap);
+      const sessions = filterUserDispatched(
+        attachRosterSources(parseAgentsJson(stdout), sourceMap),
+      );
       return { ok: true, sessions };
     } catch (err: any) {
       return { ok: false, reason: `parse failed: ${err.message}` };

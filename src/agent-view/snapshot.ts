@@ -46,3 +46,13 @@ export function attachRosterSources(
     return { ...s, source };
   });
 }
+
+/**
+ * v2.2.1 新增:过滤掉 sub-agent,保留用户派发 + 不可识别的 session。
+ * 规则:只丢弃显式标记为 'spare' / 'fleet' 的 session;
+ *       'slash'(用户派发)和 'unknown'(roster 读不到,daemon 没跑)
+ *       都保留(graceful degradation,避免误清空)。
+ */
+export function filterUserDispatched(sessions: AgentSession[]): AgentSession[] {
+  return sessions.filter(s => s.source === 'slash' || s.source === 'unknown');
+}
