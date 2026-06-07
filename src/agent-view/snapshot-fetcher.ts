@@ -56,22 +56,22 @@ async function enrichCompletedSessions(
     // Name: cache hit → JSONL direct read → short hash
     let name: string | undefined;
     let resolvedSessionId: string | undefined;
-    // v2.2.16: 缓存里 NameCacheEntry 已有 sessionId 字段(由 v2.2.6 captureNames
-    // 写入),先取 name + 短时间复用 short 解析出来的 full UUID。如果缓存条目
-    // 自带 full UUID(v2.2.6 之后写的),直接用,不必再走 JSONL lookup。
+    // v2.2.17: JSONL 派生优先于 cache,自我修复缓存污染。之前 v2.2.16 优先
+    // 走 cache(可能含错误的 name —— 比如 d78c8339 缓存着 "sleep 30 && echo done",
+    // 实际它是 "Print date every five seconds"),新数据进来也覆盖不掉。
+    // 现在逻辑:有 JSONL 对话就用 JSONL 的 first user prompt,没 JSONL 才用缓存
+    // 兜底,缓存再没就 short。
     const cached = _nameCacheHooks.lookupName(short);
-    if (cached) {
-      name = cached;
-    }
-    // 无论缓存是否命中,都跑一遍 deriveNameFromJsonl —— 缓存只保存 name,full
-    // UUID 派生在 v2.2.6 capture 时如果当时快照 sessionId 是 short 也不会存进 cache。
-    // 这里重新派生,确保有 full UUID 用。
     const fromJsonl = _nameCacheHooks.deriveNameFromJsonl(short);
     if (fromJsonl) {
-      if (!name) name = fromJsonl.name;
+      // JSONL 权威 —— 直接覆盖缓存(下一次 captureNames 把 fresh name 写回)
+      name = fromJsonl.name;
       resolvedSessionId = fromJsonl.sessionId;
-      // 写回 cache,下次走 hot path(同时存 name + sessionId)
       _nameCacheHooks.captureNames([{ sessionId: fromJsonl.sessionId, name: fromJsonl.name }]);
+    } else if (cached) {
+      // JSONL 没内容(典型:bg 派发后没用户输入,JSONL 只有 metadata),用缓存
+      // 兜底。缓存里可能也是错的,但我们没更好来源。
+      name = cached;
     }
     if (!name) name = short;
 

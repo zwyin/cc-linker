@@ -287,10 +287,11 @@ describe('AgentSnapshotFetcher.fetch', () => {
     lookupNameMock.mockImplementation(short =>
       short === 'timer001' ? 'timer command response' : undefined,
     );
-    // v2.2.16: 即使缓存命中也会调 JSONL —— 缓存条目只存 name,需要 JSONL 派生
-    // full UUID。但 name 优先用缓存的(下面断言验证)
+    // v2.2.17: JSONL 派生权威 —— 缓存条目可能错(典型:测试污染或历史误写),
+    // JSONL 派生出来的 name 总是覆盖它。这里 mock JSONL 返回 "fresh name from jsonl"
+    // 来证明 fresh name wins over cache。
     deriveNameFromJsonlMock.mockImplementation(() => ({
-      name: 'wrong name from jsonl',
+      name: 'fresh name from jsonl',
       sessionId: 'timer001-uuid-zzzz',
     }));
 
@@ -298,14 +299,12 @@ describe('AgentSnapshotFetcher.fetch', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // v2.2.16: 缓存命中 + JSONL fallback 跑过后,sessionId 升级为 full UUID
+      // v2.2.17: name 必须来自 JSONL 派生(覆盖了缓存的 wrong name)
       const completed = result.sessions.find(s => s.sessionId === 'timer001-uuid-zzzz');
-      // v2.2.16: 缓存 name 优先于 JSONL 派生 name(避免被错误覆盖)
-      expect(completed?.name).toBe('✅ timer command response');
-      // 但 sessionId 应该升级到 full UUID(关键修复)
+      expect(completed?.name).toBe('✅ fresh name from jsonl');
       expect(completed?.sessionId).toBe('timer001-uuid-zzzz');
     }
-    // v2.2.16: 每次都调一次 JSONL 拿 full sessionId(即使缓存命中)
+    // v2.2.17: 每次都调一次 JSONL(因为 JSONL 现在权威)
     expect(deriveNameFromJsonlMock).toHaveBeenCalled();
   });
 
