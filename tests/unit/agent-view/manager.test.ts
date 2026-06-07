@@ -1170,3 +1170,74 @@ describe('buildPeekCard with outputFormat (v2.2.8)', () => {
     }
   });
 });
+
+describe('handleAttach — v2.2.15 short↔full guard compatibility', () => {
+  // v2.2.14 回归:card 给 short, snapshot 里有 full,展开后再比 → 不匹配 → 误报"会话已不存在"。
+  // 修复:守卫同时认 short 和 full,正式展开在 CAS 之前。
+  test('guard accepts short sessionId when snapshot has full UUID', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const fullUuid = '098639ad-9be0-401a-8e1f-3b2eb18cbd50';
+    // snapshot returns full UUID
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [
+        {
+          pid: 0,
+          cwd: '/Users/wuyujun',
+          kind: 'background',
+          startedAt: Date.now() - 1_000_000,
+          sessionId: fullUuid,
+          name: 'sleep 30 && echo done',
+          status: 'idle',
+          completed: true,
+        },
+      ],
+    }));
+    // user clicks Attach with the short hash (matches the live card)
+    await mgr.handleAttach('ou_attach_short2full', '098639ad', '098639ad', 'sleep 30 && echo done', '/Users/wuyujun');
+
+    // UserManager entry must be the full UUID (SDK 拒 short)
+    const entry = userManager.getEntry('ou_attach_short2full');
+    expect(entry?.type).toBe('session');
+    expect((entry as any).sessionUuid).toBe(fullUuid);
+  });
+
+  test('guard accepts full sessionId when snapshot has full UUID (no-op)', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const fullUuid = 'aaaa1111-2222-3333-4444-555555555555';
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [
+        {
+          pid: 0,
+          cwd: '/x',
+          kind: 'background',
+          startedAt: 0,
+          sessionId: fullUuid,
+          name: 'session full',
+          status: 'idle',
+          completed: true,
+        },
+      ],
+    }));
+    await mgr.handleAttach('ou_attach_full', fullUuid, 'aaaa1111', 'session full', '/x');
+
+    const entry = userManager.getEntry('ou_attach_full');
+    expect((entry as any).sessionUuid).toBe(fullUuid);
+  });
+
+  test('guard refuses when neither short nor full matches snapshot', async () => {
+    const { mgr, replyFn, userManager } = makeMgrWithSpies();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [],
+    }));
+    await mgr.handleAttach('ou_attach_gone', 'ffffffff', 'ffffffff', 'whatever', '/tmp');
+
+    expect(replyFn).toHaveBeenCalled();
+    const replyText = replyFn.mock.calls[0][0];
+    expect(replyText).toContain('会话已不存在');
+    // No entry should be written
+    expect(userManager.getEntry('ou_attach_gone')).toBeUndefined();
+  });
+});

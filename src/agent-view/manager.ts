@@ -366,31 +366,39 @@ export class AgentViewManager {
     _name: string,
     cwd: string,
   ): Promise<string | Record<string, unknown> | null> {
-    // 0. 实时守卫前先 normalize sessionId。
-    // v2.2.14:settled bg session(没 JSONL fallback 命中)会把 short 8 字符塞进
-    // `sessionId` 字段(`snapshot-fetcher.ts:76 sessionId: resolvedSessionId ?? short`)。
-    // `claude -p --resume <short>` 会被 SDK 拒("Provided value ... is not a UUID")。
-    // 在这里用 JsonlIndex 把 short 展开成 full UUID;找不到 full UUID 通常意味着
-    // 这个 session 真的不存在(daemon 也无 record),让下面守卫自然挂掉。
-    let resolvedSessionId = sessionId;
+    // v2.2.15: 比较守卫同时认 short 和 full UUID,避免 v2.2.14 把 short 展开成
+    // full 后跟 snapshot 里的 full UUID 比较反而失配的回归(实测 card 给的 sessionId
+    // 是 short,snapshot 里的 sessionId 是 full —— 两者展开成同一个 full 时看似一致,
+    // 但顺序问题: 展开前是 "098639ad" vs "098639ad-9be0-...",不等;展开后是
+    // "098639ad-9be0-..." vs "098639ad-9be0-...",相等 —— 但展开前守卫已经失败)。
+    // 解决: 守卫里同时接受 short 和 full,把 sessionId 存 UserManager 之前
+    // 才正式展开成 full。
+    const idx = new JsonlIndex();
+    let fullUuid: string | null = null;
     if (/^[0-9a-f]{8}$/.test(sessionId)) {
-      const idx = new JsonlIndex();
       const jsonlPath = idx.lookup(sessionId);
       if (jsonlPath) {
         const base = jsonlPath.split('/').pop() ?? '';
-        const full = base.replace(/\.jsonl$/, '');
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(full)) {
-          resolvedSessionId = full;
+        const extracted = base.replace(/\.jsonl$/, '');
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(extracted)) {
+          fullUuid = extracted;
         }
       }
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sessionId)) {
+      fullUuid = sessionId;
     }
-    sessionId = resolvedSessionId; // 下面所有代码用 full UUID
-    // 0. 实时守卫
+    // 0. 实时守卫(snapshot 里的 sessionId 可能是 short 或 full,都得认)
     const result = await AgentSnapshotFetcher.fetch();
-    if (!result.ok || !result.sessions.find(s => s.sessionId === sessionId)) {
+    if (
+      !result.ok ||
+      !result.sessions.find(s => s.sessionId === sessionId || (fullUuid && s.sessionId === fullUuid))
+    ) {
       await this.deps.replyFn('⚠️ 会话已不存在', { openId });
       return null;
     }
+    // 进入 CAS 阶段前,正式把 sessionId 替换成 full UUID,后续 UserManager
+    // 写入和 SDK 调用都走 full,免得 SDK 拒 short("Provided value ... is not a UUID")
+    if (fullUuid) sessionId = fullUuid;
     // v2.2 修正:只清除 expectedReply IF oldEntry 本身就是 pending_agent_reply。
     // 旧逻辑:无条件 expectedReply.clear() 早于 CAS 1/2 — 如果 CAS 1 或 2 失败,用户
     //   已经丢失了 pending reply(白白丢弃)。新逻辑:CAS 1 失败时 expectedReply 仍在,
