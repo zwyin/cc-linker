@@ -739,6 +739,33 @@ describe('FeishuBot cards', () => {
     expect(card.config).toEqual({ wide_screen_mode: true });
     expect(card.header).toBeDefined();
   });
+
+  it('handleCardAction parses JSON-stringified value (v2.2.3 defense in depth)', async () => {
+    // v2.2.3: if any upstream caller mistakenly stringifies the value object
+    // (regression in start.ts or a third-party callback), handleCardAction
+    // should JSON.parse it back into an object so dispatch still works.
+    registry.upsert('switch-via-json', {
+      origin: 'cli',
+      cwd: '/tmp/project',
+      project_name: 'project',
+      title: 'Switch via JSON',
+      message_count: 1,
+      last_active: new Date().toISOString(),
+    });
+
+    await bot.handleCardAction({
+      open_id: 'ou_user1',
+      action: {
+        tag: 'switch',
+        value: JSON.stringify({ tag: 'switch', sessionId: 'switch-via-json' }),
+      },
+      message: { message_id: 'msg-card-json' },
+    });
+
+    // Should successfully route to doSwitch → "已切换会话" card.
+    expect(env.cardReplies.length).toBe(1);
+    expect((env.cardReplies[0].card as any).header.title.content).toContain('已切换会话');
+  });
 });
 
 describe('FeishuBot /listDir', () => {

@@ -460,25 +460,23 @@ async function createBotRuntime(
           const messageId = data?.open_message_id ?? data?.context?.open_message_id ?? data?.event?.context?.open_message_id ?? data?.callback?.message?.message_id ?? '';
           const actionValue = data?.action?.value ?? data?.event?.action?.value ?? data?.callback?.action?.value ?? {};
 
-          // Detect actions that carry extra context in 'type' (not just 'tag').
-          // Permission buttons + CLI busy card buttons all use { type, ...payload }.
-          const ACTION_TYPES_WITH_OBJECT_VALUE = new Set([
-            'permission_approve',
-            'permission_deny',
-            'cli_force_send',
-          ]);
-          const isObjectValueAction = typeof actionValue === 'object'
-            && actionValue !== null
-            && ACTION_TYPES_WITH_OBJECT_VALUE.has((actionValue as any).type);
-
-          const tag = isObjectValueAction
-            ? (actionValue as any).type
-            : (actionValue?.tag ?? '');
+          // v2.2.3 fix: 总是把整个 actionValue 对象传给 handleCardAction,
+          // 让它自己根据 value.type / value.tag 判断如何路由。
+          // 之前的白名单 (permission/cli_force_send) 漏掉了 Agent View 这一类
+          // value 携带 tag 的 action,导致 button value 被 stringify 成空 sessionId,
+          // bot.handleCardAction 收到 value='' 后落到 default 分支 → "未知操作"。
+          //
+          // tag 提取保持兼容:permission/cli_force_send 用 value.type;
+          // Agent View 和其它 button 用 value.tag。
+          const isObjectValue = typeof actionValue === 'object' && actionValue !== null;
+          const tag = isObjectValue
+            ? ((actionValue as any).type ?? (actionValue as any).tag ?? '')
+            : '';
           const sessionId = actionValue?.sessionId ?? actionValue?.value ?? '';
 
-          // For object-value actions, pass the full actionValue object as value
-          // so handleCardAction can extract type and other fields from it
-          const actionPayload: string | Record<string, unknown> = isObjectValueAction ? actionValue : sessionId;
+          const actionPayload: string | Record<string, unknown> = isObjectValue
+            ? (actionValue as Record<string, unknown>)
+            : sessionId;
 
           const action: FeishuBotCardAction = {
             open_id: openId,

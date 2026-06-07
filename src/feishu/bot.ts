@@ -448,8 +448,26 @@ export class FeishuBot {
     payload: FeishuBotCardAction,
   ): Promise<string | Record<string, unknown> | null> {
     const { open_id: openId, action, message } = payload;
-    const { tag, value } = action;
+    const { tag } = action;
+    let value = action.value;
     const messageId = message?.message_id;
+
+    // v2.2.3 defense in depth: 旧的 start.ts 路径(以及未来潜在的 caller)
+    // 可能错误地把 object value 序列化成 JSON 字符串塞进 action.value。
+    // 这里做一次解析回退,并 WARN 提示上游有 regression。
+    if (typeof value === 'string' && value.length > 0 && value.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object') {
+          logger.warn(
+            `卡片回调 value 是 JSON 字符串而非对象,tag=${tag} — 上游可能有 regression,已 fallback parse`,
+          );
+          value = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // 解析失败保留原 string,后续 switch 会走 string 分支或落 default。
+      }
+    }
 
     if (!openId || !tag) {
       logger.warn(`卡片回调缺少必要字段: tag=${tag}, openId=${openId}`);
@@ -537,7 +555,13 @@ export class FeishuBot {
       }
     }
 
-    const sessionId = value as string;
+    // v2.2.3: start.ts now passes the full object as `value` (instead of pre-
+    // extracting a string sessionId), so for legacy text-only buttons
+    // (switch / resume / select_dir / ...) the sessionId is on `value.sessionId`.
+    // Direct-test callers may still pass a raw string — keep both paths working.
+    const sessionId = valueObj
+      ? String(valueObj.sessionId ?? valueObj.value ?? '')
+      : (value as string);
 
     switch (tag) {
       case 'help': {
