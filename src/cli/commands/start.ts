@@ -400,10 +400,15 @@ async function createBotRuntime(
 
     // patchFn 实际调用飞书 message.update API 来更新已发送的卡片
     // 这是 Agent View 刷新/等待状态更新所必需的
+    // v2.2 修正:1200ms delay 避免 Feishu card action event lock(bot.ts:608-625 同款 pattern)
+    // 测试模式:CC_LINKER_DISABLE_PATCH_DELAY=1 跳过延迟,加速测试
     patchFn = async (
       messageId: string,
       card: string,
     ): Promise<any> => {
+      if (process.env.CC_LINKER_DISABLE_PATCH_DELAY !== '1') {
+        await new Promise(r => setTimeout(r, 1200));
+      }
       try {
         const response = await client.im.v1.message.patch({
           path: { message_id: messageId },
@@ -411,10 +416,14 @@ async function createBotRuntime(
             content: card,
           },
         });
+        if (response?.code !== 0) {
+          log('WARN', `[patchFn] 飞书返回非 0 code: ${response?.code}, message_id=${messageId}`);
+          return null;
+        }
         log('DEBUG', `[patchFn] 卡片更新成功: message_id=${messageId}`);
         return response;
       } catch (err: any) {
-        log('ERROR', `[patchFn] 卡片更新失败: ${err?.message ?? err}, messageId=${messageId}`);
+        log('WARN', `[patchFn] 卡片更新失败: ${err?.message ?? err}, messageId=${messageId}`);
         return null;
       }
     };
