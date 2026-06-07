@@ -1241,3 +1241,36 @@ describe('handleAttach — v2.2.15 short↔full guard compatibility', () => {
     expect(userManager.getEntry('ou_attach_gone')).toBeUndefined();
   });
 });
+
+describe('handleStopAndSend (v2.2.18 fire-and-forget card callback)', () => {
+  test('returns null immediately to avoid Feishu card action timeout', async () => {
+    const { mgr, patchFn } = makeMgrWithSpies();
+    // 模拟一个故意 slow 的 runChatSDK(5s)——v2.2.11 行为下 handleStopAndSend 会 await 整个
+    // 链,卡 callback >3s 飞书报"目标回调服务超时未响应"。v2.2.18 改 fire-and-forget
+    // 后,函数本身在亚秒级内返回,background 异步完成实际工作。
+    mgr.deps.runChatSDK = async () => {
+      await new Promise(r => setTimeout(r, 5000));
+      return { result: { response: 'ok' }, handler: {} as any, cardMessageId: null };
+    };
+    const t0 = Date.now();
+    const result = mgr.handleStopAndSend(
+      'ou_stop_send_1',
+      'aaaaaaaa',
+      'aaaaaaaa-0000-0000-0000-000000000000',
+      '/Users/wuyujun',
+      'hi',
+      'parent-uuid-xxxx-xxxx',
+      true,
+      'om_msg_xyz',
+    );
+    const elapsed = Date.now() - t0;
+    // v2.2.18: 立即 return null(< 1s),不 await runChatSDK
+    expect(result).toBeNull();
+    expect(elapsed).toBeLessThan(1000);
+    // patchFn 被同步调用过一次(ack 卡)
+    expect(patchFn).toHaveBeenCalled();
+    const patched = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(JSON.stringify(patched)).toContain('已停止');
+    expect(JSON.stringify(patched)).toContain('正在发送');
+  });
+});

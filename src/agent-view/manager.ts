@@ -465,27 +465,16 @@ export class AgentViewManager {
   }
 
   /**
-   * v2.2.11 + v2.2.13: bg-conflict 拒绝卡 → [🛑 停 bg 后继续发送] 按钮。
+   * v2.2.11 + v2.2.13 + v2.2.18: bg-conflict 拒绝卡 → [🛑 停 bg 后继续发送] 按钮。
    *
    * v2.2.13 关键修正:**总是 fallback 到 parent**(除非没 parent)。
-   *
-   *   1) 跑 `claude stop <shortId>` 释放 bg worker
-   *   2) 等 supervisor 收尾(~1s)
-   *   3) 用 button value 里 stashed 的 parent UUID resume(不再二次查 roster,
-   *      因为 stop 后 worker 已被移除)。UserManager 同步切到 parent,后续消息
-   *      走 parent,不再触发 bg-conflict 探测。
-   *
-   * v2.2.12 的"探测 bg JSONL 有无对话"思路错误:实测 92664deb (有真实 user/
-   * assistant 对话条目) stop 后 resume 仍然报 "No conversation found"。claude
-   * 在 stop 后对 bg sessionId 状态判定不可靠。parent 永远可靠 —— bot 路径走
-   * parent,牺牲"继承 bg 内存里跑出来的 worker 增量"(已经因为 stop 丢了),
-   * 换取"消息能正常发出"。
-   *
-   * v2.2.13 进一步:stashed parent UUID 写在 button value 里,本函数不再读 roster
-   * (worker 已被 stop 移走,二次查必然查不到 parent)。parent 不可用(hasParent=false)
-   * 时退化为用 bg sessionId 直接 resume(raw-slash bg 场景,几乎不存在)。
+   * v2.2.18 关键修正:**立刻 return null**。整个 stop+wait+SDK 链耗时常 > 3s,飞书
+   * card action callback 窗口 ~3s 就会报"目标回调服务超时未响应"。改为:
+   *   1) 同步只做"ack patch"(把拒绝卡 patch 成"已停止,发送中..."),亚秒级返回
+   *   2) void fire-and-forget _doStopAndSend(...) 跑实际工作
+   *   3) 整个 _doStopAndSend 链路内的 patchFn / runChatSDK 自己管自己的卡片更新
    */
-  async handleStopAndSend(
+  handleStopAndSend(
     openId: string,
     shortId: string,
     sessionId: string,
@@ -494,8 +483,49 @@ export class AgentViewManager {
     parentUuid: string,
     hasParent: boolean,
     messageId?: string,
-  ): Promise<string | null> {
-    // Step 1: stop bg worker
+  ): null {
+    // Step 1: 立刻 ack —— 把拒绝卡 patch 成"已停止,发送中..."。同步走,
+    // 亚秒级返回,让飞书 card action callback 不会超时。
+    if (messageId) {
+      try {
+        // 用 fire-and-forget patch —— 飞书 patch 也可能慢,但失败可接受
+        // (后续 SDK 流式 patch 会再覆盖此卡)。
+        this.deps
+          .patchFn(
+            messageId,
+            buildErrorCard({
+              title: '🛑 bg worker 已停止',
+              body: '正在发送你的消息...',
+            }),
+          )
+          .catch(() => {});
+      } catch {
+        // patch 失败不影响主流程
+      }
+    }
+
+    // Step 2: 立即 return null,让飞书 card action callback 立即完成
+    void this._doStopAndSend(
+      openId, shortId, sessionId, cwd, text, parentUuid, hasParent, messageId,
+    );
+    return null;
+  }
+
+  /**
+   * v2.2.18: handleStopAndSend 的实际工作后台版。fire-and-forget 调,
+   * 内部所有 patchFn / runChatSDK / replyFn 都走自己的失败恢复。
+   */
+  private async _doStopAndSend(
+    openId: string,
+    shortId: string,
+    sessionId: string,
+    cwd: string,
+    text: string,
+    parentUuid: string,
+    hasParent: boolean,
+    messageId?: string,
+  ): Promise<void> {
+    // 1. 跑 claude stop 释放 bg worker
     try {
       const cp = await import('node:child_process');
       const { promisify } = await import('node:util');
@@ -506,45 +536,27 @@ export class AgentViewManager {
       const msg = err?.stderr || err?.message || String(err);
       if (!/No job matching/i.test(msg)) {
         await this.deps.replyFn(`❌ Stop 失败:${msg}`, { openId });
-        return null;
+        return;
       }
     }
-    // Step 2: 等 supervisor 释放(同 handleStopConfirm)
+    // 2. 等 supervisor 释放
     await new Promise(r => setTimeout(r, 1000));
 
-    // 把拒绝卡 patch 成"已处理"提示,避免用户重复点
-    if (messageId) {
-      try {
-        await this.deps.patchFn(
-          messageId,
-          buildErrorCard({
-            title: '🛑 bg worker 已停止',
-            body: '正在发送你的消息...',
-          }),
-        );
-      } catch {
-        // patch 失败不影响主流程
-      }
-    }
-
-    // Step 3 (v2.2.13): 总是 fallback 到 parent(除非没 parent)。
-    //   hasParent=true:用 button value stashed 的 parent UUID resume。parent 永远可靠。
-    //   hasParent=false:bg 是 raw slash 派发(无 parent),直接 resume bg sessionId —— 这种情况
-    //     极少见,且 v2.2.12 的"探测空 JSONL"策略也救不了它(失败的话直接报错给用户看)。
+    // 3. 总是 fallback 到 parent(除非没 parent)
     const effectiveSessionUuid = hasParent && parentUuid ? parentUuid : sessionId;
     const effectiveSerialKey = effectiveSessionUuid;
     const fallbackNote = hasParent && parentUuid
       ? `已自动 fallback 到 parent session (${parentUuid.slice(0, 8)}...) —— bg worker 内存里的增量对话会丢失,parent 有 fork 之前的历史。`
       : '';
 
-    // 把 UserManager 的 session entry CAS 切到 effective sessionId(后续消息不再触发探测)
+    // 4. CAS 切 UserManager 到 effective sessionId
     if (effectiveSessionUuid !== sessionId) {
       const oldEntry = this.deps.userManager.getEntry(openId);
       if (oldEntry?.type === 'session' && oldEntry.sessionUuid === sessionId) {
         const newEntry: MappingEntry = { ...oldEntry, sessionUuid: effectiveSessionUuid };
         const ok = await this.deps.userManager.compareAndSwap(openId, oldEntry, newEntry);
         if (ok && fallbackNote) {
-          this.deps.replyFn(
+          await this.deps.replyFn(
             `🛑 bg worker ${shortId} 已停止。${fallbackNote}`,
             { openId },
           );
@@ -552,7 +564,7 @@ export class AgentViewManager {
       }
     }
 
-    // Step 4: 调 runChatSDK 真正发消息。worker 已不在 roster,探测不会再拒绝。
+    // 5. 调 runChatSDK 发消息(SDK 内部会自己 patch 卡成"💭 处理中" → "✅ 处理完成")
     try {
       await this.deps.runChatSDK({
         openId,
@@ -565,7 +577,6 @@ export class AgentViewManager {
     } catch (err: any) {
       await this.deps.replyFn(`❌ 发送失败:${err?.message ?? err}`, { openId });
     }
-    return null;
   }
 
   /**
