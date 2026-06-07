@@ -70,4 +70,27 @@ describe('FeishuBot.handleCommand /agents case', () => {
     expect(env.textReplies[0].text).toContain('/help');
     expect(env.textReplies[0].text).toContain('/agents');
   });
+
+  test('v2.2: returns "Agent View 已禁用" when agent_view.enabled=false', async () => {
+    // Arrange: set agentView + disable via config
+    env.cleanup();
+    env = createTestBot({
+      tmpDirPrefix: 'bot-command-disabled-',
+      extraConfigMutations: { 'agent_view.enabled': false },
+    });
+    const calls: any[] = [];
+    const mockAgentView = {
+      deps: {} as any,
+      handleList: async (...args: any[]) => { calls.push(args); },
+    };
+    env.bot.setAgentView(mockAgentView as any);
+
+    // Act
+    await env.bot.handleCommand(buildMsg('/agents'));
+
+    // Assert: handleList NOT called, friendly disabled message sent
+    expect(calls).toHaveLength(0);
+    expect(env.textReplies.length).toBe(1);
+    expect(env.textReplies[0].text).toContain('Agent View 已禁用');
+  });
 });

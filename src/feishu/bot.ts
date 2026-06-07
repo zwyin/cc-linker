@@ -493,6 +493,11 @@ export class FeishuBot {
         logger.warn(`agent_view card action 但 AgentViewManager 未启用: tag=${valueObj.tag}`);
         return 'Agent View 未启用';
       }
+      // v2.2 修正:config 禁用时静默忽略(spec §G11)
+      if (!config.get<boolean>('agent_view.enabled', true)) {
+        logger.debug(`agent_view card action 但 agent_view.enabled=false: tag=${valueObj.tag}`);
+        return null;
+      }
       switch (valueObj.tag) {
         case 'agent_view_refresh_list':
           return await this.agentView.handleRefreshList(openId, messageId);
@@ -843,6 +848,11 @@ export class FeishuBot {
           await this.replyAndFinalize(msg, 'Agent View 未启用(检查 config.toml [agent_view].enabled)');
           return;
         }
+        // v2.2 修正:config 禁用时显式提示(spec §G11)
+        if (!config.get<boolean>('agent_view.enabled', true)) {
+          await this.replyAndFinalize(msg, 'Agent View 已禁用(在 config.toml 设置 [agent_view].enabled = true)');
+          return;
+        }
         await this.agentView.handleList(msg.openId, msg.messageId);
         return;
 
@@ -858,7 +868,7 @@ export class FeishuBot {
     // - /<cmd>   → 只读命令(/help /status /whoami)透传 handleCommand,不清 expectedReply
     //              写命令 清 expectedReply + 提示"已自动取消",再走 handleCommand
     // - 普通文本 → expectedReply 激活时 → handleReply,否则走原 switch
-    if (this.agentView) {
+    if (this.agentView && config.get<boolean>('agent_view.enabled', true)) {
       if (msg.text === '/cancel') {
         await this.agentView.handleCancelReply(msg.openId, msg.messageId);
         return;

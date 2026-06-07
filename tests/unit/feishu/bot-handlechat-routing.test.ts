@@ -273,6 +273,25 @@ describe('FeishuBot.handleChat routing with expectedReply (T23)', () => {
     expect(handleReplyCalls).toHaveLength(0);
     expect(textReplies.some((t) => t.includes('请先执行'))).toBe(true);
   });
+
+  test('v2.2: routing is a no-op when agent_view.enabled=false', async () => {
+    // v2.2 修正:config 禁用时,即使 agentView 存在,也不进 Agent View 分支
+    (config as any).data.agent_view.enabled = false;
+    try {
+      // /cancel 应当不进入 handleCancelReply
+      const cancelMsg = makeSpoolMessage({ text: '/cancel' });
+      await (bot as any).handleChat(cancelMsg);
+      expect(handleCancelReplyCalls).toHaveLength(0);
+
+      // 普通文本有 expectedReply 时:不进入 handleReply
+      // 由于没有真实的 expectedReply 状态,默认走原 switch (no_target → help)
+      const plainMsg = makeSpoolMessage({ text: 'hi', target: { type: 'no_target' } });
+      await (bot as any).handleChat(plainMsg);
+      expect(handleReplyCalls).toHaveLength(0);
+    } finally {
+      (config as any).data.agent_view.enabled = true;
+    }
+  });
 });
 
 afterAll(() => {
