@@ -1048,3 +1048,125 @@ describe('handleAttach (T22 — two-step CAS)', () => {
     mgr.expectedReply.clear = origClear;
   });
 });
+
+describe('resolvePeekContent (v2.2.8 three-tier resolver)', () => {
+  // Swap _peekHooks for these tests so we don't touch real ~/.claude/projects /
+  // roster.json. Restore in afterEach to keep other tests isolated.
+  const origHooks = { ...AgentViewManager._peekHooks };
+  beforeEach(() => {
+    AgentViewManager._peekHooks = { ...origHooks };
+  });
+
+  test('Tier 1 hit: own JSONL has assistant text', async () => {
+    const { mgr } = makeMgrWithSpies();
+    AgentViewManager._peekHooks.findJsonlForShort = () => '/fake/own.jsonl';
+    AgentViewManager._peekHooks.extractRecentAssistantText = (path: string) => {
+      if (path === '/fake/own.jsonl') return 'last assistant text';
+      return null;
+    };
+    AgentViewManager._peekHooks.readRoster = () => null;
+    AgentViewManager._peekHooks.lookupResumeFromPath = () => null;
+
+    const result = await mgr.resolvePeekContent('shortid1', 1000);
+    expect(result.text).toBe('last assistant text');
+    expect(result.format).toBe('markdown');
+  });
+
+  test('Tier 2 hit: own JSONL empty, parent JSONL has assistant text', async () => {
+    const { mgr } = makeMgrWithSpies();
+    AgentViewManager._peekHooks.findJsonlForShort = () => '/fake/own.jsonl';
+    AgentViewManager._peekHooks.extractRecentAssistantText = (path: string) => {
+      if (path === '/fake/parent.jsonl') return 'parent assistant text';
+      return null; // own returns null → tier 1 miss
+    };
+    AgentViewManager._peekHooks.readRoster = () => ({} as any);
+    AgentViewManager._peekHooks.lookupResumeFromPath = (_r: any, short: string) =>
+      short === 'shortid2' ? '/fake/parent.jsonl' : null;
+
+    const result = await mgr.resolvePeekContent('shortid2', 1000);
+    expect(result.text).toBe('parent assistant text');
+    expect(result.format).toBe('markdown');
+  });
+
+  test('Tier 3 fallback: both JSONL tiers miss, claude logs returns terminal output', async () => {
+    const { mgr } = makeMgrWithSpies();
+    AgentViewManager._peekHooks.findJsonlForShort = () => null;
+    AgentViewManager._peekHooks.extractRecentAssistantText = () => null;
+    AgentViewManager._peekHooks.readRoster = () => null;
+    AgentViewManager._peekHooks.lookupResumeFromPath = () => null;
+    execFileMock.mockImplementation((cmd, args, cb) => {
+      if (cmd === 'claude' && args[0] === 'logs') {
+        cb(null, '\x1b[32mfallback terminal line\x1b[0m', '');
+        return;
+      }
+      cb(null, '', '');
+    });
+
+    const result = await mgr.resolvePeekContent('shortid3', 1000);
+    expect(result.text).toContain('fallback terminal line');
+    expect(result.text).not.toContain('\x1b[');
+    expect(result.format).toBe('terminal');
+  });
+
+  test('all tiers miss: returns null text', async () => {
+    const { mgr } = makeMgrWithSpies();
+    AgentViewManager._peekHooks.findJsonlForShort = () => null;
+    AgentViewManager._peekHooks.extractRecentAssistantText = () => null;
+    AgentViewManager._peekHooks.readRoster = () => null;
+    AgentViewManager._peekHooks.lookupResumeFromPath = () => null;
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(new Error('No job matching'), '', '');
+    });
+
+    const result = await mgr.resolvePeekContent('missingid', 1000);
+    expect(result.text).toBeNull();
+  });
+
+  test('Tier 1 hit short-circuits Tier 2 and Tier 3 (no claude logs exec)', async () => {
+    const { mgr } = makeMgrWithSpies();
+    AgentViewManager._peekHooks.findJsonlForShort = () => '/fake/own.jsonl';
+    AgentViewManager._peekHooks.extractRecentAssistantText = () => 'tier 1 wins';
+    let parentLookupCalled = false;
+    AgentViewManager._peekHooks.lookupResumeFromPath = () => {
+      parentLookupCalled = true;
+      return '/should/not/be/queried.jsonl';
+    };
+    let claudeLogsCalled = false;
+    execFileMock.mockImplementation((cmd, args, cb) => {
+      if (cmd === 'claude' && args[0] === 'logs') claudeLogsCalled = true;
+      cb(null, '', '');
+    });
+
+    await mgr.resolvePeekContent('shortid5', 1000);
+    expect(parentLookupCalled).toBe(false);
+    expect(claudeLogsCalled).toBe(false);
+  });
+});
+
+describe('buildPeekCard with outputFormat (v2.2.8)', () => {
+  test('handlePeek renders markdown when JSONL hit (no code-block wrapping)', async () => {
+    const { mgr, cardReplyFn } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    // Force tier 1 markdown hit
+    const origHooks = { ...AgentViewManager._peekHooks };
+    AgentViewManager._peekHooks.findJsonlForShort = () => '/fake/own.jsonl';
+    AgentViewManager._peekHooks.extractRecentAssistantText = () => '**bold** _italic_ text';
+    try {
+      await mgr.handlePeek('ou_peek_md', waiting.sessionId.slice(0, 8), waiting.sessionId, waiting.cwd);
+
+      const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+      const outBlock = sentCard.elements.find((e: any) => /Recent output/.test(e.content || ''));
+      expect(outBlock.content).toContain('**bold** _italic_ text');
+      // Critical: markdown branch must NOT wrap in code-block (otherwise emoji render as tofu)
+      expect(outBlock.content).not.toContain('```');
+      // Critical: must NOT show the "原始终端片段" warning label
+      expect(outBlock.content).not.toContain('原始终端片段');
+    } finally {
+      AgentViewManager._peekHooks = origHooks;
+    }
+  });
+});

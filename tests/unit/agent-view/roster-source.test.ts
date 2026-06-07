@@ -144,3 +144,81 @@ describe('buildRosterSourceMap', () => {
     expect(map.get('bad')).toBeUndefined();
   });
 });
+
+describe('lookupResumeFromPath (v2.2.8)', () => {
+  test('returns parent JSONL path for resume-mode worker', () => {
+    const { lookupResumeFromPath } = require('../../../src/agent-view/roster-source');
+    const roster = {
+      proto: 1,
+      updatedAt: 0,
+      workers: {
+        '92664deb': {
+          pid: 1,
+          sessionId: '92664deb-uuid',
+          cwd: '/x',
+          startedAt: 0,
+          dispatch: {
+            source: 'slash',
+            launch: {
+              mode: 'resume',
+              sessionId: '/Users/x/.claude/projects/-Users-x/57872373-aaaa.jsonl',
+            },
+          },
+        },
+      },
+    } as unknown as Roster;
+    expect(lookupResumeFromPath(roster, '92664deb')).toBe(
+      '/Users/x/.claude/projects/-Users-x/57872373-aaaa.jsonl',
+    );
+  });
+
+  test('returns null when worker not in roster', () => {
+    const { lookupResumeFromPath } = require('../../../src/agent-view/roster-source');
+    const roster = { proto: 1, updatedAt: 0, workers: {} };
+    expect(lookupResumeFromPath(roster, 'missing0')).toBeNull();
+  });
+
+  test('returns null when roster is null', () => {
+    const { lookupResumeFromPath } = require('../../../src/agent-view/roster-source');
+    expect(lookupResumeFromPath(null, 'whatever')).toBeNull();
+  });
+
+  test('returns null when launch.mode is not resume', () => {
+    const { lookupResumeFromPath } = require('../../../src/agent-view/roster-source');
+    const roster = {
+      proto: 1,
+      updatedAt: 0,
+      workers: {
+        fresh001: {
+          pid: 1,
+          sessionId: 'fresh001-uuid',
+          cwd: '/x',
+          startedAt: 0,
+          dispatch: { source: 'slash', launch: { mode: 'fresh' } },
+        },
+      },
+    } as unknown as Roster;
+    expect(lookupResumeFromPath(roster, 'fresh001')).toBeNull();
+  });
+
+  test('returns null when launch.sessionId is not a .jsonl path', () => {
+    const { lookupResumeFromPath } = require('../../../src/agent-view/roster-source');
+    const roster = {
+      proto: 1,
+      updatedAt: 0,
+      workers: {
+        weird001: {
+          pid: 1,
+          sessionId: 'weird001-uuid',
+          cwd: '/x',
+          startedAt: 0,
+          dispatch: {
+            source: 'slash',
+            launch: { mode: 'resume', sessionId: 'just-a-uuid-not-a-path' },
+          },
+        },
+      },
+    } as unknown as Roster;
+    expect(lookupResumeFromPath(roster, 'weird001')).toBeNull();
+  });
+});

@@ -5,6 +5,9 @@ import { buildListCard, buildPeekCard, buildErrorCard, buildEmptyCard, buildWait
 import type { AgentSession, AgentSessionGroup, AgentSessionStatus } from './types';
 import { groupByStatus } from './types';
 import { config } from '../utils/config';
+import { extractRecentAssistantText } from './jsonl-peek';
+import { JsonlIndex } from './jsonl-name';
+import { readRoster, lookupResumeFromPath } from './roster-source';
 
 /** Maximum list-card byte size. 飞书 card 25KB 上限;超过走 text fallback。 */
 const MAX_CARD_BYTES = 25_000;
@@ -138,9 +141,73 @@ export class AgentViewManager {
   }
 
   /**
+   * v2.2.8: 解析 Peek 卡的 Recent output 内容。
+   *
+   * 数据源优先级:
+   *   1) bg session 自己的 JSONL 最后一条 assistant 文本(本地 markdown,飞书直接渲染)
+   *   2) roster.dispatch.launch.sessionId 指向的 parent JSONL 最后 assistant 文本
+   *      (fork-from-active 场景:bg session 自己的 JSONL 只有 metadata)
+   *   3) 退化:`claude logs <short>` raw 输出 + ANSI strip,加入"原始终端片段"提示
+   *
+   * 返回 `{ text, format }`:
+   *   format='markdown' — 直接 markdown 渲染(干净)
+   *   format='terminal' — 走 code-block + 提示这是 raw 终端片段(可能有 tofu)
+   *   text=null — 三层都没拿到东西
+   *
+   * @internal _peekHooks 用于测试 swap 各层依赖
+   */
+  async resolvePeekContent(
+    shortId: string,
+    maxChars: number,
+  ): Promise<{ text: string | null; format: 'markdown' | 'terminal' }> {
+    // Tier 1: 自己的 JSONL
+    const ownPath = AgentViewManager._peekHooks.findJsonlForShort(shortId);
+    if (ownPath) {
+      const text = AgentViewManager._peekHooks.extractRecentAssistantText(ownPath, maxChars);
+      if (text) return { text, format: 'markdown' };
+    }
+    // Tier 2: roster 的 resume-from parent JSONL
+    const roster = AgentViewManager._peekHooks.readRoster();
+    const parentPath = roster ? AgentViewManager._peekHooks.lookupResumeFromPath(roster, shortId) : null;
+    if (parentPath) {
+      const text = AgentViewManager._peekHooks.extractRecentAssistantText(parentPath, maxChars);
+      if (text) return { text, format: 'markdown' };
+    }
+    // Tier 3: 老的 claude logs 退化(尽量避免)
+    try {
+      const cp = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileP = promisify(cp.execFile);
+      const r = await execFileP('claude', ['logs', shortId], { timeout: 3000 });
+      const { stripAnsi } = await import('./ansi-strip');
+      const stripped = stripAnsi(r.stdout);
+      const peekLines = config.get<number>('agent_view.peek_lines', 30);
+      const tail = stripped.split('\n').slice(-peekLines).join('\n');
+      const truncated = truncateBytes(tail, maxChars);
+      if (truncated.trim()) return { text: truncated, format: 'terminal' };
+    } catch {
+      // ignore, fall through
+    }
+    return { text: null, format: 'markdown' };
+  }
+
+  // v2.2.8: 注入点 —— tests 通过 swap 这些函数模拟各层命中/miss
+  // 走 mutable object(不是 ESM 命名空间),绕开 bun mock.module 跨文件限制
+  static _peekHooks = {
+    findJsonlForShort: (short: string): string | null => {
+      const idx = new JsonlIndex();
+      return idx.lookup(short);
+    },
+    extractRecentAssistantText,
+    readRoster,
+    lookupResumeFromPath,
+  };
+
+  /**
    * /agents 列表卡 → [Peek] 按钮入口。
-   * 抓 session 元信息(name/status/waitingFor/pid/startedAt),execFile `claude logs <shortId>` 拿尾部输出,
-   * strip ANSI + 取后 30 行 + 截到 2048 bytes,buildPeekCard 通过 cardReplyFn 发出。
+   * v2.2.8: Recent output 改从 JSONL 提取最后一条 assistant markdown 文本,
+   * 不再用 `claude logs` 的 raw 终端 buffer(含光标定位 + box-drawing,飞书渲染成 tofu □)。
+   * 见 resolvePeekContent。
    */
   async handlePeek(
     openId: string,
@@ -153,25 +220,9 @@ export class AgentViewManager {
       await this.deps.replyFn('⚠️ 会话已不存在', { openId });
       return null;
     }
-    let raw: string;
-    try {
-      const cp = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      const execFileP = promisify(cp.execFile);
-      const result = await execFileP('claude', ['logs', shortId], { timeout: 3000 });
-      raw = result.stdout;
-    } catch (err: any) {
-      await this.deps.replyFn(`❌ claude logs 失败:${err.message}`, { openId });
-      return null;
-    }
-    // strip ANSI + 取后 N 行 + 截到 M bytes(N, M 来自 config)
-    const { stripAnsi } = await import('./ansi-strip');
-    const stripped = stripAnsi(raw);
-    const peekLines = config.get<number>('agent_view.peek_lines', 30);
     const peekMaxBytes = config.get<number>('agent_view.peek_max_bytes', 2048);
-    const lines = stripped.split('\n').slice(-peekLines).join('\n');
-    // agent-view 自己实现 truncateBytes(简单,避免跨模块依赖 card-updater private)
-    const truncated = truncateBytes(lines, peekMaxBytes);
+    const peek = await this.resolvePeekContent(shortId, peekMaxBytes);
+    const truncated = peek.text ?? '(无可用输出)';
     const buttons = {
       peek: true,
       attach: true,
@@ -189,6 +240,7 @@ export class AgentViewManager {
       pid: session.pid,
       startedAt: session.startedAt,
       recentOutput: truncated,
+      outputFormat: peek.format,
       buttons,
     });
     return await this.sendOrFallback(
@@ -221,29 +273,9 @@ export class AgentViewManager {
       );
       return null;
     }
-    let raw: string;
-    try {
-      const cp = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      const execFileP = promisify(cp.execFile);
-      const result = await execFileP('claude', ['logs', shortId], { timeout: 3000 });
-      raw = result.stdout;
-    } catch (err: any) {
-      await this.deps.patchFn(
-        messageId,
-        buildErrorCard({
-          title: '❌ claude logs 失败',
-          body: err.message,
-        }),
-      );
-      return null;
-    }
-    const { stripAnsi } = await import('./ansi-strip');
-    const stripped = stripAnsi(raw);
-    const peekLines = config.get<number>('agent_view.peek_lines', 30);
     const peekMaxBytes = config.get<number>('agent_view.peek_max_bytes', 2048);
-    const lines = stripped.split('\n').slice(-peekLines).join('\n');
-    const truncated = truncateBytes(lines, peekMaxBytes);
+    const peek = await this.resolvePeekContent(shortId, peekMaxBytes);
+    const truncated = peek.text ?? '(无可用输出)';
     const buttons = {
       peek: true,
       attach: true,

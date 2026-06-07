@@ -156,7 +156,12 @@ function truncateCwd(cwd: string): string {
   return cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
 }
 
-/** Peek 卡:显示 status / waitingFor / recentOutput */
+/** Peek 卡:显示 status / waitingFor / recentOutput
+ * v2.2.8: 新增 outputFormat 字段
+ *   - 'markdown'(默认):recentOutput 直接 markdown 渲染(JSONL 来源,样式干净)
+ *   - 'terminal':退化模式,recentOutput 是 raw 终端片段,走 code-block 包起来 +
+ *     "原始终端片段(可能含格式残留)" 警示标签
+ */
 export function buildPeekCard(opts: {
   name: string;
   status: AgentSessionStatus;
@@ -167,10 +172,16 @@ export function buildPeekCard(opts: {
   pid: number;
   startedAt: number;
   recentOutput: string;
+  outputFormat?: 'markdown' | 'terminal';
   buttons: { peek: boolean; attach: boolean; reply: boolean; stop: boolean; refresh: boolean };
 }): string {
   const statusLabel =
     opts.status === 'busy' ? '处理中' : opts.status === 'waiting' ? '等待输入' : '已完成';
+  const fmt = opts.outputFormat ?? 'markdown';
+  const recentBlock =
+    fmt === 'terminal'
+      ? `**Recent output** _(原始终端片段,可能含格式残留)_\n\`\`\`\n${opts.recentOutput}\n\`\`\``
+      : `**Recent output**\n\n${opts.recentOutput}`;
   const elements: any[] = [
     {
       tag: 'markdown',
@@ -178,7 +189,7 @@ export function buildPeekCard(opts: {
     },
     {
       tag: 'markdown',
-      content: `**Recent output**\n\`\`\`\n${opts.recentOutput}\n\`\`\``,
+      content: recentBlock,
     },
   ];
   // 按钮(根据 status 决定可见性)
