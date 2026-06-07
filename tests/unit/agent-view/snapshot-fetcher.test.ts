@@ -27,6 +27,16 @@ mock.module('node:child_process', () => {
   };
 });
 
+// v2.2.4: snapshot-fetcher 内部还会调 readCompletedSessions() 读 ~/.claude/daemon.log。
+// 这会让 tests 拉进真实机器上的 completed 列表,污染 fixture 断言。
+// 显式 mock 掉,默认返回空 Map。子测试需要时可以覆盖。
+const readCompletedSessionsMock = mock(
+  (_withinHours: number): Map<string, any> => new Map(),
+);
+mock.module('../../../src/agent-view/daemon-log-reader', () => ({
+  readCompletedSessions: readCompletedSessionsMock,
+}));
+
 const fixtureDir = join(import.meta.dir, '..', '..', 'fixtures', 'agents-json');
 
 // Monkey-patch DaemonProbe.check (already-loaded module — can't use mock.module
@@ -49,6 +59,8 @@ beforeEach(() => {
   (AgentSnapshotFetcher as any).fetch = origFetch;
   execFileSyncMock.mockReset();
   execFileMock.mockReset();
+  readCompletedSessionsMock.mockReset();
+  readCompletedSessionsMock.mockImplementation(() => new Map());
 });
 
 afterAll(() => {
@@ -109,6 +121,58 @@ describe('AgentSnapshotFetcher.fetch', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain('parse');
+    }
+  });
+
+  test('v2.2.4: merges completed sessions from daemon.log into the snapshot', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    // 1 done session not in --json, 1 done session overlapping (active in --json)
+    readCompletedSessionsMock.mockImplementation(
+      () =>
+        new Map([
+          ['aaaa1111', { short: 'aaaa1111', settledAt: 1000, status: 'done' }],
+          ['uuid-1', { short: 'uuid-1', settledAt: 2000, status: 'done' }],
+        ]),
+    );
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // 2 from busy.json + 1 new from daemon.log (overlap 'uuid-1__' is skipped — shortId match)
+      expect(result.sessions).toHaveLength(3);
+      // The new completed session should be marked completed:true
+      const completed = result.sessions.find(s => s.sessionId === 'aaaa1111');
+      expect(completed).toBeDefined();
+      expect(completed?.completed).toBe(true);
+      expect(completed?.name).toContain('✅');
+    }
+  });
+
+  test('v2.2.4: skipped "killed" sessions from daemon.log', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    // Killed should NOT be surfaced
+    readCompletedSessionsMock.mockImplementation(
+      () => new Map([['deadbeef', { short: 'deadbeef', settledAt: 1000, status: 'killed' }]]),
+    );
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Only the 2 from busy.json
+      expect(result.sessions).toHaveLength(2);
+      expect(result.sessions.some(s => s.sessionId === 'deadbeef')).toBe(false);
     }
   });
 });

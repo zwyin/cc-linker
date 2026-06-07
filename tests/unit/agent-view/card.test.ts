@@ -30,7 +30,9 @@ describe('buildListCard', () => {
   });
 
   test('renders empty groups (no group header for empty)', () => {
-    const card = JSON.parse(buildListCard({ busy: [], waiting: [], idle: [] }, '12:34:56'));
+    const card = JSON.parse(
+      buildListCard({ busy: [], waiting: [], idle: [], completed: [] }, '12:34:56'),
+    );
     // 不应有分组标题(只 0 个分组)
     const groupHeaders = card.elements.filter(
       (e: any) => e.tag === 'markdown' && /^.*\([0-9]+\)/.test(e.content || '')

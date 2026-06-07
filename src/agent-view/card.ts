@@ -3,9 +3,11 @@ import type { AgentSessionGroup, AgentSession, AgentSessionStatus } from './type
 
 const TEMPLATE_HEADER = { config: { wide_screen_mode: true } };
 
-/** 列表卡:按 busy / waiting / idle 三组渲染
+/** 列表卡:按 busy / waiting / idle / completed 四组渲染
  * v2.2 修正:hasMore > 0 时,追加 "… N more(用 `claude agents --cwd <path>` 缩小范围)" 提示
  * (spec §6.1 "列表上限 10 个会话,>10 时折行 `… N more`")
+ * v2.2.4 新增:completed 组(daemon.log 兜底拿的已 settled sessions),
+ * 只渲染 Peek/Attach(不渲染 Stop/Reply,因为没有真实进程可控制)。
  */
 export function buildListCard(
   groups: AgentSessionGroup,
@@ -17,9 +19,17 @@ export function buildListCard(
     ['busy', groups.busy],
     ['waiting', groups.waiting],
     ['idle', groups.idle],
-  ] as Array<[AgentSessionStatus, AgentSession[]]>) {
+    ['completed', groups.completed],
+  ] as Array<[AgentSessionStatus | 'completed', AgentSession[]]>) {
     if (list.length === 0) continue;
-    const title = status === 'busy' ? '处理中' : status === 'waiting' ? '等待输入' : '已完成/空闲';
+    const title =
+      status === 'busy'
+        ? '处理中'
+        : status === 'waiting'
+          ? '等待输入'
+          : status === 'completed'
+            ? '已完成'
+            : '空闲';
     elements.push({ tag: 'markdown', content: `**${title} (${list.length})**` });
     for (const s of list) {
       const emoji = status === 'busy' ? '✽' : status === 'waiting' ? '✋' : '⏹';
@@ -124,7 +134,12 @@ export function buildListCard(
 }
 
 function countTotal(groups: AgentSessionGroup): number {
-  return groups.busy.length + groups.waiting.length + groups.idle.length;
+  return (
+    groups.busy.length +
+    groups.waiting.length +
+    groups.idle.length +
+    groups.completed.length
+  );
 }
 
 function humanizeElapsed(ms: number): string {

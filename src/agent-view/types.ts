@@ -19,18 +19,25 @@ export interface AgentSession {
   status: AgentSessionStatus;
   source: AgentSessionSource;  // v2.2.1 新增
   waitingFor?: string;  // 仅 status === 'waiting' 时存在
+  // v2.2.4 新增:true = 该 session 已 settled(从 daemon.log 兜底拿的),
+  // active(--json)上报的 busy / waiting / idle 都是 false。
+  // 视觉上由 buildListCard 单独渲染"已完成"section,与 active idle 区分。
+  completed?: boolean;
 }
 
 export type AgentSessionGroup = {
   busy: AgentSession[];
   waiting: AgentSession[];
   idle: AgentSession[];
+  // v2.2.4 新增:已 settled(sessionId 是 short hash,无真实 UUID)
+  completed: AgentSession[];
 };
 
 export function groupByStatus(sessions: AgentSession[]): AgentSessionGroup {
   return {
     busy: sessions.filter(s => s.status === 'busy'),
     waiting: sessions.filter(s => s.status === 'waiting'),
-    idle: sessions.filter(s => s.status === 'idle'),
+    idle: sessions.filter(s => s.status === 'idle' && !s.completed),
+    completed: sessions.filter(s => s.completed === true),
   };
 }
