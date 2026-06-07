@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { USER_MAPPING_PATH } from '../utils/paths';
 import { config } from '../utils/config';
@@ -303,6 +304,22 @@ export class UserManager {
     const ownerOpenId = config.get<string>('feishu_bot.owner_open_id', '');
     if (!ownerOpenId) return true;
     return openId === ownerOpenId;
+  }
+
+  /**
+   * Read all entries from user-mapping.json (raw, for R8 startup recovery).
+   * Returns array of [openId, entry] tuples. Empty array if file doesn't
+   * exist or is corrupt. Does NOT acquire the lock — this is a one-shot
+   * snapshot read used only at bot startup before any handlers run.
+   */
+  async allEntries(): Promise<Array<[string, MappingEntry]>> {
+    try {
+      const raw = await readFile(this.mappingPath, 'utf8');
+      const parsed = JSON.parse(raw) as UserMapping;
+      return Object.entries(parsed.entries || {}) as Array<[string, MappingEntry]>;
+    } catch {
+      return [];
+    }
   }
 }
 

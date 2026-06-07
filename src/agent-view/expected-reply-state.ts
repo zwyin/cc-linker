@@ -1,4 +1,3 @@
-import { readFile } from 'fs/promises';
 import type { UserManager, MappingEntry } from '../feishu/mapping';
 
 export interface ExpectedReplyInfo {
@@ -112,35 +111,23 @@ export class ExpectedReplyState {
    * - 未超时:in-memory 重建 + setTimeout 剩余时间
    */
   async restoreExpectedReplyStates(): Promise<void> {
-    let raw: string;
-    try {
-      raw = await readFile(
-        // @ts-ignore — 访问 private 字段仅用于 R8 启动恢复
-        (this.userManager as any).mappingPath,
-        'utf8'
-      );
-    } catch {
-      return;
-    }
-    const parsed = JSON.parse(raw);
-    const entries = parsed.entries || {};
-    for (const [openId, entry] of Object.entries(entries)) {
-      const e = entry as any;
-      if (e.type !== 'pending_agent_reply') continue;
-      const startedAt = new Date(e.startedAt).getTime();
+    const entries = await this.userManager.allEntries();
+    for (const [openId, entry] of entries) {
+      if (entry.type !== 'pending_agent_reply') continue;
+      const startedAt = new Date(entry.startedAt!).getTime();
       const elapsed = Date.now() - startedAt;
-      if (elapsed >= e.timeoutMs) {
+      if (elapsed >= entry.timeoutMs!) {
         // 已超时,静默删除
-        await this.userManager.compareAndSwap(openId, e, null);
+        await this.userManager.compareAndSwap(openId, entry, null);
       } else {
         // 未超时,重建
         const internal: InternalEntry = {
-          shortId: e.shortId,
-          sessionId: e.sessionUuid,
-          cwd: e.cwd || '',
+          shortId: entry.shortId!,
+          sessionId: entry.sessionUuid!,
+          cwd: entry.cwd || '',
           startedAt,
-          timeoutMs: e.timeoutMs,
-          casToken: e.casToken || '',
+          timeoutMs: entry.timeoutMs!,
+          casToken: entry.casToken || '',
         };
         this.inMemory.set(openId, internal);
         this.scheduleTimeout(openId);

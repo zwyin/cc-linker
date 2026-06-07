@@ -165,3 +165,61 @@ describe('entriesMatch behavior for new types (via UserManager CAS)', () => {
     expect(cas1).toBe(true);
   });
 });
+
+describe('UserManager.allEntries() (R8 startup recovery)', () => {
+  let tmpDir: string;
+  let tmpMapping: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'mapping-allentries-'));
+    tmpMapping = join(tmpDir, 'user-mapping.json');
+    (config as any).data.feishu_bot.owner_open_id = '';
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test('returns [openId, entry] tuples for stored entries', async () => {
+    const mgr = new UserManager(tmpMapping);
+    await mgr.compareAndSwap('open_a', null, {
+      type: 'pending_agent_reply',
+      sessionUuid: 'uuid-a',
+      cwd: '/a',
+      createdAt: '2026-06-06T00:00:00.000Z',
+      shortId: 'shorta',
+      startedAt: '2026-06-06T00:00:00.000Z',
+      timeoutMs: 300000,
+    });
+    await mgr.compareAndSwap('open_b', null, {
+      type: 'session',
+      sessionUuid: 'uuid-b',
+      cwd: '/b',
+      createdAt: '2026-06-06T00:00:00.000Z',
+    });
+
+    const all = await mgr.allEntries();
+    expect(all).toHaveLength(2);
+    const map = new Map(all);
+    expect(map.get('open_a')?.type).toBe('pending_agent_reply');
+    expect(map.get('open_b')?.type).toBe('session');
+  });
+
+  test('returns [] when mapping file does not exist', async () => {
+    const mgr = new UserManager(tmpMapping);
+    // ensureFile would create an empty file; delete it to simulate missing
+    const fs = await import('fs');
+    if (fs.existsSync(tmpMapping)) fs.rmSync(tmpMapping);
+    const all = await mgr.allEntries();
+    expect(all).toEqual([]);
+  });
+
+  test('returns [] when mapping file is corrupt', async () => {
+    const fs = await import('fs');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(tmpMapping, '{ this is not valid JSON', 'utf8');
+    const mgr = new UserManager(tmpMapping);
+    const all = await mgr.allEntries();
+    expect(all).toEqual([]);
+  });
+});
