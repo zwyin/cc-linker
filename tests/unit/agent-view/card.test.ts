@@ -89,6 +89,31 @@ describe('buildListCard', () => {
     );
     expect(overflowLine).toBeUndefined();
   });
+
+  test('v2.2.1: prepends ℹ️ status-source tooltip as first element', () => {
+    const sessions = parseAgentsJson(
+      readFileSync(join(fixtureDir, 'waiting.json'), 'utf8'),
+    );
+    const groups = groupByStatus(sessions);
+    const card = JSON.parse(buildListCard(groups, '12:34:56'));
+    // tooltip 是 elements[0],先于 "Last refreshed" 和 group headers
+    const tooltip = card.elements.find(
+      (e: any) =>
+        e.tag === 'markdown' &&
+        typeof e.content === 'string' &&
+        e.content.includes('claude agents --json'),
+    );
+    expect(tooltip).toBeDefined();
+    expect(tooltip.content).toContain('TUI');
+    // 第二个 markdown 必须是 "Last refreshed"(保持原有顺序)
+    const refreshLine = card.elements.find(
+      (e: any) =>
+        e.tag === 'markdown' &&
+        typeof e.content === 'string' &&
+        e.content.startsWith('Last refreshed'),
+    );
+    expect(refreshLine).toBeDefined();
+  });
 });
 
 describe('buildPeekCard', () => {

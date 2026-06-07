@@ -9,15 +9,12 @@ import { beforeEach, describe, expect, test, mock, afterAll, afterEach } from 'b
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { AgentViewManager } from '../../src/agent-view/manager';
-import { UserManager } from '../../src/feishu/mapping';
+import { promisify } from 'node:util';
 import { config } from '../../src/utils/config';
-import { AgentSnapshotFetcher } from '../../src/agent-view/snapshot-fetcher';
 import type { AgentSession } from '../../src/agent-view/types';
 
 // ── Mock node:child_process so handlePeek / handleStop / handleRefreshPeek
 // don't shell out to a real `claude` binary.
-import { promisify } from 'node:util';
 const execFileMock = Object.assign(
   mock(
     (
@@ -48,12 +45,30 @@ mock.module('node:child_process', () => {
   return { ...real, execFile: execFileMock };
 });
 
+// v2.2.1: 不 mock roster-source。Integration test 走真 readRoster,
+// 通过把 HOME 指向带 controlled roster.json 的 tmpdir 来注入测试数据。
+// mock.module 已被移除,避免它拦截真函数。
+
+// Source imports — placed AFTER the mock.module calls above so the mocks
+// intercept when snapshot-fetcher pulls in roster-source via destructure.
+import { AgentViewManager } from '../../src/agent-view/manager';
+import { UserManager } from '../../src/feishu/mapping';
+import { AgentSnapshotFetcher } from '../../src/agent-view/snapshot-fetcher';
+
 // ── Per-test tempdir + restore snapshot fetcher mock between tests.
 let tmpDir: string;
 const origFetch = AgentSnapshotFetcher.fetch;
 
 afterAll(() => {
   (AgentSnapshotFetcher as any).fetch = origFetch;
+});
+
+// v2.2.1: 必须在每个 test 前重置 AgentSnapshotFetcher.fetch,
+// 否则之前 test 里 (AgentSnapshotFetcher as any).fetch = mock(...) 的 override
+// 会泄漏到下一个 test,影响 mock.execFile 的期望(只对真 fetch 路径生效)。
+beforeEach(() => {
+  (AgentSnapshotFetcher as any).fetch = origFetch;
+  execFileMock.mockReset();
 });
 
 afterEach(() => {
@@ -247,5 +262,107 @@ describe('Agent View end-to-end', () => {
     // expectedReply 仍被清理(try/finally)
     expect(mgr.expectedReply.get('ou_e2e_busy')).toBeUndefined();
     expect(userManager.getEntry('ou_e2e_busy')).toBeUndefined();
+  });
+
+  test('v2.2.1: sub-agents (spare/fleet) are filtered out of list when roster has source info', async () => {
+    // 这个 test 走真 fetch 路径:
+    //   1) execFile('claude', ['agents', '--json']) 返回 3 个 session
+    //   2) 通过把 HOME 指向带 controlled roster.json 的 tmpdir,让真 readRoster()
+    //      读到我们造的 roster(slash/spare/fleet 各一)
+    // 期望:list 卡里只能看到 slash 那个 session
+    // worker key 必须等于 sessionId 的前 8 字符(实跑 roster.json 的规律)
+    const agentsJson = JSON.stringify([
+      { pid: 1, cwd: '/a', kind: 'background', startedAt: 1000, sessionId: 'slash000-1111-2222-3333-444444444444', name: 'user-dispatched-task', status: 'busy' },
+      { pid: 2, cwd: '/a', kind: 'background', startedAt: 1000, sessionId: 'spare000-1111-2222-3333-444444444444', name: 'sub-agent-spare', status: 'busy' },
+      { pid: 3, cwd: '/a', kind: 'background', startedAt: 1000, sessionId: 'fleet000-1111-2222-3333-444444444444', name: 'daemon-internal-fleet', status: 'busy' },
+    ]);
+    // 写真 roster 到一个 tmpdir,然后把 HOME 指向那里
+    const fakeHome = mkdtempSync(join(tmpdir(), 'agent-view-int-roster-'));
+    const rosterDir = join(fakeHome, '.claude', 'daemon');
+    require('fs').mkdirSync(rosterDir, { recursive: true });
+    require('fs').writeFileSync(join(rosterDir, 'roster.json'), JSON.stringify({
+      proto: 1,
+      updatedAt: 0,
+      workers: {
+        slash000: { pid: 1, sessionId: 'slash000-1111-2222-3333-444444444444', cwd: '/a', startedAt: 0,
+          dispatch: { source: 'slash' } },
+        spare000: { pid: 2, sessionId: 'spare000-1111-2222-3333-444444444444', cwd: '/a', startedAt: 0,
+          dispatch: { source: 'spare' } },
+        fleet000: { pid: 3, sessionId: 'fleet000-1111-2222-3333-444444444444', cwd: '/a', startedAt: 0,
+          dispatch: { source: 'fleet' } },
+      },
+    }));
+    const realHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+
+    execFileMock.mockImplementation((cmd: string, args: string[], cb: any) => {
+      if (cmd === 'claude' && args[0] === 'agents') {
+        cb(null, agentsJson, '');
+      } else {
+        cb(null, '', '');
+      }
+    });
+
+    try {
+      const { mgr, cardReplyFn } = makeEnv();
+      await mgr.handleList('ou_e2e_subagent_filter');
+
+      expect(cardReplyFn).toHaveBeenCalledTimes(1);
+      const card = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+      const md = (card.elements as any[])
+        .filter(e => e.tag === 'markdown')
+        .map(e => e.content)
+        .join('\n');
+      // 留下的只有 slash 那个
+      expect(md).toContain('user-dispatched-task');
+      expect(md).not.toContain('sub-agent-spare');
+      expect(md).not.toContain('daemon-internal-fleet');
+      // v2.2.1 tooltip 也要在
+      expect(md).toContain('claude agents --json');
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  test('v2.2.1: when roster is unreadable, all sessions are kept (graceful degradation)', async () => {
+    // 模拟 daemon 跑着但 roster.json 损坏:文件存在(DaemonProbe pass)
+    // 但 JSON.parse 失败(readRoster 返回 null)
+    // filterUserDispatched 保留所有 source='unknown' session
+    const fakeHome = mkdtempSync(join(tmpdir(), 'agent-view-int-noroster-'));
+    const rosterDir = join(fakeHome, '.claude', 'daemon');
+    require('fs').mkdirSync(rosterDir, { recursive: true });
+    // 写一个会让 JSON.parse 失败的内容(空文件 / 非法 JSON)
+    require('fs').writeFileSync(join(rosterDir, 'roster.json'), '', 'utf8');
+    const realHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+
+    const agentsJson = JSON.stringify([
+      { pid: 1, cwd: '/a', kind: 'background', startedAt: 1000, sessionId: 'uuid-aaaa-1111-2222-333333333333', name: 'task-a', status: 'busy' },
+      { pid: 2, cwd: '/a', kind: 'background', startedAt: 2000, sessionId: 'uuid-bbbb-1111-2222-333333333333', name: 'task-b', status: 'idle' },
+    ]);
+    execFileMock.mockImplementation((cmd: string, args: string[], cb: any) => {
+      if (cmd === 'claude' && args[0] === 'agents') {
+        cb(null, agentsJson, '');
+      } else {
+        cb(null, '', '');
+      }
+    });
+
+    try {
+      const { mgr, cardReplyFn } = makeEnv();
+      await mgr.handleList('ou_e2e_no_roster');
+
+      const card = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+      const md = (card.elements as any[])
+        .filter(e => e.tag === 'markdown')
+        .map(e => e.content)
+        .join('\n');
+      expect(md).toContain('task-a');
+      expect(md).toContain('task-b');
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });
