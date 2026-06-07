@@ -56,7 +56,9 @@ export class AgentViewManager {
     // 列表上限 10(spec §6.1)
     const cappedSessions = result.sessions.slice(0, MAX_LIST_ITEMS);
     const groups = groupByStatus(cappedSessions);
-    const card = buildListCard(groups, new Date().toLocaleTimeString());
+    // v2.2 修正:>10 时 buildListCard 追加 "… N more" 折行
+    const hasMore = Math.max(0, result.sessions.length - MAX_LIST_ITEMS);
+    const card = buildListCard(groups, new Date().toLocaleTimeString(), hasMore);
     const cardMessageId = await this.sendOrFallback(
       card,
       { openId },
@@ -115,7 +117,9 @@ export class AgentViewManager {
     }
     const cappedSessions = result.sessions.slice(0, MAX_LIST_ITEMS);
     const groups = groupByStatus(cappedSessions);
-    const card = buildListCard(groups, new Date().toLocaleTimeString());
+    // v2.2 修正:>10 时 buildListCard 追加 "… N more" 折行
+    const hasMore = Math.max(0, result.sessions.length - MAX_LIST_ITEMS);
+    const card = buildListCard(groups, new Date().toLocaleTimeString(), hasMore);
     // G11:超 25KB 走 text fallback;用 replyFn 代替 patchFn(无法 patch 一个新消息)
     const size = new TextEncoder().encode(card).length;
     if (size > MAX_CARD_BYTES) {

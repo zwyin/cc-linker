@@ -3,8 +3,15 @@ import type { AgentSessionGroup, AgentSession, AgentSessionStatus } from './type
 
 const TEMPLATE_HEADER = { config: { wide_screen_mode: true } };
 
-/** 列表卡:按 busy / waiting / idle 三组渲染 */
-export function buildListCard(groups: AgentSessionGroup, refreshedAt: string): string {
+/** 列表卡:按 busy / waiting / idle 三组渲染
+ * v2.2 修正:hasMore > 0 时,追加 "… N more(用 `claude agents --cwd <path>` 缩小范围)" 提示
+ * (spec §6.1 "列表上限 10 个会话,>10 时折行 `… N more`")
+ */
+export function buildListCard(
+  groups: AgentSessionGroup,
+  refreshedAt: string,
+  hasMore: number = 0,
+): string {
   const elements: any[] = [];
   for (const [status, list] of [
     ['busy', groups.busy],
@@ -77,6 +84,13 @@ export function buildListCard(groups: AgentSessionGroup, refreshedAt: string): s
     }
   }
   elements.push({ tag: 'hr' });
+  // v2.2 修正:>10 时折行 "… N more" 提示用户用 `claude agents --cwd <path>` 缩小范围
+  if (hasMore > 0) {
+    elements.push({
+      tag: 'markdown',
+      content: `… ${hasMore} more(用 \`claude agents --cwd <path>\` 缩小范围)`,
+    });
+  }
   elements.push({
     tag: 'action',
     actions: [

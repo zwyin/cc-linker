@@ -57,6 +57,38 @@ describe('buildListCard', () => {
     // 卡大小 > 25KB,应由 manager 走 text fallback(此测试仅断言 size)
     expect(size).toBeGreaterThan(25_000);
   });
+
+  test('v2.2: shows "… N more" overflow line when hasMore > 0', () => {
+    const sessions = parseAgentsJson(
+      readFileSync(join(fixtureDir, 'waiting.json'), 'utf8'),
+    );
+    const groups = groupByStatus(sessions);
+    const card = JSON.parse(buildListCard(groups, '12:34:56', 5));
+    const overflowLine = card.elements.find(
+      (e: any) =>
+        e.tag === 'markdown' &&
+        typeof e.content === 'string' &&
+        e.content.includes('… 5 more'),
+    );
+    expect(overflowLine).toBeDefined();
+    // spec §6.1:必须提示用户用 `claude agents --cwd <path>` 缩小范围
+    expect(overflowLine?.content).toContain('claude agents --cwd <path>');
+  });
+
+  test('v2.2: no overflow line when hasMore = 0 (default)', () => {
+    const sessions = parseAgentsJson(
+      readFileSync(join(fixtureDir, 'waiting.json'), 'utf8'),
+    );
+    const groups = groupByStatus(sessions);
+    const card = JSON.parse(buildListCard(groups, '12:34:56'));
+    const overflowLine = card.elements.find(
+      (e: any) =>
+        e.tag === 'markdown' &&
+        typeof e.content === 'string' &&
+        e.content.includes('more'),
+    );
+    expect(overflowLine).toBeUndefined();
+  });
 });
 
 describe('buildPeekCard', () => {
