@@ -445,32 +445,23 @@ export class AgentViewManager {
   }
 
   /**
-   * Step B — once a reply text arrives, CAS-claim the expectedReply slot,
-   * re-run the status guard, then proxy the text through runChatSDK. v2.2
-   * critical fix: wrap runChatSDK in try/finally so expectedReply is cleared
-   * even if it throws (otherwise the user stays stuck in waiting state until
-   * the 5-minute timeout).
+   * Step B — once a reply text arrives, re-run the status guard, then proxy
+   * the text through runChatSDK. v2.2 critical fix: wrap runChatSDK in
+   * try/finally so expectedReply is cleared even if it throws (otherwise
+   * the user stays stuck in waiting state until the 5-minute timeout).
+   *
+   * v2.2 simplification: removed the CAS-claim dance that bumped casToken.
+   * The dance was dead code: the finally block clears the entry regardless
+   * of CAS outcome, so the casToken change had no observable effect.
+   * sessionLocks (in the SpoolQueue dispatch path) already serialize
+   * per-session data, so per-session corruption is impossible.
    */
   async handleReply(openId: string, text: string): Promise<void> {
     // 1. 检查 expectedReply
     const info = this.expectedReply.get(openId);
     if (!info) return;
 
-    // 2. CAS 抢占(改 casToken 标识"reply 开始了")
-    try {
-      const entry = this.deps.userManager.getEntry(openId);
-      if (entry?.type !== 'pending_agent_reply') return;
-      const casToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const ok = await this.deps.userManager.compareAndSwap(openId, entry, {
-        ...entry,
-        casToken,
-      });
-      if (!ok) return;
-    } catch (_err) {
-      return;
-    }
-
-    // 3. Step B 二次状态守卫
+    // 2. Step B 二次状态守卫
     const result = await AgentSnapshotFetcher.fetch();
     if (!result.ok) {
       await this.expectedReply.clear(openId);
@@ -491,7 +482,7 @@ export class AgentViewManager {
       return;
     }
 
-    // 4. runChatSDK,try/finally 保证 clear 必发(v2.2 critical)
+    // 3. runChatSDK,try/finally 保证 clear 必发(v2.2 critical)
     try {
       await this.deps.runChatSDK({
         openId,
