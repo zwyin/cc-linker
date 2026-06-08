@@ -749,7 +749,13 @@ export class FeishuBot {
       { skipActivityCheck: true, awaitingForceSend: false }
     );
 
-    if (!updated) return null;
+    if (!updated) {
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: '❌ 操作失败' }, template: 'red' },
+        elements: [{ tag: 'markdown', content: '**消息标记失败，请重试。**\n\n该消息可能已被其他途径处理。' }],
+      };
+    }
 
     // 移回 pending/ 目录，让 worker 下一轮 dispatch 重新 claim
     // 重新 claim 时会看到 skipActivityCheck=true，跳过活跃检测直接处理
@@ -759,7 +765,11 @@ export class FeishuBot {
     );
     if (!requeued) {
       logger.warn(`强制发送后移回 pending 失败: ${targetMsg.serialKey}:${targetMsg.messageId}`);
-      return null;
+      return {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: '❌ 操作失败' }, template: 'red' },
+        elements: [{ tag: 'markdown', content: '**消息移回队列失败，请重试。**\n\n你可以发送一条新消息来覆盖。' }],
+      };
     }
 
     // 失效缓存（让 worker 下次 loop 重新检测）
@@ -997,6 +1007,7 @@ export class FeishuBot {
               promptText,
               serialKey: msg.serialKey,
               isNew: false,
+              messageId: msg.messageId,
             });
           } catch (err: any) {
             // runChatSDK 已经把卡片标为 error 并 dispose;只做 SpoolQueue / 取消清理
@@ -1080,6 +1091,11 @@ export class FeishuBot {
     entry: any,
     status: ActivityResult,
   ): Promise<string> {
+    // L1084 是全文件唯一一个没有 feishuClient null check 的 new CardUpdater 调用点。
+    // feishuClient 为 null 时 throw → handleChat catch → 降级:允许发送(无卡片能力时合理)。
+    if (!this.feishuClient) {
+      throw new Error('feishuClient is null, cannot send busy card');
+    }
     const cardUpdater = new CardUpdater(this.feishuClient, { throttle_ms: 0 });
     return await cardUpdater.createCLIBusyCard(
       msg.openId,
@@ -1254,8 +1270,10 @@ export class FeishuBot {
     promptText: string;
     serialKey: string;
     isNew?: boolean;
+    /** Spool messageId — used for cancellation check against cancelledMessageIds. */
+    messageId?: string;
   }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null }> {
-    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false } = params;
+    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId } = params;
     // v2.2.14: defense-in-depth —— UserManager.sessionUuid 可能是 8 字符 short hash
     // (历史 settled bg 走旧 snapshot-fetcher 路径时种下),`claude -p --resume <short>`
     // 会被 SDK 拒(报 "Provided value ... is not a UUID")。handleAttach 已尝试
@@ -1379,7 +1397,7 @@ export class FeishuBot {
             }
           }
           // 同时把 spool / cancelled state 清理一下(没有 SDK 调用要 abort)
-          this.cancelledMessageIds.delete(serialKey);
+          if (messageId) this.cancelledMessageIds.delete(messageId);
           return {
             result: {
               response: '(bg worker 冲突,已弹卡询问下一步)',
@@ -1442,7 +1460,7 @@ export class FeishuBot {
       const finalText = text || result.response || '(空回复)';
 
       if (cardUpdater) {
-        const wasCancelled = this.cancelledMessageIds.has(serialKey);
+        const wasCancelled = messageId ? this.cancelledMessageIds.has(messageId) : false;
         if (wasCancelled) {
           await cardUpdater.cancel();
         } else if (cardUpdater.shouldFallbackToText(finalText)) {

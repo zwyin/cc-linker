@@ -66,12 +66,13 @@ export class ExpectedReplyState {
    */
   async clear(openId: string, _reason?: 'user' | 'timeout' | 'overwrite'): Promise<void> {
     const current = this.userManager.getEntry(openId);
-    if (current?.type !== 'pending_agent_reply') return;  // 已经不在了
-    const ok = await this.userManager.compareAndSwap(openId, current, null);
-    if (ok) {
-      this.inMemory.delete(openId);
-      this.clearTimer(openId);
+    if (current?.type === 'pending_agent_reply') {
+      await this.userManager.compareAndSwap(openId, current, null);
     }
+    // v2.2.19 fix: always clear local state. CAS 1 in handleAttach may have
+    // already nulled the user-mapping entry, but in-memory + timer are stale.
+    this.inMemory.delete(openId);
+    this.clearTimer(openId);
   }
 
   get(openId: string): ExpectedReplyInfo | undefined {

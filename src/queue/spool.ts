@@ -347,7 +347,7 @@ export class SpoolQueue {
         const msg = JSON.parse(raw) as SpoolMessage;
         if (flags.skipActivityCheck !== undefined) msg.skipActivityCheck = flags.skipActivityCheck;
         if (flags.awaitingForceSend !== undefined) msg.awaitingForceSend = flags.awaitingForceSend;
-        writeFileSync(path, JSON.stringify(msg, null, 2), { mode: 0o600 });
+        this.writeAtomic(path, msg);
         return true;
       } catch (err) {
         logger.warn(`更新 SpoolMessage 标志失败: ${err}`);

@@ -486,6 +486,30 @@ describe('handleRefreshPeek', () => {
     expect(sentCard.header.title.content).toContain('会话已不存在');
     expect(cardReplyFn).not.toHaveBeenCalled();
   });
+
+  // 回归:用户对同一 Peek 卡快速连点 Refresh(实测日志 11:25-11:27 期间 10 次),
+  // 没有 debounce 时每次都触发 patchFn,1200ms 延迟叠加导致 patch 顺序不可控,
+  // Feishu 客户端把早到(synthetic 内容)的 patch 渲染为终态 → "原卡片内容覆盖"
+  // 现象。debounce 后:2s 窗口内只 patch 一次,使用最新 JSONL 读到的真实响应。
+  test('debounces rapid refresh clicks (2s window)', async () => {
+    const { mgr, patchFn, cardReplyFn } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+    const shortId = busy.sessionId.slice(0, 8);
+
+    // 第一次:shouldRefresh=true,会发 patch
+    await mgr.handleRefreshPeek('ou_rpeek_dedupe', shortId, busy.sessionId, 'om_peek_dedupe');
+    expect(patchFn).toHaveBeenCalledTimes(1);
+
+    // 紧接第二次:应在 debounce 窗口内,无操作
+    patchFn.mockClear();
+    await mgr.handleRefreshPeek('ou_rpeek_dedupe', shortId, busy.sessionId, 'om_peek_dedupe');
+    expect(patchFn).not.toHaveBeenCalled();
+    expect(cardReplyFn).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleBackToChat', () => {

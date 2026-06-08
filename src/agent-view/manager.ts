@@ -5,6 +5,7 @@ import { buildListCard, buildPeekCard, buildErrorCard, buildEmptyCard, buildWait
 import type { AgentSession, AgentSessionGroup, AgentSessionStatus } from './types';
 import { groupByStatus } from './types';
 import { config } from '../utils/config';
+import { logger } from '../utils/logger';
 import { extractRecentAssistantText } from './jsonl-peek';
 import { JsonlIndex } from './jsonl-name';
 import { readRoster, lookupResumeFromPath } from './roster-source';
@@ -25,7 +26,7 @@ export interface AgentViewDeps {
   runChatSDK: (params: {
     openId: string; sessionUuid: string; cwd: string;
     promptText: string; serialKey: string; isNew?: boolean;
-    settingsPath?: string;
+    settingsPath?: string; messageId?: string;
   }) => Promise<{ result: any; handler: any; cardMessageId: string | null }>;
   expectedReplyTimeoutMs?: number;
 }
@@ -233,6 +234,7 @@ export class AgentViewManager {
     const card = buildPeekCard({
       name: session.name,
       status: session.status,
+      completed: session.completed,
       waitingFor: session.waitingFor,
       shortId,
       sessionId,
@@ -262,6 +264,11 @@ export class AgentViewManager {
     messageId?: string,
   ): Promise<string | null> {
     if (!messageId) return null;
+    // 2s debounce:防止用户对同一 Peek 卡快速连点 Refresh
+    // (实测日志 11:25-11:27 期间 10 次),避免多次 patch 排队叠加 1200ms 延迟
+    // 导致 patch 顺序不可控,Feishu 客户端把早到(synthetic 内容)的 patch
+    // 渲染为终态——表现为 "原卡片内容覆盖" 现象。
+    if (!this.shouldRefresh()) return null;
     const session = await this.findSession(openId, sessionId);
     if (!session) {
       await this.deps.patchFn(
@@ -286,6 +293,7 @@ export class AgentViewManager {
     const card = buildPeekCard({
       name: session.name,
       status: session.status,
+      completed: session.completed,
       waitingFor: session.waitingFor,
       shortId,
       sessionId,
@@ -293,6 +301,7 @@ export class AgentViewManager {
       pid: session.pid,
       startedAt: session.startedAt,
       recentOutput: truncated,
+      outputFormat: peek.format,
       buttons,
     });
     // G11:超 25KB 走 text fallback(无法 patch 时发新文本)
@@ -337,7 +346,16 @@ export class AgentViewManager {
       const cp = await import('node:child_process');
       const { promisify } = await import('node:util');
       const execFileP = promisify(cp.execFile);
-      await execFileP('claude', ['stop', shortId], { timeout: 5000 });
+      try {
+        await execFileP('claude', ['stop', shortId], { timeout: 5000 });
+      } catch (err: any) {
+        // v2.2.19 fix: session 在用户点确认前已自然 settle 时,
+        // `claude stop` 报 "No job matching" — 这是成功,不是失败。
+        const errMsg = err?.stderr || err?.message || String(err);
+        if (!/No job matching/i.test(errMsg)) {
+          throw err;
+        }
+      }
       // 等 supervisor 收尾
       await new Promise(r => setTimeout(r, 1000));
       await this.deps.replyFn(`✅ 已停止 ${shortId}`, { openId });
@@ -399,17 +417,13 @@ export class AgentViewManager {
     // 进入 CAS 阶段前,正式把 sessionId 替换成 full UUID,后续 UserManager
     // 写入和 SDK 调用都走 full,免得 SDK 拒 short("Provided value ... is not a UUID")
     if (fullUuid) sessionId = fullUuid;
-    // v2.2 修正:只清除 expectedReply IF oldEntry 本身就是 pending_agent_reply。
-    // 旧逻辑:无条件 expectedReply.clear() 早于 CAS 1/2 — 如果 CAS 1 或 2 失败,用户
-    //   已经丢失了 pending reply(白白丢弃)。新逻辑:CAS 1 失败时 expectedReply 仍在,
-    //   用户下次 handleReply 仍能正常工作。
-    // 1. CAS 1 准备:如果旧 entry 就是 expectedReply,先 clear 它(它会自己做 CAS pending_agent_reply → null)
-    //    然后重新读 entry(防止中间并发修改)。
+    // v2.2.19 修正:expectedReply.clear 必须在 CAS 1 成功之后调用。
+    // 旧逻辑(L415-418)在 CAS 1 之前就 clear — 如果 CAS 1 失败,用户的 pending reply
+    // 已经丢失且无法恢复。新逻辑:CAS 1 成功后再 clear(CAS 1 已 null 掉 entry,
+    // clear() 只清 in-memory + timer;若 CAS 1 失败则 expectedReply 完整保留)。
     const oldEntry = this.deps.userManager.getEntry(openId);
-    if (oldEntry && oldEntry.type === 'pending_agent_reply') {
-      await this.expectedReply.clear(openId, 'overwrite');
-    }
-    // 2. CAS 1: 清旧 entry
+    const wasPendingReply = oldEntry?.type === 'pending_agent_reply';
+    // 1. CAS 1: 清旧 entry
     const currentEntry = this.deps.userManager.getEntry(openId);
     if (currentEntry) {
       const ok1 = await this.deps.userManager.compareAndSwap(openId, currentEntry, null);
@@ -417,6 +431,10 @@ export class AgentViewManager {
         await this.deps.replyFn('⚠️ 状态冲突,请重试', { openId });
         return null;
       }
+    }
+    // CAS 1 成功 → 安全清除 expectedReply 本地状态
+    if (wasPendingReply) {
+      await this.expectedReply.clear(openId, 'overwrite');
     }
     // 3. CAS 2: 写新 session entry
     const newEntry: MappingEntry = {
@@ -525,57 +543,66 @@ export class AgentViewManager {
     hasParent: boolean,
     messageId?: string,
   ): Promise<void> {
-    // 1. 跑 claude stop 释放 bg worker
     try {
-      const cp = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      const execFileP = promisify(cp.execFile);
-      await execFileP('claude', ['stop', shortId], { timeout: 5000 });
-    } catch (err: any) {
-      // "No job matching"(已自然 settle)算成功;其他错才报
-      const msg = err?.stderr || err?.message || String(err);
-      if (!/No job matching/i.test(msg)) {
-        await this.deps.replyFn(`❌ Stop 失败:${msg}`, { openId });
-        return;
-      }
-    }
-    // 2. 等 supervisor 释放
-    await new Promise(r => setTimeout(r, 1000));
-
-    // 3. 总是 fallback 到 parent(除非没 parent)
-    const effectiveSessionUuid = hasParent && parentUuid ? parentUuid : sessionId;
-    const effectiveSerialKey = effectiveSessionUuid;
-    const fallbackNote = hasParent && parentUuid
-      ? `已自动 fallback 到 parent session (${parentUuid.slice(0, 8)}...) —— bg worker 内存里的增量对话会丢失,parent 有 fork 之前的历史。`
-      : '';
-
-    // 4. CAS 切 UserManager 到 effective sessionId
-    if (effectiveSessionUuid !== sessionId) {
-      const oldEntry = this.deps.userManager.getEntry(openId);
-      if (oldEntry?.type === 'session' && oldEntry.sessionUuid === sessionId) {
-        const newEntry: MappingEntry = { ...oldEntry, sessionUuid: effectiveSessionUuid };
-        const ok = await this.deps.userManager.compareAndSwap(openId, oldEntry, newEntry);
-        if (ok && fallbackNote) {
-          await this.deps.replyFn(
-            `🛑 bg worker ${shortId} 已停止。${fallbackNote}`,
-            { openId },
-          );
+      // 1. 跑 claude stop 释放 bg worker
+      try {
+        const cp = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execFileP = promisify(cp.execFile);
+        await execFileP('claude', ['stop', shortId], { timeout: 5000 });
+      } catch (err: any) {
+        // "No job matching"(已自然 settle)算成功;其他错才报
+        const msg = err?.stderr || err?.message || String(err);
+        if (!/No job matching/i.test(msg)) {
+          await this.deps.replyFn(`❌ Stop 失败:${msg}`, { openId });
+          return;
         }
       }
-    }
+      // 2. 等 supervisor 释放
+      await new Promise(r => setTimeout(r, 1000));
 
-    // 5. 调 runChatSDK 发消息(SDK 内部会自己 patch 卡成"💭 处理中" → "✅ 处理完成")
-    try {
-      await this.deps.runChatSDK({
-        openId,
-        sessionUuid: effectiveSessionUuid,
-        cwd,
-        promptText: text,
-        serialKey: effectiveSerialKey,
-        isNew: false,
-      });
+      // 3. 总是 fallback 到 parent(除非没 parent)
+      const effectiveSessionUuid = hasParent && parentUuid ? parentUuid : sessionId;
+      const effectiveSerialKey = effectiveSessionUuid;
+      const fallbackNote = hasParent && parentUuid
+        ? `已自动 fallback 到 parent session (${parentUuid.slice(0, 8)}...) —— bg worker 内存里的增量对话会丢失,parent 有 fork 之前的历史。`
+        : '';
+
+      // 4. CAS 切 UserManager 到 effective sessionId
+      if (effectiveSessionUuid !== sessionId) {
+        const oldEntry = this.deps.userManager.getEntry(openId);
+        if (oldEntry?.type === 'session' && oldEntry.sessionUuid === sessionId) {
+          const newEntry: MappingEntry = { ...oldEntry, sessionUuid: effectiveSessionUuid };
+          const ok = await this.deps.userManager.compareAndSwap(openId, oldEntry, newEntry);
+          if (ok && fallbackNote) {
+            await this.deps.replyFn(
+              `🛑 bg worker ${shortId} 已停止。${fallbackNote}`,
+              { openId },
+            );
+          }
+        }
+      }
+
+      // 5. 调 runChatSDK 发消息(SDK 内部会自己 patch 卡成"💭 处理中" → "✅ 处理完成")
+      try {
+        await this.deps.runChatSDK({
+          openId,
+          sessionUuid: effectiveSessionUuid,
+          cwd,
+          promptText: text,
+          serialKey: effectiveSerialKey,
+          isNew: false,
+        });
+      } catch (err: any) {
+        await this.deps.replyFn(`❌ 发送失败:${err?.message ?? err}`, { openId });
+      }
     } catch (err: any) {
-      await this.deps.replyFn(`❌ 发送失败:${err?.message ?? err}`, { openId });
+      // Top-level safety net: _doStopAndSend is fire-and-forget (void),
+      // so any unhandled rejection would silently disappear.
+      logger.error(`_doStopAndSend unexpected error: ${err?.message ?? err}`);
+      try {
+        await this.deps.replyFn(`❌ 操作失败,请重试`, { openId });
+      } catch { /* last-resort swallow */ }
     }
   }
 
@@ -686,7 +713,11 @@ export class AgentViewManager {
     const triggerCardMessageId =
       preListEntry?.type === 'last_agent_list_card' ? preListEntry.cardMessageId : undefined;
     if (preListEntry?.type === 'last_agent_list_card') {
-      await this.deps.userManager.compareAndSwap(openId, preListEntry, null);
+      const cleared = await this.deps.userManager.compareAndSwap(openId, preListEntry, null);
+      if (!cleared) {
+        await this.deps.replyFn('请先刷新列表后重试', { openId });
+        return;
+      }
     }
     try {
       await this.expectedReply.set(openId, { shortId: _shortId, sessionId, cwd });

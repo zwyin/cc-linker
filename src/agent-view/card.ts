@@ -165,6 +165,7 @@ function truncateCwd(cwd: string): string {
 export function buildPeekCard(opts: {
   name: string;
   status: AgentSessionStatus;
+  completed?: boolean;
   waitingFor?: string;
   shortId: string; // v2.2 修正:按钮 value 需要
   sessionId: string; // v2.2 修正:按钮 value 需要
@@ -176,7 +177,10 @@ export function buildPeekCard(opts: {
   buttons: { peek: boolean; attach: boolean; reply: boolean; stop: boolean; refresh: boolean };
 }): string {
   const statusLabel =
-    opts.status === 'busy' ? '处理中' : opts.status === 'waiting' ? '等待输入' : '已完成';
+    opts.status === 'busy' ? '处理中'
+    : opts.status === 'waiting' ? '等待输入'
+    : opts.status === 'idle' ? (opts.completed ? '已完成' : '空闲')
+    : '未知';
   const fmt = opts.outputFormat ?? 'markdown';
   const recentBlock =
     fmt === 'terminal'

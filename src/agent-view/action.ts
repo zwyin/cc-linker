@@ -42,7 +42,48 @@ export type AgentViewValue =
   | { tag: 'agent_view_bg_conflict_cancel' };
 
 export function isAgentViewValue(v: any): v is AgentViewValue {
-  return Boolean(
-    v && typeof v === 'object' && typeof v.tag === 'string' && v.tag.startsWith('agent_view_'),
-  );
+  if (!v || typeof v !== 'object' || typeof v.tag !== 'string') return false;
+  if (!v.tag.startsWith('agent_view_')) return false;
+
+  const str = (k: string) => typeof v[k] === 'string' && v[k].length > 0;
+  const optStr = (k: string) => typeof v[k] === 'string';
+
+  switch (v.tag) {
+    // No extra fields required
+    case 'agent_view_refresh_list':
+    case 'agent_view_cancel_reply':
+    case 'agent_view_back_to_chat':
+    case 'agent_view_bg_conflict_cancel':
+      return true;
+
+    // shortId + sessionId
+    case 'agent_view_refresh_peek':
+    case 'agent_view_stop_confirm':
+      return str('shortId') && str('sessionId');
+
+    // shortId + sessionId + cwd
+    case 'agent_view_peek':
+    case 'agent_view_reply_request':
+      return str('shortId') && str('sessionId') && str('cwd');
+
+    // shortId + sessionId + name
+    case 'agent_view_stop':
+      return str('shortId') && str('sessionId') && str('name');
+
+    // sessionId + shortId + name + cwd
+    case 'agent_view_attach':
+      return str('sessionId') && str('shortId') && str('name') && str('cwd');
+
+    // shortId + sessionId + cwd + text (+ optional parentUuid/hasParent)
+    case 'agent_view_stop_and_send':
+      return str('shortId') && str('sessionId') && str('cwd') && optStr('text');
+
+    // cwd + text
+    case 'agent_view_new_and_send':
+      return str('cwd') && optStr('text');
+
+    default:
+      // Unknown agent_view_ tag — accept but don't validate further
+      return true;
+  }
 }

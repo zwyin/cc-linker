@@ -444,6 +444,10 @@ export class JSONLScanner {
         const lines = content.split('\n').filter(Boolean);
         lineCount = lines.length;
 
+        // v2.2.19 fix: 收集 assistant 条目后统一走 cleanAssistantText，
+        // 避免小文件路径跳过 markdown 清理直接 slice 导致预览含 ## / ** / ` 噪声。
+        const smallAssistantMessages: Array<{ type: string; message?: { content?: unknown } }> = [];
+
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const entry = JSON.parse(lines[i]);
@@ -455,17 +459,21 @@ export class JSONLScanner {
             if (entry.type === 'assistant' || entry.type === 'user') {
               if (!lastActive) lastActive = entry.timestamp;
             }
-            if (entry.type === 'assistant' && !preview) {
-              const textBlock = entry.message?.content?.find((b: any) => b.type === 'text');
-              if (textBlock) preview = textBlock.text.slice(0, 100);
+            if (entry.type === 'assistant') {
+              smallAssistantMessages.push(entry);
             }
             if (entry.type === 'user' && !lastUserPreview) {
               const text = JSONLScanner.extractTextContent(entry.message?.content);
               if (text) lastUserPreview = text.slice(0, 100);
             }
             // 三个字段都拿到就 break（小文件无 4KB fallback 但仍可早退）
-            if (lastActive && preview && lastUserPreview) break;
+            if (lastActive && smallAssistantMessages.length > 0 && lastUserPreview) break;
           } catch {}
+        }
+
+        // 小文件也走 cleanAssistantText（与大文件路径一致）
+        if (smallAssistantMessages.length > 0) {
+          preview = JSONLScanner.cleanAssistantText(smallAssistantMessages.reverse(), 240) ?? '';
         }
       }
 
