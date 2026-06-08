@@ -96,8 +96,93 @@ export class AttachedCardWatcher {
 
  // tick() 在 Task5 实现
  async tick(): Promise<void> {
- // 占位,实际实现在 Task5
- }
+    if (this.stopped) return;
+    this.tickCount++;
+
+    // 1) snapshot
+    const result: FetchResult = await AgentSnapshotFetcher.fetch();
+    if (!result.ok) {
+      logger.warn(`AttachedCardWatcher tick snapshot failed: ${result.reason}`);
+      return; // 不 patch, 不 stop(spec §3.7)
+    }
+
+    // 2) 找 session
+    const session = result.sessions.find(s => s.sessionId === this.deps.sessionId);
+    if (!session) {
+      // session 已不存在:patch final + stop
+      const card = buildAttachedCard({
+        name: this.deps.name,
+        status: 'unknown',
+        shortId: this.deps.shortId,
+        sessionId: this.deps.sessionId,
+        cwd: this.deps.cwd,
+        recentOutput: '⚠️ session 已不存在',
+        outputFormat: 'markdown',
+        lastWatchedAt: new Date().toLocaleTimeString(),
+      });
+      await this.deps.patchFn(this.deps.cardMessageId, card);
+      await this.stop('session_gone');
+      return;
+    }
+
+    // 3) idle + completed: final + stop
+    if (session.status === 'idle' && session.completed) {
+      const content = await this.deps.resolveContent(this.deps.shortId, 2048);
+      const card = buildAttachedCard({
+        name: this.deps.name,
+        status: session.status,
+        completed: session.completed,
+        waitingFor: session.waitingFor,
+        shortId: this.deps.shortId,
+        sessionId: this.deps.sessionId,
+        cwd: this.deps.cwd,
+        recentOutput: content.text ?? '(无可用输出)',
+        outputFormat: content.format,
+        lastWatchedAt: new Date().toLocaleTimeString(),
+      });
+      await this.deps.patchFn(this.deps.cardMessageId, card);
+      await this.stop('idle_settled');
+      return;
+    }
+
+    // 4) 拉 recentOutput
+    const content = await this.deps.resolveContent(this.deps.shortId, 2048);
+
+    // 5) build card(内含 25KB 智能截断)
+    const card = buildAttachedCard({
+      name: this.deps.name,
+      status: session.status,
+      completed: session.completed,
+      waitingFor: session.waitingFor,
+      shortId: this.deps.shortId,
+      sessionId: this.deps.sessionId,
+      cwd: this.deps.cwd,
+      recentOutput: content.text ?? '(无可用输出)',
+      outputFormat: content.format,
+      lastWatchedAt: new Date().toLocaleTimeString(),
+    });
+
+    // 6) patch + 失败计数
+    try {
+      await this.deps.patchFn(this.deps.cardMessageId, card);
+      this.patchFailureCount = 0;
+    } catch (err: any) {
+      this.patchFailureCount++;
+      logger.warn(
+        `AttachedCardWatcher patch failed (${this.patchFailureCount}/${this.deps.config.maxPatchFailures}): ` +
+        `cardMessageId=${this.deps.cardMessageId}: ${err?.message ?? err}`,
+      );
+      if (this.patchFailureCount >= this.deps.config.maxPatchFailures) {
+        await this.stop('patch_failed');
+        return;
+      }
+    }
+
+    // 7) maxTicks
+    if (this.tickCount >= this.deps.config.maxTicks) {
+      await this.stop('max_ticks');
+    }
+  }
 }
 
 /**
