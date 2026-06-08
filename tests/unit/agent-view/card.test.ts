@@ -367,7 +367,7 @@ describe('buildAttachedCard', () => {
     expect(text).not.toContain('等待原因:');
   });
 
-  test('shows 4 buttons when status is busy: refresh / stop_watching / stop', () => {
+  test('shows 3 buttons when status is busy: refresh / stop_watching / stop', () => {
     const card = JSON.parse(buildAttachedCard(baseOpts));
     const actionEl = card.elements.find((e: any) => e.tag === 'action');
     expect(actionEl).toBeDefined();
