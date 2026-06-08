@@ -576,6 +576,9 @@ export class FeishuBot {
           );
         case 'agent_view_bg_conflict_cancel':
           return await this.agentView.handleBgConflictCancel(openId, messageId);
+        case 'agent_view_stop_watching':
+          await this.agentView.handleStopWatching(openId);
+          return null;
         default:
           return null;
       }
