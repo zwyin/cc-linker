@@ -513,3 +513,123 @@ export function buildBgConflictCard(opts: {
   });
 }
 
+/**
+ * 内部渲染器:无截断,纯字符串拼接。Task 3 会在此基础上加截断 wrapper。
+ * @internal
+ */
+function renderAttachedCardJson(opts: {
+  name: string;
+  status: AgentSessionStatus;
+  completed?: boolean;
+  waitingFor?: string;
+  shortId: string;
+  sessionId: string;
+  cwd: string;
+  recentOutput: string;
+  outputFormat: 'markdown' | 'terminal';
+  lastWatchedAt: string;
+}): string {
+  const statusLabel =
+    opts.status === 'busy' ? '处理中'
+    : opts.status === 'waiting' ? '等待输入'
+    : opts.status === 'idle' ? (opts.completed ? '已完成' : '空闲')
+    : '未知';
+
+  const recentBlock =
+    opts.outputFormat === 'terminal'
+      ? `**Recent output** _(原始终端片段,可能含格式残留)_\n\`\`\`\n${opts.recentOutput}\n\`\`\``
+      : `**Recent output**\n\n${opts.recentOutput}`;
+
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content:
+        `Status: ${statusLabel} (${opts.status})` +
+        (opts.waitingFor ? `\n等待原因: ${opts.waitingFor}` : '') +
+        `\nCWD: ${truncateCwd(opts.cwd)}`,
+    },
+    { tag: 'markdown', content: recentBlock },
+    { tag: 'markdown', content: `Last watched ${opts.lastWatchedAt}` },
+  ];
+
+  const actions: any[] = [
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '🔄 Refresh' },
+      value: {
+        tag: 'agent_view_refresh_peek',
+        shortId: opts.shortId,
+        sessionId: opts.sessionId,
+      },
+      type: 'default',
+    },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '🛑 Stop Watching' },
+      value: { tag: 'agent_view_stop_watching' },
+      type: 'default',
+    },
+  ];
+  if (opts.status === 'waiting') {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: 'Reply' },
+      value: {
+        tag: 'agent_view_reply_request',
+        shortId: opts.shortId,
+        sessionId: opts.sessionId,
+        cwd: opts.cwd,
+      },
+      type: 'primary',
+    });
+  }
+  if (opts.status === 'busy') {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: 'Stop session' },
+      value: {
+        tag: 'agent_view_stop',
+        shortId: opts.shortId,
+        sessionId: opts.sessionId,
+        name: opts.name,
+      },
+      type: 'danger',
+    });
+  }
+  elements.push({ tag: 'action', actions });
+
+  return JSON.stringify({
+    ...TEMPLATE_HEADER,
+    header: {
+      title: { tag: 'plain_text', content: `📡 Watching · \`${opts.name}\`` },
+      template: 'blue',
+    },
+    elements,
+  });
+}
+
+/**
+ * Attached 卡:Attach 成功后,bot 自动紧跟发的可交互卡 + 10s 自动 patch。
+ *
+ * 与 buildPeekCard 的差异:
+ * - 移除 pid / startedAt(elapsed 由 "Last watched" 时间戳代替)
+ * - 按钮组:[Refresh] [Stop Watching] [Reply] [Stop session](按 status 显隐)
+ * - header title:`📡 Watching · \`name\``(蓝色)
+ *
+ * 25KB 截断在 Task 3 加 wrapper。
+ */
+export function buildAttachedCard(opts: {
+  name: string;
+  status: AgentSessionStatus;
+  completed?: boolean;
+  waitingFor?: string;
+  shortId: string;
+  sessionId: string;
+  cwd: string;
+  recentOutput: string;
+  outputFormat: 'markdown' | 'terminal';
+  lastWatchedAt: string;
+}): string {
+  return renderAttachedCardJson(opts);
+}
+

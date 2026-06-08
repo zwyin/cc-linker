@@ -8,6 +8,7 @@ import {
   buildWaitingCard,
   buildStopConfirmCard,
   buildBgConflictCard,
+  buildAttachedCard,  // 新增
 } from '../../../src/agent-view/card';
 import { groupByStatus, type AgentSession } from '../../../src/agent-view/types';
 import { parseAgentsJson } from '../../../src/agent-view/snapshot';
@@ -310,5 +311,120 @@ describe('Agent View cards: update_multi: true (v2.2.20 fix for Peek revert bug)
       }),
     );
     expect(card.config?.update_multi).toBe(true);
+  });
+});
+
+describe('buildAttachedCard', () => {
+  const baseOpts = {
+    name: 'sleep 30',
+    status: 'busy' as const,
+    shortId: 'abc12345',
+    sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+    cwd: '/Users/wuyujun/Git/trae-data',
+    recentOutput: '执行 sleep 30 中',
+    outputFormat: 'markdown' as const,
+    lastWatchedAt: '12:34:56',
+  };
+
+  test('renders header with name and Watching prefix', () => {
+    const card = JSON.parse(buildAttachedCard(baseOpts));
+    expect(card.header.title.content).toBe('📡 Watching · `sleep 30`');
+    expect(card.header.template).toBe('blue');
+    // 必须有 update_multi: true 避免飞书 merge 渲染
+    expect(card.config.update_multi).toBe(true);
+  });
+
+  test('shows status line with cwd but hides pid/startedAt', () => {
+    const card = JSON.parse(buildAttachedCard(baseOpts));
+    const markdownTexts = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .map((e: any) => e.content)
+      .join('\n');
+    expect(markdownTexts).toContain('Status: 处理中 (busy)');
+    expect(markdownTexts).toContain('CWD: ~/Git/trae-data');
+    // 不应包含 Peek 卡的 PID / Started 字样
+    expect(markdownTexts).not.toContain('PID:');
+    expect(markdownTexts).not.toContain('Started');
+  });
+
+  test('waiting status shows waitingFor', () => {
+    const card = JSON.parse(
+      buildAttachedCard({ ...baseOpts, status: 'waiting', waitingFor: 'input needed' }),
+    );
+    const text = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .map((e: any) => e.content)
+      .join('\n');
+    expect(text).toContain('等待原因: input needed');
+  });
+
+  test('waiting status hides waitingFor line when undefined', () => {
+    const card = JSON.parse(buildAttachedCard({ ...baseOpts, status: 'waiting' }));
+    const text = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .map((e: any) => e.content)
+      .join('\n');
+    expect(text).not.toContain('等待原因:');
+  });
+
+  test('shows 4 buttons when status is busy: refresh / stop_watching / stop', () => {
+    const card = JSON.parse(buildAttachedCard(baseOpts));
+    const actionEl = card.elements.find((e: any) => e.tag === 'action');
+    expect(actionEl).toBeDefined();
+    const tags = actionEl.actions.map((a: any) => a.value.tag);
+    expect(tags).toContain('agent_view_refresh_peek');
+    expect(tags).toContain('agent_view_stop_watching');
+    expect(tags).toContain('agent_view_stop');
+    expect(tags).not.toContain('agent_view_attach'); // 已 attach 不再显示
+  });
+
+  test('waiting status shows reply button (not stop)', () => {
+    const card = JSON.parse(
+      buildAttachedCard({ ...baseOpts, status: 'waiting', waitingFor: 'input' }),
+    );
+    const actionEl = card.elements.find((e: any) => e.tag === 'action');
+    const tags = actionEl.actions.map((a: any) => a.value.tag);
+    expect(tags).toContain('agent_view_reply_request');
+    expect(tags).not.toContain('agent_view_stop');
+  });
+
+  test('idle status shows only refresh + stop_watching', () => {
+    const card = JSON.parse(buildAttachedCard({ ...baseOpts, status: 'idle' }));
+    const actionEl = card.elements.find((e: any) => e.tag === 'action');
+    const tags = actionEl.actions.map((a: any) => a.value.tag);
+    expect(tags).toEqual(
+      expect.arrayContaining(['agent_view_refresh_peek', 'agent_view_stop_watching']),
+    );
+    expect(tags).not.toContain('agent_view_stop');
+    expect(tags).not.toContain('agent_view_reply_request');
+  });
+
+  test('shows Last watched timestamp at end', () => {
+    const card = JSON.parse(buildAttachedCard({ ...baseOpts, lastWatchedAt: '23:59:59' }));
+    const lastMarkdown = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .pop();
+    expect(lastMarkdown.content).toBe('Last watched 23:59:59');
+  });
+
+  test('terminal outputFormat wraps in code-block with warning', () => {
+    const card = JSON.parse(
+      buildAttachedCard({ ...baseOpts, outputFormat: 'terminal' }),
+    );
+    const recentBlock = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .find((e: any) => e.content.includes('Recent output'));
+    expect(recentBlock.content).toContain('原始终端片段');
+    expect(recentBlock.content).toContain('```');
+  });
+
+  test('markdown outputFormat does not wrap in code-block', () => {
+    const card = JSON.parse(
+      buildAttachedCard({ ...baseOpts, outputFormat: 'markdown' }),
+    );
+    const recentBlock = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .find((e: any) => e.content.includes('Recent output'));
+    expect(recentBlock.content).not.toContain('```');
   });
 });
