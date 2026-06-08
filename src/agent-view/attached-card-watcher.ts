@@ -121,7 +121,8 @@ export class AttachedCardWatcher {
         lastWatchedAt: new Date().toLocaleTimeString(),
       });
       await this.deps.patchFn(this.deps.cardMessageId, card);
-      await this.stop('session_gone');
+      // 不 await:stop() 内部 await inFlightTick,会自死锁;stopped=true 已同步设,后续 tick 会被 line 99 guard 拦下
+      void this.stop('session_gone');
       return;
     }
 
@@ -141,7 +142,8 @@ export class AttachedCardWatcher {
         lastWatchedAt: new Date().toLocaleTimeString(),
       });
       await this.deps.patchFn(this.deps.cardMessageId, card);
-      await this.stop('idle_settled');
+      // 不 await:同 session_gone(避免 self-deadlock on inFlightTick)
+      void this.stop('idle_settled');
       return;
     }
 
@@ -173,14 +175,16 @@ export class AttachedCardWatcher {
         `cardMessageId=${this.deps.cardMessageId}: ${err?.message ?? err}`,
       );
       if (this.patchFailureCount >= this.deps.config.maxPatchFailures) {
-        await this.stop('patch_failed');
+        // 不 await:同上(避免 self-deadlock)
+        void this.stop('patch_failed');
         return;
       }
     }
 
     // 7) maxTicks
     if (this.tickCount >= this.deps.config.maxTicks) {
-      await this.stop('max_ticks');
+      // 不 await:同上(避免 self-deadlock)
+      void this.stop('max_ticks');
     }
   }
 }
