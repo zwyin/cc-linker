@@ -1193,25 +1193,29 @@ describe('AttachedWatchers manager', () => {
     const mgr = new AttachedWatchers(slowPatch as any, resolveContent, {
       ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 10, maxTicks: 1000,
     });
-    // stub AgentSnapshotFetcher
-    const fetchSpy = spyOn(AgentSnapshotFetcher, 'fetch');
-    fetchSpy.mockResolvedValue({
+    // stub AgentSnapshotFetcher(用项目通用 pattern 而非 spyOn,避免 spy 泄漏)
+    const origFetch = AgentSnapshotFetcher.fetch;
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
       ok: true,
       sessions: [{
         pid: 1, cwd: '/tmp', kind: 'background', startedAt: Date.now(),
         sessionId: 's1', name: 'n', status: 'busy', source: 'slash',
       }],
-    });
-    await mgr.start('ou_a', {
-      sessionId: 's1', shortId: 's1short', name: 'n', cwd: '/tmp', cardMessageId: 'om1',
-    });
-    // 等 ~30ms 让多次 interval 触发
-    await new Promise(r => setTimeout(r, 30));
-    // 此时 patch 只被调 1 次(inFlightTick mutex 跳过后续)
-    expect(slowPatch).toHaveBeenCalledTimes(1);
-    // resolve in-flight patch
-    resolvePatch();
-    await mgr.stopAll();
+    }));
+    try {
+      await mgr.start('ou_a', {
+        sessionId: 's1', shortId: 's1short', name: 'n', cwd: '/tmp', cardMessageId: 'om1',
+      });
+      // 等 ~30ms 让多次 interval 触发
+      await new Promise(r => setTimeout(r, 30));
+      // 此时 patch 只被调 1 次(inFlightTick mutex 跳过后续)
+      expect(slowPatch).toHaveBeenCalledTimes(1);
+      // resolve in-flight patch
+      resolvePatch();
+    } finally {
+      (AgentSnapshotFetcher as any).fetch = origFetch;
+      await mgr.stopAll();
+    }
   });
 });
 ```
@@ -1437,7 +1441,7 @@ import { buildAttachedCard } from './card';
 - `_shortId` → `shortId`(可能有 5-6 处)
 - `_name` → `name`(可能有 1-2 处)
 
-**Step 3e**:在 `handleAttach` 末尾(line 519-525 区域),在 `await this.deps.replyFn('📎 已 Attach ...')` 之后、`return null;` 之前,加:
+**Step 3e**:在 `handleAttach` 末尾(line 519-525 区域),在 `await this.deps.replyFn('📎 已 Attach ...')` 之后、**原 `return null;` 之前**,插入新代码(**不要写自己的 `return null;` 或 `}`**——原 `return null;` 和函数收尾的 `}` 保留):
 
 ```typescript
     // === 新增:Attach 后自动启动 watch + 发首张 attached 卡 ===
@@ -1460,8 +1464,24 @@ import { buildAttachedCard } from './card';
         sessionId, shortId, name: session.name, cwd, cardMessageId,
       });
     }
-    return null;
-  }
+    // ↓ 下面原 `return null;` + `}` 保留不动
+```
+
+最终 `handleAttach` 末尾应该长这样(以确认结构):
+
+```typescript
+    await this.deps.replyFn(
+      `📎 已 Attach 到 \`${session.name}\`${warning}${waitingInfo}\n` +
+        `Status: ${session.status} · CWD: ${cwd}\n` +
+        `💡 提示:发 /new 创建新会话,或 /agents 返回列表。${bgWorkerNotice}`,
+      { openId },
+    );
+    // === 新增的 watch + 卡代码(上面)===
+    if (cardMessageId) {
+      await this.attachedWatchers.start(openId, {...});
+    }
+    return null;   // ← 原 return null,保留
+  }               // ← 原 },保留
 ```
 
 **Step 3f**:在 `handleBackToChat` 之后(line 866 附近)加新方法:
