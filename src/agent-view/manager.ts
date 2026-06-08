@@ -1,7 +1,8 @@
 import type { UserManager, MappingEntry } from '../feishu/mapping';
 import { AgentSnapshotFetcher } from './snapshot-fetcher';
 import { ExpectedReplyState } from './expected-reply-state';
-import { buildListCard, buildPeekCard, buildErrorCard, buildEmptyCard, buildWaitingCard, buildStopConfirmCard, buildLoadingPeekCard } from './card';
+import { buildListCard, buildPeekCard, buildErrorCard, buildEmptyCard, buildWaitingCard, buildStopConfirmCard, buildLoadingPeekCard, buildAttachedCard } from './card';
+import { AttachedWatchers } from './attached-card-watcher';
 import type { AgentSession, AgentSessionGroup, AgentSessionStatus } from './types';
 import { groupByStatus } from './types';
 import { config } from '../utils/config';
@@ -33,6 +34,7 @@ export interface AgentViewDeps {
 
 export class AgentViewManager {
   readonly expectedReply: ExpectedReplyState;
+  readonly attachedWatchers: AttachedWatchers;
   private minRefreshIntervalMs = 2000;
   private lastRefreshAt = 0;
 
@@ -40,6 +42,10 @@ export class AgentViewManager {
     this.expectedReply = new ExpectedReplyState(
       deps.userManager,
       deps.expectedReplyTimeoutMs ?? 300_000
+    );
+    this.attachedWatchers = new AttachedWatchers(
+      deps.patchFn,
+      (shortId, maxChars) => this.resolvePeekContent(shortId, maxChars),
     );
   }
 
@@ -423,8 +429,8 @@ export class AgentViewManager {
   async handleAttach(
     openId: string,
     sessionId: string,
-    _shortId: string,
-    _name: string,
+    shortId: string,
+    name: string,
     cwd: string,
   ): Promise<string | Record<string, unknown> | null> {
     // v2.2.15: 比较守卫同时认 short 和 full UUID,避免 v2.2.14 把 short 展开成
@@ -522,6 +528,26 @@ export class AgentViewManager {
         `💡 提示:发 /new 创建新会话,或 /agents 返回列表。${bgWorkerNotice}`,
       { openId },
     );
+    // === 新增:Attach 后自动启动 watch + 发首张 attached 卡 ===
+    const peekMaxBytes = config.get<number>('agent_view.peek_max_bytes', 2048);
+    const peek = await this.resolvePeekContent(shortId, peekMaxBytes);
+    const initialCard = buildAttachedCard({
+      name: session.name, status: session.status, completed: session.completed,
+      waitingFor: session.waitingFor, shortId, sessionId,
+      cwd, recentOutput: peek.text ?? '(无可用输出)',
+      outputFormat: peek.format, lastWatchedAt: new Date().toLocaleTimeString(),
+    });
+    const cardMessageId = await this.sendOrFallback(
+      initialCard,
+      { openId },
+      `📡 Watching · \`${session.name}\` · /agents 查看`,
+      openId,
+    );
+    if (cardMessageId) {
+      await this.attachedWatchers.start(openId, {
+        sessionId, shortId, name: session.name, cwd, cardMessageId,
+      });
+    }
     return null;
   }
 
@@ -863,6 +889,12 @@ export class AgentViewManager {
       '已退出 Agent View,继续发送消息或 / 命令即可。下次进 /agents 视图重新打 /agents。',
       { openId },
     );
+  }
+
+  /** [Stop Watching] 按钮 handler */
+  async handleStopWatching(openId: string): Promise<null> {
+    await this.attachedWatchers.stop(openId, 'user_stop', { patchFinal: true });
+    return null;
   }
 
   /** R8 启动恢复钩子 */
