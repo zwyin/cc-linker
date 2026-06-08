@@ -513,6 +513,36 @@ export function buildBgConflictCard(opts: {
   });
 }
 
+/** 25KB 卡片上限(同 MAX_CARD_BYTES in manager.ts) */
+const MAX_ATTACH_CARD_BYTES = 25_000;
+/** 智能截断的 recentOutput 字符预算档位 */
+const ATTACH_RECENT_BUDGETS = [2048, 1024, 512, 256];
+
+/**
+ * 智能截断 recentOutput,保证最终卡片 ≤ 25KB。
+ * 优先级:2048 → 1024 → 512 → 256 字符。每档调 renderAttachedCardJson + 测 bytes。
+ * 全部超 25KB 时降级为警告文字。
+ *
+ * **关键:调 renderAttachedCardJson,不调 buildAttachedCard —— 后者会再调本函数,无限递归**
+ * @internal
+ */
+function truncateRecentForCard(
+  opts: Parameters<typeof renderAttachedCardJson>[0],
+  rawRecentOutput: string,
+): string {
+  for (const budget of ATTACH_RECENT_BUDGETS) {
+    const truncated =
+      rawRecentOutput.length <= budget
+        ? rawRecentOutput
+        : rawRecentOutput.slice(0, budget);
+    const cardJson = renderAttachedCardJson({ ...opts, recentOutput: truncated });
+    if (new TextEncoder().encode(cardJson).length <= MAX_ATTACH_CARD_BYTES) {
+      return truncated;
+    }
+  }
+  return '⚠️ 内容过大, 请点 [Peek] 查看完整';
+}
+
 /**
  * 内部渲染器:无截断,纯字符串拼接。Task 3 会在此基础上加截断 wrapper。
  * @internal
@@ -630,6 +660,7 @@ export function buildAttachedCard(opts: {
   outputFormat: 'markdown' | 'terminal';
   lastWatchedAt: string;
 }): string {
-  return renderAttachedCardJson(opts);
+  const truncated = truncateRecentForCard(opts, opts.recentOutput);
+  return renderAttachedCardJson({ ...opts, recentOutput: truncated });
 }
 

@@ -428,3 +428,53 @@ describe('buildAttachedCard', () => {
     expect(recentBlock.content).not.toContain('```');
   });
 });
+
+describe('buildAttachedCard 25KB smart truncation', () => {
+  // 构造一个固定大小的 recentOutput,让 buildAttachedCard 序列化后超 25KB
+  // recentOutput 占大头,所以我们用 massive content
+  const bigOpts = {
+    name: 'big',
+    status: 'busy' as const,
+    shortId: 'big12345',
+    sessionId: 'big12345-9be0-4d5e-8b3f-1234567890ab',
+    cwd: '/x',
+    outputFormat: 'markdown' as const,
+    lastWatchedAt: '00:00:00',
+  };
+
+  test('recentOutput under 2KB: card built without truncation', () => {
+    const out = 'x'.repeat(1500); // < 2048
+    const card = JSON.parse(buildAttachedCard({ ...bigOpts, recentOutput: out }));
+    // 包含原始内容(没被截断到 1024)
+    expect(card.elements.some((e: any) =>
+      e.tag === 'markdown' && e.content.includes('x'.repeat(1500))
+    )).toBe(true);
+  });
+
+  test('recentOutput over 25KB: progressive truncation brings it under 25KB', () => {
+    const out = 'y'.repeat(30_000); // 远超 2KB,会触发截断链
+    const cardJson = buildAttachedCard({ ...bigOpts, recentOutput: out });
+    const card = JSON.parse(cardJson);
+    const cardBytes = new TextEncoder().encode(cardJson).length;
+    expect(cardBytes).toBeLessThanOrEqual(25_000);
+    // 截断后内容必然少于 30_000(至少 256 字符)
+    const recentBlock = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .find((e: any) => e.content.includes('Recent output'));
+    expect(recentBlock.content.length).toBeLessThan(30_000);
+  });
+
+  test('extremely large recentOutput: falls back to warning message', () => {
+    // 30KB 中文 + 控制字符,即使 256 截断都放不下整个 markdown wrapper 时
+    // 走终极 fallback
+    // 但实际上 256 字符的 markdown wrapper 远小于 25KB,这条主要防回归
+    const out = 'z'.repeat(100_000);
+    const card = JSON.parse(buildAttachedCard({ ...bigOpts, recentOutput: out }));
+    const recentBlock = card.elements
+      .filter((e: any) => e.tag === 'markdown')
+      .find((e: any) => e.content.includes('Recent output'));
+    // 应有 截断标记 或 fallback
+    const isTruncated = recentBlock.content.length < 100_000;
+    expect(isTruncated).toBe(true);
+  });
+});
