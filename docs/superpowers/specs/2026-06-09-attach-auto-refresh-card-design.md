@@ -511,10 +511,10 @@ tick() 触发 (setInterval 10s)
 | `src/agent-view/action.ts` | 新增 `agent_view_stop_watching` tag (~5 行) |
 | `src/agent-view/manager.ts` | 字段 `attachedWatchers`、构造、handleAttach 末尾、handleStopWatching (~30 行 diff) |
 | `src/feishu/bot.ts` | handleChat 入口 hook、handleCardAction 新 case (~15 行 diff) |
-| `tests/agent-view/attached-card-watcher.test.ts` | **新增** ~250 行 |
-| `tests/agent-view/card.test.ts` | 新增 `buildAttachedCard` 渲染 case + 25KB 截断 case (~80 行) |
-| `tests/agent-view/manager.test.ts` | 新增 handleAttach 末尾 startWatch 调用、handleStopWatching ~50 行 |
-| `tests/feishu/bot-cardaction-attached-watch.test.ts` | 新增 [Stop Watching] action dispatch ~30 行 |
+| `tests/unit/agent-view/attached-card-watcher.test.ts` | **新增** ~250 行 |
+| `tests/unit/agent-view/card.test.ts` | 新增 `buildAttachedCard` 渲染 case + 25KB 截断 case (~80 行) |
+| `tests/unit/agent-view/manager.test.ts` | 新增 handleAttach 末尾 startWatch 调用、handleStopWatching ~50 行 |
+| `tests/unit/feishu/bot-cardaction-attached-watch.test.ts` | 新增 [Stop Watching] action dispatch ~30 行 |
 
 ## 6. 与现有 expectedReply 流程的关系
 
