@@ -23,7 +23,7 @@
 | `src/feishu/bot.ts` | `handleChat` 入口 hook（user_chat stop）、`handleCardAction` switch 新 case、`shutdown` 调 `attachedWatchers.stopAll()` | 扩展 |
 | `tests/unit/agent-view/attached-card-watcher.test.ts` | `AttachedCardWatcher` + `AttachedWatchers` 全套单测 | 新建 |
 | `tests/unit/agent-view/card.test.ts` | `buildAttachedCard` 渲染 + 25KB 智能截断测试 | 扩展 |
-| `tests/unit/agent-view/manager.test.ts` | handleAttach 末尾发卡 + startWatch、handleStopWatching 测试 | 扩展 |
+| `tests/unit/agent-view/manager.test.ts` | (保持不变,Task 7 改成新建 `manager-attached-watch.test.ts`) | - |
 | `tests/unit/feishu/bot-cardaction-attached-watch.test.ts` | handleCardAction 'agent_view_stop_watching' dispatch 测试 | 新建 |
 | `tests/unit/feishu/bot-handlechat-watch-stop.test.ts` | handleChat 入口 watch stop hook 测试 | 新建 |
 
@@ -66,13 +66,26 @@ git commit -m "feat(agent-view): 加 agent_view_stop_watching action tag"
 - Modify: `src/agent-view/card.ts:1-10` (imports) 和末尾追加新函数
 - Modify: `src/agent-view/card.ts:298-322` (buildErrorCard 是 `...TEMPLATE_HEADER` 模式的参考)
 
-- [ ] **Step 1: 写测试** — 创建 `tests/unit/agent-view/card.test.ts` 末尾追加:
+- [ ] **Step 1: 写测试** — 在 `tests/unit/agent-view/card.test.ts` **顶部**的 import 块加 `buildAttachedCard`:
 
-打开 `tests/unit/agent-view/card.test.ts`,在文件末尾追加:
+打开 `tests/unit/agent-view/card.test.ts`,找到文件顶部 `import { ... } from '../../../src/agent-view/card';`,改为:
 
 ```typescript
-import { buildAttachedCard } from '../../../src/agent-view/card';
+import {
+  buildListCard,
+  buildPeekCard,
+  buildErrorCard,
+  buildEmptyCard,
+  buildWaitingCard,
+  buildStopConfirmCard,
+  buildBgConflictCard,
+  buildAttachedCard,  // 新增
+} from '../../../src/agent-view/card';
+```
 
+然后**在文件末尾**追加:
+
+```typescript
 describe('buildAttachedCard', () => {
   const baseOpts = {
     name: 'sleep 30',
@@ -194,7 +207,7 @@ describe('buildAttachedCard', () => {
 Run: `bun test tests/unit/agent-view/card.test.ts -t buildAttachedCard`
 Expected: FAIL, "buildAttachedCard is not exported from ...card"
 
-- [ ] **Step 3: 实现 `buildAttachedCard`**
+- [ ] **Step 3: 实现 `buildAttachedCard` (基础版,不含截断)**
 
 打开 `src/agent-view/card.ts`,在文件末尾追加:
 
@@ -202,16 +215,10 @@ Expected: FAIL, "buildAttachedCard is not exported from ...card"
 // src/agent-view/card.ts 末尾
 
 /**
- * Attached 卡:Attach 成功后,bot 自动紧跟发的可交互卡 + 10s 自动 patch。
- *
- * 与 buildPeekCard 的差异:
- * - 移除 pid / startedAt(elapsed 时间由 "Last watched" 时间戳代替)
- * - 按钮组:[Refresh] [Stop Watching] [Reply] [Stop session](按 status 显隐)
- * - header title:`📡 Watching · \`name\``(蓝色)
- *
- * 25KB 智能截断见 buildAttachedCardFits(内嵌循环 retry)。
+ * 内部渲染器:无截断,纯字符串拼接。Task 3 会在此基础上加截断 wrapper。
+ * @internal
  */
-export function buildAttachedCard(opts: {
+function renderAttachedCardJson(opts: {
   name: string;
   status: AgentSessionStatus;
   completed?: boolean;
@@ -301,6 +308,31 @@ export function buildAttachedCard(opts: {
     elements,
   });
 }
+
+/**
+ * Attached 卡:Attach 成功后,bot 自动紧跟发的可交互卡 + 10s 自动 patch。
+ *
+ * 与 buildPeekCard 的差异:
+ * - 移除 pid / startedAt(elapsed 由 "Last watched" 时间戳代替)
+ * - 按钮组:[Refresh] [Stop Watching] [Reply] [Stop session](按 status 显隐)
+ * - header title:`📡 Watching · \`name\``(蓝色)
+ *
+ * 25KB 截断在 Task 3 加 wrapper。
+ */
+export function buildAttachedCard(opts: {
+  name: string;
+  status: AgentSessionStatus;
+  completed?: boolean;
+  waitingFor?: string;
+  shortId: string;
+  sessionId: string;
+  cwd: string;
+  recentOutput: string;
+  outputFormat: 'markdown' | 'terminal';
+  lastWatchedAt: string;
+}): string {
+  return renderAttachedCardJson(opts);
+}
 ```
 
 - [ ] **Step 4: 跑测试,确认 pass**
@@ -384,23 +416,26 @@ describe('buildAttachedCard 25KB smart truncation', () => {
 Run: `bun test tests/unit/agent-view/card.test.ts -t "buildAttachedCard 25KB"`
 Expected: FAIL, "cardBytes expected to be <= 25000" 或类似
 
-- [ ] **Step 3: 实现 25KB 智能截断**
+- [ ] **Step 3: 实现 25KB 智能截断 helper** (在 `renderAttachedCardJson` 之上,**关键:不调 buildAttachedCard,避免无限递归**)
 
-打开 `src/agent-view/card.ts`,在 `buildAttachedCard` 函数定义**上方**加一个内部 helper(放在 `buildAttachedCard` 之前):
+打开 `src/agent-view/card.ts`,在 `renderAttachedCardJson` 函数定义**之上**追加:
 
 ```typescript
+/** 25KB 卡片上限(同 MAX_CARD_BYTES in manager.ts) */
+const MAX_ATTACH_CARD_BYTES = 25_000;
+/** 智能截断的 recentOutput 字符预算档位 */
+const ATTACH_RECENT_BUDGETS = [2048, 1024, 512, 256];
+
 /**
- * 把 recentOutput 截到能塞进 25KB 卡片预算的尺寸。
- * 优先级:2048 → 1024 → 512 → 256 字符。每档都重 build card 检查 bytes。
- * 最后一档还超 25KB 的话,降级为 fallback 文字。
+ * 智能截断 recentOutput,保证最终卡片 ≤ 25KB。
+ * 优先级:2048 → 1024 → 512 → 256 字符。每档调 renderAttachedCardJson + 测 bytes。
+ * 全部超 25KB 时降级为警告文字。
  *
+ * **关键:调 renderAttachedCardJson,不调 buildAttachedCard —— 后者会再调本函数,无限递归**
  * @internal
  */
-const ATTACH_RECENT_BUDGETS = [2048, 1024, 512, 256];
-const MAX_ATTACH_CARD_BYTES = 25_000;
-
 function truncateRecentForCard(
-  baseOpts: Parameters<typeof buildAttachedCard>[0],
+  opts: Parameters<typeof renderAttachedCardJson>[0],
   rawRecentOutput: string,
 ): string {
   for (const budget of ATTACH_RECENT_BUDGETS) {
@@ -408,29 +443,30 @@ function truncateRecentForCard(
       rawRecentOutput.length <= budget
         ? rawRecentOutput
         : rawRecentOutput.slice(0, budget);
-    const card = JSON.stringify(
-      buildAttachedCard({ ...baseOpts, recentOutput: truncated }),
-    );
-    if (new TextEncoder().encode(card).length <= MAX_ATTACH_CARD_BYTES) {
+    const cardJson = renderAttachedCardJson({ ...opts, recentOutput: truncated });
+    if (new TextEncoder().encode(cardJson).length <= MAX_ATTACH_CARD_BYTES) {
       return truncated;
     }
   }
-  // 终极兜底:不显示 recentOutput,显示警告
   return '⚠️ 内容过大, 请点 [Peek] 查看完整';
 }
 ```
 
-然后**修改 `buildAttachedCard` 的签名,接受一个 `recentOutput` 已经是截断后的字段**——不,更好的做法:把截断逻辑外置,`buildAttachedCard` 不变,调用方负责传截断后的 recentOutput。
-
-但这样测试会失败。**修正**:`buildAttachedCard` 内部自动调 `truncateRecentForCard`。改写 `buildAttachedCard` 的 recentOutput 处理部分:
+然后**改 `buildAttachedCard`** 让它走截断 wrapper。把:
 
 ```typescript
-// 替换 buildAttachedCard 内的 recentBlock 构造:
-  const truncatedRecent = truncateRecentForCard(opts, opts.recentOutput);
-  const recentBlock =
-    opts.outputFormat === 'terminal'
-      ? `**Recent output** _(原始终端片段,可能含格式残留)_\n\`\`\`\n${truncatedRecent}\n\`\`\``
-      : `**Recent output**\n\n${truncatedRecent}`;
+export function buildAttachedCard(opts: {...}): string {
+  return renderAttachedCardJson(opts);
+}
+```
+
+改为:
+
+```typescript
+export function buildAttachedCard(opts: {...}): string {
+  const truncated = truncateRecentForCard(opts, opts.recentOutput);
+  return renderAttachedCardJson({ ...opts, recentOutput: truncated });
+}
 ```
 
 - [ ] **Step 4: 跑测试,确认 pass**
@@ -1476,6 +1512,10 @@ import { join } from 'path';
 import { FeishuBot } from '../../../src/feishu/bot';
 import { AgentViewManager } from '../../../src/agent-view/manager';
 import { UserManager } from '../../../src/feishu/mapping';
+import { ListSnapshotManager } from '../../../src/feishu/list-snapshot';
+import { SpoolQueue } from '../../../src/queue/spool';
+import { RegistryManager } from '../../../src/registry/registry';
+import { ClaudeSessionManager } from '../../../src/proxy/session';
 import { config } from '../../../src/utils/config';
 import { AgentSnapshotFetcher } from '../../../src/agent-view/snapshot-fetcher';
 import type { SpoolMessage } from '../../../src/queue/spool';
@@ -1483,6 +1523,7 @@ import type { SpoolMessage } from '../../../src/queue/spool';
 let tmpDir: string;
 let bot: FeishuBot;
 let agentView: AgentViewManager;
+let userManager: UserManager;
 let attachedWatchers: { has: any; stop: any };
 
 const origFetcherFetch = AgentSnapshotFetcher.fetch;
@@ -1504,8 +1545,11 @@ function makeMsg(over: Partial<SpoolMessage> = {}): SpoolMessage {
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'bot-watch-stop-'));
   (config as any).data.feishu_bot.owner_open_id = '';
-  bot = new FeishuBot({} as any);
-  const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
+  userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
+  const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
+  const spoolQueue = new SpoolQueue(tmpDir);
+  const registry = new RegistryManager(tmpDir);
+  const sessionManager = new ClaudeSessionManager();
   agentView = new AgentViewManager({
     userManager,
     replyFn: async () => 'msg',
@@ -1519,6 +1563,9 @@ beforeEach(() => {
     stop: mock(async () => {}),
   };
   (agentView as any).attachedWatchers = attachedWatchers;
+  bot = new FeishuBot({
+    userManager, listSnapshotManager, spoolQueue, registry, sessionManager,
+  });
   bot.setAgentView(agentView);
   (AgentSnapshotFetcher as any).fetch = mock(async () => ({ ok: true, sessions: [] }));
 });
