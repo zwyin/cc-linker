@@ -71,16 +71,30 @@ handleAttach(openId, sessionId, shortId, name, cwd)
               → 构造 watcher + setInterval(10s) → tick()
 ```
 
+**首次 tick 时机**：setInterval 第一次触发在 start 后 ~10s（`intervalMs`），不是 0。
+- 这意味着：handleAttach 发完首张卡后，~10s 才会触发第一次 patch
+- 如果用户 Attach 时 session 已经是 `idle+completed`（"刚派发就完成"罕见但可能），首次 tick 会立即 patch final + stop
+- 不需要在 handleAttach 末尾做"立即 tick"优化（避免 0-delay 边界 case）
+
 ```
 handleChat(msg)   [bot.ts:925]
   │
-  ├─ [新] if (this.agentView.attachedWatchers.has(msg.openId)) {
-  │        this.attachedWatchers.stop(msg.openId, 'user_chat');
-  │        // fire-and-forget patch 一次"已停止"卡;不 await
+  ├─ [原] if (this.agentView && config.get<boolean>('agent_view.enabled', true)) {
+  │        [新] if (this.agentView.attachedWatchers.has(msg.openId)) {
+  │          void this.agentView.attachedWatchers.stop(msg.openId, 'user_chat', { patchFinal: true });
+  │        }
+  │        if (msg.text === '/cancel') { ... }
+  │        if (msg.text.startsWith('/')) { ... }
+  │        // ... expectedReply / switch 继续
   │      }
   │
-  └─ [原] 继续 expectedReply / switch / streaming 流程
+  └─ [原] 继续 streaming 流程
 ```
+
+**关键**：hook 必须放在 `if (this.agentView && config.get(...))` 块**内**、`/cancel` 检查**前**——
+- 在块内：避免 `this.agentView` 为 null 时 NPE（部署未启用 agentView 的场景）
+- 在 `/cancel` 前：所有进入的消息（含 `/cancel` 自身、slash 命令）都停 watch
+- 用 `void` 标 fire-and-forget,避免 TypeScript "floating promise" 警告
 
 ```
 handleAttach 再次触发（同一 openId）
@@ -112,9 +126,12 @@ export function buildAttachedCard(opts: {
 }): string
 ```
 
-- 字段裁剪（vs buildPeekCard）：**移除** `pid` / `startedAt` / `Recent output` 之外的 dev 信息，**新增** `Last watched HH:MM:SS`
+**实现约束**：
+- 必须用 `...TEMPLATE_HEADER`（含 `update_multi: true`，同 buildPeekCard）
+- header title：`📡 Watching · \`${name}\``
+- header template：`blue`
 - 状态字段行：`Status: 处理中 (busy)\n等待原因: ...\nCWD: ~/Git/trae-data`（waitingFor 非空才显示）
-- Recent output 块：与 Peek 同 markdown / terminal 分流
+- Recent output 块：与 Peek 同 markdown / terminal 分流（`outputFormat === 'terminal'` 时包 code-block + "原始终端片段"警示）
 - 末尾："Last watched 12:34:56"
 - 按钮（4 个）：[🔄 Refresh] [Stop Watching] [Reply] [Stop session]
   - `refresh: true`（一直显示）
@@ -122,6 +139,9 @@ export function buildAttachedCard(opts: {
   - `reply: status === 'waiting'`
   - `stop: status === 'busy'`
   - 不显示 [Attach]（已经 attach 了）
+
+- 字段裁剪（vs buildPeekCard）：**移除** `pid` / `startedAt` / `Recent output` 之外的 dev 信息，**新增** `Last watched HH:MM:SS`
+  - 按钮（4 个）：[🔄 Refresh] [Stop Watching] [Reply] [Stop session]
 
 `buildAttachedCard` 内置 25KB 智能截断（§3.3）。
 
@@ -347,9 +367,11 @@ export class AttachedWatchers {
     (shortId, maxChars) => this.resolvePeekContent(shortId, maxChars),  // 绑 manager 方法
   );
   ```
-- `handleAttach` 末尾新增：
+- `handleAttach` 末尾**插入新代码**（在 `await this.deps.replyFn('📎 已 Attach ...')` 之后、`return null;` 之前）：
   ```typescript
-  // 构造首张 attached 卡 + 拿到 cardMessageId + 启动 watch
+  // 1) 声明 peekMaxBytes（与 handlePeek / _doRefreshPeek 同款）
+  const peekMaxBytes = config.get<number>('agent_view.peek_max_bytes', 2048);
+  // 2) 构造首张 attached 卡 + 拿到 cardMessageId
   const peek = await this.resolvePeekContent(_shortId, peekMaxBytes);
   const initialCard = buildAttachedCard({
     name: session.name, status: session.status, completed: session.completed,
@@ -357,18 +379,29 @@ export class AttachedWatchers {
     cwd, recentOutput: peek.text ?? '(无可用输出)',
     outputFormat: peek.format, lastWatchedAt: new Date().toLocaleTimeString(),
   });
-  const cardMessageId = await this.sendOrFallback(initialCard, { openId }, fallbackText, openId);
+  // 3) 走 sendOrFallback 拿到 cardMessageId（>25KB 自动 text fallback）
+  const cardMessageId = await this.sendOrFallback(
+    initialCard,
+    { openId },
+    `📡 Watching · \`${session.name}\` · /agents 查看`,
+    openId,
+  );
   if (cardMessageId) {
     await this.attachedWatchers.start(openId, {
       sessionId, shortId: _shortId, name: session.name, cwd, cardMessageId,
     });
   }
   ```
-- 新增 `handleStopWatching(openId, messageId)`（卡片 [Stop Watching] 按钮 handler）：
+  **位置约束**：必须在 `await this.deps.replyFn('📎 已 Attach ...')` **之后**（Q1 文本在前、卡在后），`return null;` **之前**。
+  **参数重命名**：把原函数签名的 `_shortId` / `_name` 去掉下划线（`_shortId` → `shortId`、`_name` → `name`），因新代码使用了它们。
+- 新增 `handleStopWatching(openId)`（卡片 [Stop Watching] 按钮 handler，**不需 messageId 参数**）：
   ```typescript
-  await this.attachedWatchers.stop(openId, 'user_stop', { patchFinal: true });
-  return null;
+  async handleStopWatching(openId: string): Promise<null> {
+    await this.attachedWatchers.stop(openId, 'user_stop', { patchFinal: true });
+    return null;
+  }
   ```
+  messageId 不需要——patchFinal 走 watcher 自己的 cardMessageId（在 deps.cardMessageId 里）。
 - `AgentViewDeps` 接口**不变**（`cardReplyFn` / `patchFn` 已存在,`resolvePeekContent` 是 manager 内部方法,不需要暴露为 dep）
 
 **`bot.ts` 改动**（`src/feishu/bot.ts`）
@@ -380,19 +413,35 @@ export class AttachedWatchers {
   }
   ```
   fire-and-forget，不 await，不影响 chat 路由
-- `handleCardAction`（bot.ts:460）新增 `case 'agent_view_stop_watching'` → `this.agentView.handleStopWatching(openId, messageId)`
-- `FeishuBot` 启动时 `agentView.attachedWatchers = new AttachedWatchers({...})`（已在 `AgentViewManager` 构造函数内做，bot 透传即可）
-- bot shutdown（如果有）`agentView.attachedWatchers.stopAll()`
+- `handleCardAction`（bot.ts:460, switch 在 532）新增 `case 'agent_view_stop_watching'`：
+  ```typescript
+  // 加在 'agent_view_bg_conflict_cancel' case 之后、default 之前
+  case 'agent_view_stop_watching':
+    await this.agentView.handleStopWatching(openId);
+    return null;
+  ```
+- `FeishuBot.shutdown()`（bot.ts:407 已存在，stop liveWatchers）扩展为也调 `agentView.attachedWatchers.stopAll()`：
+  ```typescript
+  async shutdown(): Promise<void> {
+    const watchers = Array.from(this.liveWatchers.values());
+    this.liveWatchers.clear();
+    if (this.agentView) {
+      await this.agentView.attachedWatchers.stopAll();  // 新增一行
+    }
+    await Promise.all(watchers.map(w => w.stop('bot_shutdown')));
+  }
+  ```
+  顺序：先停 attached（可能有 in-flight patch 在飞），再停 liveWatchers（同样）。不严格串行（都 fire-and-forget），但 `await Promise.all` 保险。
 
 **`action.ts` 改动**（`src/agent-view/action.ts`）
 
 ```typescript
 export type AgentViewValue =
-  | ... // 现有 9 个
-  | { tag: 'agent_view_stop_watching' };  // 新增
+  | ... // 现有 12 个（Peek/Attach/Stop 系列 + bg-conflict 系列）
+  | { tag: 'agent_view_stop_watching' };  // 新增,无字段
 ```
 
-`isAgentViewValue` 新增 case 接受。
+`isAgentViewValue` 的 switch 不需要新增 case（default 接受 unknown tag）。
 
 ### 3.6 数据流（一次 tick）
 
@@ -475,7 +524,7 @@ tick() 触发 (setInterval 10s)
 - 两者都占 user-mapping 的 `type` 字段，但**不会同时存在**：
   - [Reply] 路径（`handleReplyRequest`）做 CAS 前会清掉 `last_attached_watch` 类的 entry（与 v2.2.x 清 `last_agent_list_card` 同款）
   - [Attach] 路径（`handleAttach`）做 CAS 时不主动清 `pending_agent_reply`（由 `wasPendingReply` 决定清不清，见 `manager.ts:467-481`）
-- 状态转换：Attach 期间用户点 [Reply] → 走 `handleReplyRequest`，清 last_attached_watch + 发等待卡；本次 watch 仍继续 patch peek 卡（独立）
+- 状态转换：Attach 期间用户点 [Reply] → 走 `handleReplyRequest`，清 last_attached_watch + 发等待卡；本次 watch 仍继续 patch **attached 卡**（独立）
 - 状态转换：pending_agent_reply 期间用户再 Attach → 走 `handleAttach`，清旧 session entry；expectedReply 也由 `wasPendingReply` 路径清掉
 
 **结论：互不干扰，spec 不需要新增协调代码。**
