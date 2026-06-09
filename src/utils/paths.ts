@@ -51,3 +51,5 @@ export function expandPath(p: string): string {
 // Claude paths
 export const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
 export const CLAUDE_SETTINGS_PATH = join(HOME, '.claude', 'settings.json');
+/** ~/.claude/jobs/<short>/state.json — Claude CLI's authoritative bg-job state machine (v2.3+ Agent View primary source). */
+export const CLAUDE_JOBS_DIR = join(HOME, '.claude', 'jobs');
