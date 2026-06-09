@@ -471,7 +471,7 @@ describe('AttachedWatchers manager', () => {
  });
 
  test('start adds watcher to map; has() returns true', async () => {
- const mgr = new AttachedWatchers(patchFn, resolveContent, {
+ const mgr = new AttachedWatchers(() => patchFn, resolveContent, {
  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:50,
  });
  expect(mgr.has('ou_a')).toBe(false);
@@ -483,7 +483,7 @@ describe('AttachedWatchers manager', () => {
  });
 
  test('start supersedes old watcher (old stop, new starts)', async () => {
- const mgr = new AttachedWatchers(patchFn, resolveContent, {
+ const mgr = new AttachedWatchers(() => patchFn, resolveContent, {
  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:50,
  });
  await mgr.start('ou_a', {
@@ -501,7 +501,7 @@ describe('AttachedWatchers manager', () => {
  });
 
  test('stop: removes from map', async () => {
- const mgr = new AttachedWatchers(patchFn, resolveContent, {
+ const mgr = new AttachedWatchers(() => patchFn, resolveContent, {
  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:50,
  });
  await mgr.start('ou_a', {
@@ -517,7 +517,7 @@ describe('AttachedWatchers manager', () => {
  });
 
  test('identity check: old watcher onStop does not delete new watcher', async () => {
- const mgr = new AttachedWatchers(patchFn, resolveContent, {
+ const mgr = new AttachedWatchers(() => patchFn, resolveContent, {
  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:50,
  });
  await mgr.start('ou_a', {
@@ -543,7 +543,7 @@ describe('AttachedWatchers manager', () => {
  const slowPatch = mock(async () => {
  return new Promise<void>(r => { resolvePatch = r; });
  });
- const mgr = new AttachedWatchers(slowPatch as any, resolveContent, {
+ const mgr = new AttachedWatchers(() => slowPatch as any, resolveContent, {
  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:10, maxTicks:1000,
  });
  // stub AgentSnapshotFetcher (project pattern, not spyOn, to avoid spy leakage)
@@ -569,5 +569,55 @@ describe('AttachedWatchers manager', () => {
  (AgentSnapshotFetcher as any).fetch = origFetch;
  await mgr.stopAll();
  }
+ });
+
+  test('修 3:patchFn getter picks up replacement (start.ts:417 后续替换场景)', async () => {
+  // 回归测试:2026-06-09 用户报"卡片没刷新"根因。
+  // start.ts 把 patchFn 初始化为 no-op,然后 AttachedWatchers 构造时缓存旧值;
+  // 之后 start.ts:417 才赋真实 createPatchFn。修复前:AttachedWatchers 永远用
+  // no-op,patches 0 发出。修复后:AttachedWatchers 接受 getter,每次取最新。
+
+  // 模拟"构造时 patchFn 是 no-op,稍后被替换"
+  const noopPatchFn = mock(async () => null);
+  const realPatchFn = mock(async () => ({}));
+  let currentPatchFn: typeof noopPatchFn = noopPatchFn;
+  const getter = () => currentPatchFn;
+  const mgr = new AttachedWatchers(getter, resolveContent, {
+  ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs:50,
+  });
+  (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+  ok: true,
+  sessions: [{
+  pid:1, cwd: '/tmp', kind: 'background', startedAt: Date.now(),
+  sessionId: 's1', name: 'n', status: 'busy', source: 'slash',
+  }],
+  }));
+  const origFetch = AgentSnapshotFetcher.fetch;
+  try {
+  // 1) 构造时是 no-op:start watcher,但 tick 时调 no-op(0 真实 patch)
+  await mgr.start('ou_a', {
+  sessionId: 's1', shortId: 's1short', name: 'n', cwd: '/tmp', cardMessageId: 'om1',
+  });
+  await new Promise(r => setTimeout(r, 80)); // 等 1-2 tick
+  expect(noopPatchFn).toHaveBeenCalled();
+  expect(realPatchFn).not.toHaveBeenCalled();
+  noopPatchFn.mockClear();
+  realPatchFn.mockClear();
+
+  // 2) 替换 patchFn(模拟 start.ts:417 之后)+supersede 启新 watcher
+  currentPatchFn = realPatchFn;
+  // 模拟 handleAttach 流程:先 stop 旧(因为 superseded),再 start 新
+  await mgr.start('ou_a', {
+  sessionId: 's1', shortId: 's1short', name: 'n', cwd: '/tmp', cardMessageId: 'om1',
+  });
+  await new Promise(r => setTimeout(r, 80)); // 等新 watcher tick
+  // 新 watcher 必须用 real patchFn
+  expect(realPatchFn).toHaveBeenCalled();
+  // no-op 不应该被新 watcher 调
+  expect(noopPatchFn.mock.calls.length).toBeLessThanOrEqual(1); // 旧 watcher 可能调了 1 次
+  } finally {
+  (AgentSnapshotFetcher as any).fetch = origFetch;
+  await mgr.stopAll();
+  }
  });
 });

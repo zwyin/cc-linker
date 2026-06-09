@@ -44,7 +44,7 @@ export class AgentViewManager {
       deps.expectedReplyTimeoutMs ?? 300_000
     );
     this.attachedWatchers = new AttachedWatchers(
-      deps.patchFn,
+      () => deps.patchFn,  // 修 3: getter,每次取最新值,适配 start.ts:417 后续替换
       (shortId, maxChars) => this.resolvePeekContent(shortId, maxChars),
     );
   }

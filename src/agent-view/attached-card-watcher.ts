@@ -89,7 +89,6 @@ export class AttachedCardWatcher {
  () => {
  // skip overlap, 同 live-progress.ts:115
  if (this.inFlightTick) return;
- logger.info(`[DIAG] AttachedCardWatcher setInterval fire: openId=${this.deps.openId}, cardMessageId=${this.deps.cardMessageId}, inFlight=${!!this.inFlightTick}`);
  this.inFlightTick = this.tick()
  .catch(err => logger.error(`AttachedCardWatcher tick error: ${err}`))
  .finally(() => {
@@ -135,11 +134,9 @@ export class AttachedCardWatcher {
  async tick(): Promise<void> {
     if (this.stopped) return;
     this.tickCount++;
-    logger.info(`[DIAG] tick #${this.tickCount} start: cardMessageId=${this.deps.cardMessageId}`);
 
     // 1) snapshot
     const result: FetchResult = await AgentSnapshotFetcher.fetch();
-    logger.info(`[DIAG] tick #${this.tickCount} snapshot: ok=${result.ok}, sessions=${result.ok ? result.sessions.length : 'N/A'}`);
     if (!result.ok) {
       logger.warn(`AttachedCardWatcher tick snapshot failed: ${result.reason}`);
       return; // 不 patch, 不 stop(spec §3.7)
@@ -148,7 +145,6 @@ export class AttachedCardWatcher {
     // 2) 找 session
     const session = result.sessions.find(s => s.sessionId === this.deps.sessionId);
     if (!session) {
-      logger.info(`[DIAG] tick #${this.tickCount} session NOT in snapshot`);
       // session 已不存在:patch final + stop
       await this.patchFinalCard('session_gone', {
         status: 'unknown',
@@ -158,11 +154,9 @@ export class AttachedCardWatcher {
       void this.stop('session_gone');
       return;
     }
-    logger.info(`[DIAG] tick #${this.tickCount} session found: status=${session.status}, completed=${session.completed}`);
 
     // 3) idle + completed: final + stop
     if (session.status === 'idle' && session.completed) {
-      logger.info(`[DIAG] tick #${this.tickCount} idle_settled path`);
       const content = await this.deps.resolveContent(this.deps.shortId, 2048);
       await this.patchFinalCard('idle_settled', {
         status: session.status,
@@ -180,7 +174,6 @@ export class AttachedCardWatcher {
     const content = await this.deps.resolveContent(this.deps.shortId, 2048);
     this.lastRecentOutput = content.text ?? '(无可用输出)';
     this.lastOutputFormat = content.format;
-    logger.info(`[DIAG] tick #${this.tickCount} resolveContent: textLen=${content.text?.length ?? 0}`);
 
     // 5) build card(内含 25KB 智能截断)
     const card = buildAttachedCard({
@@ -195,13 +188,11 @@ export class AttachedCardWatcher {
       outputFormat: content.format,
       lastWatchedAt: new Date().toLocaleTimeString(),
     });
-    logger.info(`[DIAG] tick #${this.tickCount} card built, calling patchFn`);
 
     // 6) patch + 失败计数
     try {
       await this.deps.patchFn(this.deps.cardMessageId, card);
       this.patchFailureCount = 0;
-      logger.info(`[DIAG] tick #${this.tickCount} patchFn SUCCESS`);
     } catch (err: any) {
       this.patchFailureCount++;
       logger.warn(
@@ -272,8 +263,22 @@ export class AttachedCardWatcher {
 export class AttachedWatchers {
  private watchers = new Map<string, AttachedCardWatcher>();
 
+ /**
+  * 修 3(2026-06-09 user bug): patchFn 必须用 getter,不能缓存值。
+  *
+  * 根因:start.ts:234 把 patchFn 初始化为 no-op stub
+  * `async () => null`,然后 line 311 把它传给 AgentViewManager 构造器。
+  * AttachedWatchers 在自己的 constructor 里把 patchFn 存为 private readonly。
+  * 之后 start.ts:417 才用 `patchFn = createPatchFn(client, log)` 替换真值,
+  * 之后 line 419 又 `agentView.deps.patchFn = patchFn` 替换 manager 的 deps。
+  *
+  * 但 AttachedWatchers 已把旧引用存死,看不到替换。后续所有 watcher tick
+  * 都调 no-op,patches 永远 0 发出,用户看不到任何更新。
+  *
+  * 修复:用 getter 每次读最新值。
+  */
  constructor(
- private readonly patchFn: (messageId: string, card: string) => Promise<any>,
+ private readonly patchFnGetter: () => (messageId: string, card: string) => Promise<any>,
  private readonly resolveContentFn: (
  shortId: string,
  maxChars: number,
@@ -310,7 +315,7 @@ export class AttachedWatchers {
  name: opts.name,
  cwd: opts.cwd,
  cardMessageId: opts.cardMessageId,
- patchFn: this.patchFn,
+ patchFn: this.patchFnGetter(),  // 修 3: 每次取最新 patchFn,不被 no-op 缓存
  config: this.config,
  resolveContent: this.resolveContentFn,
  onStop: (oid, reason, w) => {
