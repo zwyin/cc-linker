@@ -45,10 +45,12 @@ mock.module('../../../src/agent-view/daemon-log-reader', () => ({
 // v2.2.6 + v2.2.7: name-cache 和 JSONL 兜底的真实实现会写 / 读真实文件。
 // 不用 mock.module(bun 已知限制:跨文件不可撤销,会污染 name-cache.test.ts /
 // jsonl-name.test.ts),改成 swap snapshot-fetcher 暴露的 _nameCacheHooks(普通对象)。
-import { _nameCacheHooks } from '../../../src/agent-view/snapshot-fetcher';
+import { _nameCacheHooks, _jsonlIndexHooks } from '../../../src/agent-view/snapshot-fetcher';
 const origCaptureNames = _nameCacheHooks.captureNames;
 const origLookupName = _nameCacheHooks.lookupName;
 const origDeriveNameFromJsonl = _nameCacheHooks.deriveNameFromJsonl;
+const origJsonlIndexLookupPath = _jsonlIndexHooks.lookupPath;
+const lookupPathMock = mock((_short: string): string | null => null);
 const captureNamesMock = mock(
   (_sessions: Array<{ sessionId: string; name: string }>, _now?: number, _path?: string) => {},
 );
@@ -92,6 +94,9 @@ beforeEach(() => {
   _nameCacheHooks.captureNames = captureNamesMock;
   _nameCacheHooks.lookupName = lookupNameMock;
   _nameCacheHooks.deriveNameFromJsonl = deriveNameFromJsonlMock;
+  lookupPathMock.mockReset();
+  lookupPathMock.mockImplementation(() => null);
+  _jsonlIndexHooks.lookupPath = lookupPathMock;
 });
 
 afterAll(() => {
@@ -100,6 +105,7 @@ afterAll(() => {
   _nameCacheHooks.captureNames = origCaptureNames;
   _nameCacheHooks.lookupName = origLookupName;
   _nameCacheHooks.deriveNameFromJsonl = origDeriveNameFromJsonl;
+  _jsonlIndexHooks.lookupPath = origJsonlIndexLookupPath;
   mock.restore(); // Restore all mock.module() replacements
 });
 
@@ -421,6 +427,96 @@ describe('AgentSnapshotFetcher.fetch', () => {
       const completed = result.sessions.find(s => s.sessionId === 'fleet088');
       expect(completed).toBeDefined();
       expect(completed?.source).toBe('fleet');
+    }
+  });
+
+  // v2.2.x: completed sessions 之前 cwd 写死 '',导致 Peek 按钮 value.cwd 为空,
+  // 落 isAgentViewValue guard 失败,被 dispatcher 报"未知操作: agent_view_peek"。
+  // 这里测试从 JSONL 路径反推 cwd 后,按钮 value 能拿回真实 cwd。
+  test('completed session cwd reconstructed from JSONL path (single segment)', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    readCompletedSessionsMock.mockImplementation(
+      () => new Map([['jsonl001', { short: 'jsonl001', settledAt: 1000, status: 'done' }]]),
+    );
+    readClaimedSourcesMock.mockImplementation(() => new Map([['jsonl001', 'slash']]));
+    lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(() => null);
+    // JSONL 在 ~/.claude/projects/-Users-wuyujun/jsonl001-uuid-xxxx.jsonl
+    // 解码:把 projSeg('-Users-wuyujun')里的 '-' 替回 '/',前置 '/' → '/Users/wuyujun'
+    lookupPathMock.mockImplementation(() =>
+      '/Users/wuyujun/.claude/projects/-Users-wuyujun/jsonl001-uuid-xxxx.jsonl',
+    );
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const completed = result.sessions.find(s => s.sessionId === 'jsonl001');
+      expect(completed).toBeDefined();
+      expect(completed?.cwd).toBe('/Users/wuyujun');
+    }
+  });
+
+  test('completed session cwd reconstructed from JSONL path (multi-segment, lossy on hyphenated path components)', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    readCompletedSessionsMock.mockImplementation(
+      () => new Map([['jsonl002', { short: 'jsonl002', settledAt: 1000, status: 'done' }]]),
+    );
+    readClaimedSourcesMock.mockImplementation(() => new Map([['jsonl002', 'fleet']]));
+    lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(() => null);
+    // /Users/wuyujun/Git/cc-linker → -Users-wuyujun-Git-cc-linker (CLI 编码)
+    lookupPathMock.mockImplementation(() =>
+      '/Users/wuyujun/.claude/projects/-Users-wuyujun-Git-cc-linker/jsonl002-uuid-yyyy.jsonl',
+    );
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const completed = result.sessions.find(s => s.sessionId === 'jsonl002');
+      expect(completed).toBeDefined();
+      // CLI 编码用 '-' 替 '/',信息丢失:'-cc-linker' 既可能是 '-cc-linker' 也可能是
+      // '-cc/linker'。我们的策略是 naive 全替回 '/',得到 '/Users/wuyujun/Git/cc/linker'。
+      // 这是 best-effort 显示,不影响功能(Peek 走 JsonlIndex.lookup(shortId) 不依赖 cwd;
+      // Attach 需要 cwd 时由 handleAttach 在 roster/registry 找真实值,见 v2.2.10)。
+      expect(completed?.cwd).toBe('/Users/wuyujun/Git/cc/linker');
+    }
+  });
+
+  test('completed session cwd stays empty when JSONL is missing (e.g. before write or after delete)', async () => {
+    execFileSyncMock.mockImplementation(() => '2.1.163\n');
+    (DaemonProbe as any).check = () => true;
+    const raw = readFileSync(join(fixtureDir, 'busy.json'), 'utf8');
+    execFileMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, raw, '');
+    });
+    readCompletedSessionsMock.mockImplementation(
+      () => new Map([['jsonl003', { short: 'jsonl003', settledAt: 1000, status: 'done' }]]),
+    );
+    readClaimedSourcesMock.mockImplementation(() => new Map([['jsonl003', 'slash']]));
+    lookupNameMock.mockImplementation(() => undefined);
+    deriveNameFromJsonlMock.mockImplementation(() => null);
+    // JSONL 找不到(典型:刚 settle,bot 还没扫到;或被外部删了)
+    lookupPathMock.mockImplementation(() => null);
+
+    const result = await AgentSnapshotFetcher.fetch();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const completed = result.sessions.find(s => s.sessionId === 'jsonl003');
+      expect(completed).toBeDefined();
+      expect(completed?.cwd).toBe('');
     }
   });
 });

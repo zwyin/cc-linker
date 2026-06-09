@@ -6,7 +6,7 @@ import { parseAgentsJson, attachRosterSources, filterUserDispatched } from './sn
 import { readRoster, buildRosterSourceMap } from './roster-source';
 import { readCompletedSessions, readClaimedSources } from './daemon-log-reader';
 import { captureNames, lookupName } from './name-cache';
-import { deriveNameFromJsonl } from './jsonl-name';
+import { deriveNameFromJsonl, JsonlIndex } from './jsonl-name';
 import type { AgentSession, AgentSessionSource } from './types';
 
 export type FetchResult =
@@ -21,6 +21,48 @@ export const _nameCacheHooks = {
   lookupName,
   deriveNameFromJsonl,
 };
+
+// v2.2.x: 内部测试 hook —— 让 tests 能 swap JSONL 路径查询,避免触发真实磁盘 IO。
+// enrichCompletedSessions 用它在构造 cwd 时找到 JSONL 文件位置。
+export const _jsonlIndexHooks = {
+  lookupPath: (short: string): string | null => {
+    const idx = new JsonlIndex();
+    return idx.lookup(short);
+  },
+};
+
+/**
+ * v2.2.x: 从 Claude Code CLI 的 JSONL 路径反推原 cwd。
+ *
+ * 编码规则(CLI 行为验证:`ls ~/.claude/projects/`):
+ *   cwd 的每个 `/` 全部替成 `-`,leading `/` 也替(避免 `--xxx` 双横杠)。
+ *   /Users/wuyujun         → -Users-wuyujun
+ *   /Users/wuyujun/a b     → -Users-wuyujun-a-b   (空格保留)
+ *   /Users/wuyujun/Git/cc-linker → -Users-wuyujun-Git-cc-linker
+ *
+ * 解码:把 projSeg(`<encoded>`)里所有 `-` 替回 `/`,前置 `/`。
+ *   -Users-wuyujun                 → /Users/wuyujun
+ *   -Users-wuyujun-Git-cc-linker   → /Users/wuyujun/Git/cc/linker   (有损:'-' 不可逆)
+ *
+ * 有损部分说明:CLI 编码不可逆(无法区分 '/Git/' 和 '-Git-')。但 cwd 在本仓库
+ * 只用于:
+ *   1) 卡片显示 (`card.ts:truncateCwd`)—— 显示近似即可
+ *   2) buildPeekCard 透传 —— 仅显示
+ *   3) `handleAttach` 等下游 —— 真值走 roster/registry 反查,不依赖这里的 cwd
+ * JSONL 实际定位走 `JsonlIndex.lookup(shortId)`(`resolvePeekContent:205`),
+ * 完全不依赖 cwd。所以有损 decode 不影响功能。
+ */
+function decodeCwdFromJsonlPath(jsonlPath: string): string {
+  const segments = jsonlPath.split('/');
+  // 路径形如 /Users/.../.claude/projects/<encoded>/<uuid>.jsonl
+  // segments: ['', 'Users', ..., 'projects', '<encoded>', '<uuid>.jsonl']
+  const projSeg = segments[segments.length - 2];
+  if (!projSeg) return '';
+  // CLI 编码把每个 '/' 替成 '-',所以 encoded 形如 -Users-wuyujun-Git-cc-linker。
+  // naive 全替回 '/' 会把原始的 '-' 也吞掉(信息丢失,见上),但能恢复最常见
+  // 形态且生成的路径在 Feishu 卡上"看着像"路径。比空串好用。
+  return projSeg.replace(/-/g, '/');
+}
 
 /**
  * v2.2.4 新增 / v2.2.5 修正 / v2.2.6 接入 name-cache / v2.2.7 加 JSONL 兜底:
@@ -75,9 +117,22 @@ async function enrichCompletedSessions(
     }
     if (!name) name = short;
 
+    // v2.2.x: 从 JSONL 路径反推 cwd,让 Peek 按钮 value.cwd 非空。
+    // 之前 cwd='' 导致 `card.ts` 渲染的 Peek 按钮 value.cwd='',
+    // `action.ts:isAgentViewValue` 要求 str('cwd') 非空 → guard 失败 →
+    // dispatcher 落 legacy switch default → bot.ts:639 报"未知操作: agent_view_peek"。
+    // 修法:completed session 的 JSONL 路径(~/.claude/projects/<encoded>/<uuid>.jsonl)
+    // 仍可定位,反推 cwd 让 Peek value 完整;Attach/Reply/Stop 等"需要 live process"
+    // 的按钮仍由 UI 层在 completed 上禁用(completed 没有活 worker)。
+    let cwd = '';
+    const jsonlPath = _jsonlIndexHooks.lookupPath(short);
+    if (jsonlPath) {
+      cwd = decodeCwdFromJsonlPath(jsonlPath);
+    }
+
     result.push({
       pid: 0,
-      cwd: '',
+      cwd,
       kind: 'background',
       startedAt: settledAt,
       // 拿到 full UUID 时用 full UUID,否则继续退化到 short hash

@@ -4,6 +4,41 @@ All notable changes to cc-linker are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/), version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-06-09
+
+### Fix: Completed session 的 Peek/Attach 按钮报"未知操作"
+
+`/agents` 列表里已 settle 的 background session(`daemon.log` 兜底渲染,
+非 `claude agents --json` 实时输出)点击 Peek / Attach 都会收到
+"未知操作: agent_view_peek/attach"。
+
+#### Root cause
+
+`snapshot-fetcher.ts:enrichCompletedSessions` 给 completed session 写死
+`cwd: ''`,导致 `card.ts:46-71` 渲染的按钮 value 缺 `cwd` 字段,
+`agent-view/action.ts:isAgentViewValue` guard 要求 `str('cwd')` 非空
+→ guard 拒 → dispatcher 落 `bot.ts:639` legacy switch default
+报"未知操作"。
+
+#### Fix
+
+从 JSONL 路径反推 cwd。CLI 编码规则:`cwd.split('/').join('-')`,
+例 `/Users/wuyujun` → `-Users-wuyujun`。`~/.claude/projects/<encoded>/<uuid>.jsonl`
+的 `<encoded>` 段反向 decode(naive `-` → `/`)拿回 best-effort cwd,
+Peek 按钮 value 完整,guard 通过。Peek 内容读取走 `JsonlIndex.lookup(shortId)`
+不依赖 cwd,所以即使 decode 有损(原路径含 hyphen 时丢 hyphen)也不影响 Peek 功能。
+
+#### Changed
+- `src/agent-view/snapshot-fetcher.ts`:加 `_jsonlIndexHooks.lookupPath` 测试 hook
+  + `decodeCwdFromJsonlPath()` 工具 + `enrichCompletedSessions` 在造 session 时
+  调用二者把 cwd 补上
+
+#### Tests
+- `tests/unit/agent-view/snapshot-fetcher.test.ts`:3 个新 case
+  - single-segment decode(`/Users/wuyujun`)
+  - multi-segment lossy decode(`/Git/cc-linker` → `/Git/cc/linker`)
+  - JSONL 缺失时 cwd 仍为 `''`(graceful fallback)
+
 ## [0.5.0] - 2026-06-09
 
 ### 飞书 Attach 后自动刷新内容卡 (Agent View 增强)
