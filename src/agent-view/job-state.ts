@@ -12,7 +12,7 @@
 // 处理。未识别的 state 值(如未来新增的 'paused')透传 — 映射函数会把它转成 'unknown'
 // AgentSessionStatus。
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { CLAUDE_JOBS_DIR } from '../utils/paths';
 import { logger } from '../utils/logger';
@@ -118,4 +118,54 @@ export function readJobState(
     mtimeMs,
     readAt: Date.now(),
   };
+}
+
+/**
+ * 列出 ~/.claude/jobs/ 下所有 short 子目录名(不含 state.json 加载)。
+ * 测试模式下也能列 fixtures 目录里所有 .json 文件名(去掉 .json)。
+ *
+ * 跳过规则:
+ *   - 隐藏文件(. 开头)
+ *   - README.md / pins.json 这类已知非-short 文件
+ *   - 生产模式:只取 directory entry;fixture 模式:只取 .json file entry
+ */
+export function listJobShorts(jobsDir: string = CLAUDE_JOBS_DIR): string[] {
+  if (!existsSync(jobsDir)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(jobsDir);
+  } catch {
+    return [];
+  }
+  const shorts: string[] = [];
+  for (const name of entries) {
+    if (name === 'README.md' || name === 'pins.json' || name.startsWith('.')) continue;
+    if (name.endsWith('.json')) {
+      // fixture 模式
+      shorts.push(name.replace(/\.json$/, ''));
+      continue;
+    }
+    // production 模式:子目录
+    try {
+      const st = statSync(join(jobsDir, name));
+      if (st.isDirectory()) shorts.push(name);
+    } catch { /* skip */ }
+  }
+  return shorts;
+}
+
+/**
+ * 并行读取 jobsDir 下所有 short 的 state.json。
+ * malformed / 缺失的 silently 丢弃(reportOnce 会在 readJobState 内打 warning)。
+ */
+export function readAllJobStates(
+  jobsDir: string = CLAUDE_JOBS_DIR,
+): JobStateEnvelope[] {
+  const shorts = listJobShorts(jobsDir);
+  const envs: JobStateEnvelope[] = [];
+  for (const short of shorts) {
+    const env = readJobState(short, jobsDir);
+    if (env) envs.push(env);
+  }
+  return envs;
 }
