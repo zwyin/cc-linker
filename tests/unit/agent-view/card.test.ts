@@ -10,7 +10,7 @@ import {
   buildBgConflictCard,
   buildAttachedCard,  // 新增
 } from '../../../src/agent-view/card';
-import { groupByStatus, type AgentSession } from '../../../src/agent-view/types';
+import { groupByStatus, type AgentSession, type AgentSessionGroup } from '../../../src/agent-view/types';
 import { parseAgentsJson } from '../../../src/agent-view/snapshot';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -101,14 +101,16 @@ describe('buildListCard', () => {
     const groups = groupByStatus(sessions);
     const card = JSON.parse(buildListCard(groups, '12:34:56'));
     // tooltip 是 elements[0],先于 "Last refreshed" 和 group headers
+    // v2.3: 状态来源改为 state.json(原来 claude agents --json)
     const tooltip = card.elements.find(
       (e: any) =>
         e.tag === 'markdown' &&
         typeof e.content === 'string' &&
-        e.content.includes('claude agents --json'),
+        e.content.includes('state.json'),
     );
     expect(tooltip).toBeDefined();
-    expect(tooltip.content).toContain('TUI');
+    // v2.3: state.json 来自 ~/.claude/jobs/<short> 路径下
+    expect(tooltip.content).toContain('~/.claude/jobs');
     // 第二个 markdown 必须是 "Last refreshed"(保持原有顺序)
     const refreshLine = card.elements.find(
       (e: any) =>
@@ -181,6 +183,111 @@ describe('buildListCard', () => {
     expect(groups.idle[0].sessionId.startsWith('idle0000')).toBe(true);
     expect(groups.completed).toHaveLength(1);
     expect(groups.completed[0].sessionId.startsWith('compl000')).toBe(true);
+  });
+});
+
+describe('buildListCard v2.3 — group order waiting first', () => {
+  function mkSession(over: Partial<AgentSession>): AgentSession {
+    return {
+      pid: 0, cwd: '/tmp/x', kind: 'background', startedAt: Date.now() - 60000,
+      sessionId: 'abcdef12-1234-1234-1234-123456789012',
+      name: 'x', status: 'busy', source: 'unknown', ...over,
+    };
+  }
+
+  test('waiting group renders before busy', () => {
+    const groups: AgentSessionGroup = {
+      busy: [mkSession({ name: 'b1', status: 'busy' })],
+      waiting: [mkSession({ name: 'w1', status: 'waiting',
+                            waitingFor: '继续吗?', detail: '继续吗?' })],
+      idle: [],
+      completed: [],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    const flat = JSON.stringify(JSON.parse(cardStr));
+    // 'w1' 必须出现在 'b1' 之前
+    expect(flat.indexOf('w1')).toBeLessThan(flat.indexOf('b1'));
+    expect(flat.indexOf('w1')).toBeGreaterThan(-1);
+    expect(flat.indexOf('b1')).toBeGreaterThan(-1);
+  });
+
+  test('subtitle line includes needs for waiting session', () => {
+    const groups: AgentSessionGroup = {
+      busy: [], idle: [], completed: [],
+      waiting: [mkSession({
+        name: 'reply-me', status: 'waiting',
+        waitingFor: '是否继续？', detail: '是否继续？',
+      })],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('是否继续？');
+  });
+
+  test('subtitle line includes detail for busy session', () => {
+    const groups: AgentSessionGroup = {
+      busy: [mkSession({
+        name: 'reviewing', status: 'busy',
+        detail: '# 修正完成 — 最终汇总',
+      })],
+      idle: [], waiting: [], completed: [],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('# 修正完成');
+  });
+
+  test('subtitle truncates very long detail to ~60 chars', () => {
+    const groups: AgentSessionGroup = {
+      busy: [mkSession({
+        name: 'long', status: 'busy',
+        detail: 'A'.repeat(200),
+      })],
+      idle: [], waiting: [], completed: [],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    // 60 字符 A + … (truncate marker)
+    expect(cardStr).toContain('A'.repeat(60) + '…');
+    expect(cardStr).not.toContain('A'.repeat(100));  // no overflow
+  });
+
+  test('subtitle falls back to intent when detail is empty', () => {
+    const groups: AgentSessionGroup = {
+      busy: [], waiting: [], completed: [],
+      idle: [mkSession({
+        name: 'just-started', status: 'idle',
+        intent: '原始派发命令',
+      })],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('原始派发命令');
+  });
+
+  test('stopped session keeps 🛑 prefix in completed group', () => {
+    const groups: AgentSessionGroup = {
+      busy: [], waiting: [], idle: [],
+      completed: [mkSession({ name: '🛑 cancelled', status: 'idle', completed: true })],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('🛑 cancelled');
+  });
+
+  test('footer mentions state.json, NOT "claude agents --json"', () => {
+    const groups: AgentSessionGroup = { busy: [], waiting: [], idle: [], completed: [] };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('state.json');
+    expect(cardStr).not.toContain('claude agents --json');
+  });
+
+  test('no subtitle line when no detail/needs/intent', () => {
+    const groups: AgentSessionGroup = {
+      busy: [], idle: [mkSession({ name: 'bare', status: 'idle' })], waiting: [], completed: [],
+    };
+    const cardStr = buildListCard(groups, 'now');
+    expect(cardStr).toContain('bare');
+    // No subtitle marker — no ❓ in this card, no 副标题 ❓ from previous renders
+    const parsed = JSON.parse(cardStr);
+    const flat = JSON.stringify(parsed);
+    // 验证 bare 这行没有 ❓ 标记(只有 emoji name 列出现 emoji,无副标题 ❓)
+    expect(flat).not.toContain('❓');
   });
 });
 

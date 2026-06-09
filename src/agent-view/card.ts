@@ -21,8 +21,8 @@ export function buildListCard(
 ): string {
   const elements: any[] = [];
   for (const [status, list] of [
-    ['busy', groups.busy],
     ['waiting', groups.waiting],
+    ['busy', groups.busy],
     ['idle', groups.idle],
     ['completed', groups.completed],
   ] as Array<[AgentSessionStatus | 'completed', AgentSession[]]>) {
@@ -37,11 +37,17 @@ export function buildListCard(
             : '空闲';
     elements.push({ tag: 'markdown', content: `**${title} (${list.length})**` });
     for (const s of list) {
-      const emoji = status === 'busy' ? '✽' : status === 'waiting' ? '✋' : '⏹';
+      const emoji = status === 'busy' ? '✽'
+        : status === 'waiting' ? '✋'
+        : '⏹';
       const elapsed = humanizeElapsed(Date.now() - s.startedAt);
+      const subtitle = chooseSubtitle(s);
+      const subtitleLine = subtitle
+        ? `\n   ${status === 'waiting' ? '❓ ' : ''}${subtitle}`
+        : '';
       elements.push({
         tag: 'markdown',
-        content: `${emoji} \`${s.name}\`  ·  ${elapsed}\n📁 ${truncateCwd(s.cwd)}`,
+        content: `${emoji} \`${s.name}\`  ·  ${elapsed}${subtitleLine}\n📁 ${truncateCwd(s.cwd)}`,
       });
       // 按钮
       const actions: any[] = [
@@ -127,10 +133,10 @@ export function buildListCard(
       template: 'blue',
     },
     elements: [
-      // v2.2.1: 状态来源提示(claude agents --json 有秒级延迟,与 TUI 不完全一致)
+      // v2.3: 状态来源(state.json 任务状态机,代替之前的 claude agents --json)
       {
         tag: 'markdown',
-        content: 'ℹ️ 状态由 `claude agents --json` 提供,可能与终端 TUI 有数秒延迟',
+        content: 'ℹ️ 状态由 `~/.claude/jobs/<short>/state.json` 提供(Claude CLI 任务状态机)',
       },
       { tag: 'markdown', content: `Last refreshed ${refreshedAt}` },
       ...elements,
@@ -159,6 +165,19 @@ function humanizeElapsed(ms: number): string {
 function truncateCwd(cwd: string): string {
   const home = process.env.HOME || '/';
   return cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
+}
+
+/** 列表卡每行的副标题:waiting → needs(或 detail / intent 兜底),busy/done → detail,fallback → intent。
+ *  全部 collapse whitespace + 截到 60 字符 + 加省略号。 */
+function chooseSubtitle(s: AgentSession): string {
+  const raw =
+    s.status === 'waiting' ? (s.waitingFor ?? s.detail ?? s.intent ?? '')
+    : (s.detail ?? s.intent ?? '');
+  if (!raw) return '';
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0) return '';
+  const MAX = 60;
+  return flat.length <= MAX ? flat : flat.slice(0, MAX) + '…';
 }
 
 /** Peek 卡:显示 status / waitingFor / recentOutput
