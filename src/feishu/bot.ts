@@ -986,6 +986,23 @@ export class FeishuBot {
               'feishu-detects-cli'
             );
             if (status.isProcessing && status.confidence !== 'low') {
+              // 修:busy + bg worker 共存时,优先发 3 按钮 bg-conflict 卡(让用户选 stop_bg / new_session / cancel),
+              // 不发 1 按钮 busy 卡(信息不全,user 没法做选择)。原来 runChatSDK 里只有 session 不 busy 才查 bg-conflict,
+              // 这次把检查提前到 busy 路径,两种状态都覆盖。
+              const bgConflict = this.checkBgConflict(sessionUuid, cwd, msg.text);
+              if (bgConflict) {
+                const conflictCardId = await this.sendBgConflictCard(msg, bgConflict);
+                logger.info(
+                  `[activity] bg-conflict card sent (busy+bg): messageId=${msg.messageId}, conflictCardId=${conflictCardId}`,
+                );
+                const updateFields: any = {
+                  awaitingForceSend: true,
+                  busySinceAt: new Date().toISOString(),
+                };
+                if (conflictCardId) updateFields.replyMessageId = conflictCardId;
+                this.spoolQueue.updateProcessingMessage(msg.messageId, msg.serialKey, updateFields);
+                return;
+              }
               const busyCardId = await this.sendCLIBusyCard(msg, currentEntry, status);
               logger.info(`[activity] busy card created: messageId=${msg.messageId}, busyCardId=${busyCardId}`);
               // Keep message in processing/ with awaitingForceSend=true so user can force-send.
@@ -1113,6 +1130,65 @@ export class FeishuBot {
       entry?.title ?? '未命名会话',
       status
     );
+  }
+
+  /**
+   * 修:busy 路径升级 — 检查 session 是否仍被 bg worker 持有。
+   * 若有,返回 bg-conflict 卡所需数据(供 sendBgConflictCard 使用);
+   * 若无,返回 null(走原 1 按钮 busy 卡)。
+   *
+   * 复用 runChatSDK 里的逻辑(readRoster + workerPid + parentUuid 计算),
+   * 提取为 helper 让两条路径(busy + runChatSDK)都用同一份。
+   */
+  private checkBgConflict(
+    sessionUuid: string,
+    cwd: string,
+    text: string,
+  ): { name: string; shortId: string; sessionId: string; cwd: string; text: string; workerPid?: number; parentUuid?: string | null } | null {
+    if (!sessionUuid) return null;
+    const roster = _bgConflictHooks.readRoster();
+    const short = sessionUuid.slice(0, 8);
+    const worker = roster?.workers?.[short];
+    if (!worker) return null;
+    const workerPid = (worker as any).pid;
+    const workerName = (worker as any).dispatch?.seed?.name || short;
+    // parent UUID 从 roster.launch.sessionId 提取 basename(同 runChatSDK 逻辑)
+    let parentUuid: string | null = null;
+    try {
+      const parentPath = _bgConflictHooks.lookupResumeFromPath(roster, short);
+      if (parentPath) {
+        const id = parentPath.split('/').pop()?.replace(/\.jsonl$/, '') ?? '';
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
+          parentUuid = id;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      name: workerName,
+      shortId: short,
+      sessionId: sessionUuid,
+      cwd,
+      text,
+      workerPid,
+      parentUuid,
+    };
+  }
+
+  /** 发 3 按钮 bg-conflict 卡(供 busy 路径用) */
+  private async sendBgConflictCard(
+    msg: SpoolMessage,
+    info: NonNullable<ReturnType<typeof this.checkBgConflict>>,
+  ): Promise<string | null> {
+    if (!this.cardReplyFn) return null;
+    const card = buildBgConflictCard(info);
+    try {
+      return await this.cardReplyFn(JSON.parse(card), { openId: msg.openId });
+    } catch (err: any) {
+      logger.warn(`sendBgConflictCard failed: ${err?.message ?? err}`);
+      return null;
+    }
   }
 
   /** Non-streaming path for existing session messages (extracted from original handleChat session case) */
