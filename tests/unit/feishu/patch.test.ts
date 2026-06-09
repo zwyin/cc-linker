@@ -1,25 +1,24 @@
 // tests/unit/feishu/patch.test.ts
 //
-// v2.2.20 regression test:agent-view 的 patchFn 必须默认 1200ms 延迟(避开飞书
-// card action event lock),叠加 Peek 卡 update_multi:true 才能正常渲染新内容。
+// v2.2.20 设计意图:patchFn 默认 0ms 延迟(立即发)。
+// 历史:旧版 start.ts:411-435 写死 1200ms 延迟,源自 permission card
+// 路径的"避免 Feishu card action event lock"思路。但 agent-view 的
+// patchFn 也会被 6 处 handler 复用,1.2s 延迟让用户点 Refresh 后飞书客户端
+// 1.2s 都看不到新内容,叠加 Peek 卡 update_multi:true 出现 revert 现象。
 //
-// 实测证据(2026-06-08 22:38 用户 Peek Refresh 测试):
-//   - 飞书 API 返回 success(code=0, msg="success")
-//   - patch 内容是最新数据(PID/Started/Recent output 都对)
-//   - 但飞书客户端不渲染(0ms 延迟下 patch 落在 card action lock 窗口内)
+// 修复后(commit 73 配套):delayMs 默认 0,permission card 走自己的
+// setTimeout 不影响。attach 卡片 10s 自动 patch 立刻发出,无 1.2s 延迟。
 //
-// 旧版 start.ts:411-435 写死 1200ms,叠加缺 update_multi:true → 出现
-// "内容先刷新后被旧内容覆盖"的 revert bug(单帧新内容,客户端 revert 到原卡)。
-// 现在的目标状态:1200ms 延迟 + update_multi:true → 锁外发 patch,客户端正常
-// 持久渲染新内容。
+// 注:createPatchFn 函数注释(start.ts:408)明说"默认 0",但代码里
+// 一度保留 = 1200 的 fallback。2026-06-09 修:对齐注释意图,默认改 0。
 
 import { describe, test, expect, mock } from 'bun:test';
 import { createPatchFn } from '../../../src/feishu/patch';
 
 const noopLog = () => {};
 
-describe('createPatchFn (v2.2.20: agent-view default 1200ms delay)', () => {
-  test('默认 delayMs=1200:patch 真的延迟 ~1200ms(避开飞书 card action lock)', async () => {
+describe('createPatchFn (v2.2.20: default 0ms delay)', () => {
+  test('默认 delayMs=0:patch 立即发出(无 1.2s 延迟,修 2026-06-09 UX bug)', async () => {
     let patchCalledAt = 0;
     const startedAt = Date.now();
     const client = {
@@ -37,8 +36,8 @@ describe('createPatchFn (v2.2.20: agent-view default 1200ms delay)', () => {
     const patchFn = createPatchFn(client, noopLog);
     await patchFn('om_test', '{"foo":"bar"}');
     const elapsed = patchCalledAt - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(1150);
-    expect(elapsed).toBeLessThan(1400);
+    // 默认 0ms,留 50ms 上限给 JS 调度抖动
+    expect(elapsed).toBeLessThan(50);
   });
 
   test('forceImmediate=true 跳过延迟(测试模式加速用)', async () => {

@@ -53,7 +53,7 @@ export function createPatchFn(
   log: (level: 'DEBUG' | 'WARN' | 'ERROR' | 'INFO', msg: string) => void,
   options: PatchFnOptions = {},
 ): FeishuPatchFn {
-  const { delayMs = 1200, forceImmediate = false } = options;
+  const { delayMs = 0, forceImmediate = false } = options;
   const effectiveDelay = forceImmediate ? 0 : delayMs;
   return async (messageId: string, card: string): Promise<any> => {
     if (effectiveDelay > 0) {

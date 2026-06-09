@@ -372,7 +372,9 @@ describe('AttachedCardWatcher.tick()', () => {
     expect(finalCard.header.title.content).toBe('🔌 Watch stopped');
   });
 
-  test('superseded stop with patchFinal: NO patch (silent per Q5=B)', async () => {
+  test('superseded stop with patchFinal: PATCH with "Watch replaced" header (UX fix)', async () => {
+    // deploy 后用户反馈:re-attach 时老卡没自动刷新,用户看老卡以为坏了。
+    // 修复:supersede 时 PATCH 老卡显示 "🔄 Watch replaced" 头,引导用户看新卡
     fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
     const watcher = new AttachedCardWatcher({
       openId: 'ou_test',
@@ -390,7 +392,9 @@ describe('AttachedCardWatcher.tick()', () => {
     await watcher.tick();
     patchFn.mockClear();
     await watcher.stop('superseded', { patchFinal: true });
-    expect(patchFn).not.toHaveBeenCalled();
+    expect(patchFn).toHaveBeenCalledTimes(1);
+    const finalCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(finalCard.header.title.content).toBe('🔄 Watch replaced');
   });
 
   test('shutdown stop with patchFinal: NO patch (process exiting)', async () => {

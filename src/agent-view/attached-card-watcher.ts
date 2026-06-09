@@ -37,17 +37,20 @@ const FINAL_HEADER_TITLES: Record<string, string> = {
  user_chat: '🔌 Watch stopped · 收到新消息',
  user_stop: '🔌 Watch stopped',
  max_ticks: '⏱ Watch stopped (timeout)',
+ superseded: '🔄 Watch replaced',
 };
 
 const DEFAULT_FINAL_HEADER = '🔌 Watch stopped';
 
 /**
  * 不应 patch final card 的 stop reasons。
- * superseded: 静默取代(per spec Q5 = B)
  * patch_failed: 卡可能已删(per spec §3.7)
  * shutdown: 进程退出,patch 没意义
+ *
+ * 注意:superseded 不在此集合 —— supersede 时 PATCH 老卡显示
+ * "🔄 Watch replaced",避免用户看老卡以为"没刷新"(修复 deploy 后 UX bug)
  */
-const PATCH_NO_FINAL_REASONS = new Set(['superseded', 'patch_failed', 'shutdown']);
+const PATCH_NO_FINAL_REASONS = new Set(['patch_failed', 'shutdown']);
 
 export interface AttachedWatchDeps {
  openId: string;
