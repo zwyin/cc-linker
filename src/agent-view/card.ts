@@ -558,6 +558,8 @@ function renderAttachedCardJson(opts: {
   recentOutput: string;
   outputFormat: 'markdown' | 'terminal';
   lastWatchedAt: string;
+  /** 覆盖 header title(默认 `📡 Watching · \`name\``)。Final patch 时用 per-reason 文案。 */
+  headerTitle?: string;
 }): string {
   const statusLabel =
     opts.status === 'busy' ? '处理中'
@@ -631,7 +633,7 @@ function renderAttachedCardJson(opts: {
   return JSON.stringify({
     ...TEMPLATE_HEADER,
     header: {
-      title: { tag: 'plain_text', content: `📡 Watching · \`${opts.name}\`` },
+      title: { tag: 'plain_text', content: opts.headerTitle ?? `📡 Watching · \`${opts.name}\`` },
       template: 'blue',
     },
     elements,
@@ -659,6 +661,8 @@ export function buildAttachedCard(opts: {
   recentOutput: string;
   outputFormat: 'markdown' | 'terminal';
   lastWatchedAt: string;
+  /** 覆盖 header title(默认 `📡 Watching · \`name\``)。Final patch 时用 per-reason 文案。 */
+  headerTitle?: string;
 }): string {
   const truncated = truncateRecentForCard(opts, opts.recentOutput);
   return renderAttachedCardJson({ ...opts, recentOutput: truncated });

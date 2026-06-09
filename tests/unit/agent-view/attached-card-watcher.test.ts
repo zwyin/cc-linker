@@ -260,7 +260,8 @@ describe('AttachedCardWatcher.tick()', () => {
     expect(onStop).toHaveBeenCalledWith('ou_test', 'patch_failed', watcher);
   });
 
-  test('maxTicks reached: stop max_ticks', async () => {
+  test('maxTicks reached: stop max_ticks + final patch with timeout header', async () => {
+    // 修 B1:per spec §3.4 max_ticks 也要 patch final 卡
     fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
     const watcher = new AttachedCardWatcher({
       openId: 'ou_test',
@@ -275,8 +276,142 @@ describe('AttachedCardWatcher.tick()', () => {
       onStop,
     });
     await watcher.tick();
+    // 第 1 个 tick 是普通 patch,第 2 个 tick 触发 max_ticks → regular patch + final patch
+    patchFn.mockClear();
     await watcher.tick();
     expect(onStop).toHaveBeenCalledWith('ou_test', 'max_ticks', watcher);
+    // 最后一次 patch 是 final card
+    expect(patchFn).toHaveBeenCalledTimes(2); // regular + final
+    const lastCall = patchFn.mock.calls[patchFn.mock.calls.length - 1];
+    const finalCard = JSON.parse(lastCall[1] as string);
+    expect(finalCard.header.title.content).toBe('⏱ Watch stopped (timeout)');
+  });
+
+  test('session_gone final card has session_gone header', async () => {
+    // 修 B2:final card header title per spec §3.4
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.tick();
+    const finalCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(finalCard.header.title.content).toBe('❌ Session 已结束');
+  });
+
+  test('idle_settled final card has idle_settled header', async () => {
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('idle', true)] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.tick();
+    const finalCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(finalCard.header.title.content).toBe('✅ 已结束');
+  });
+
+  test('user_chat stop with patchFinal uses user_chat header', async () => {
+    // 修 B2:bot.handleChat hook 走 user_chat stop
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.start();
+    await watcher.tick(); // 触发一次 patch,设置 lastRecentOutput
+    patchFn.mockClear();
+    await watcher.stop('user_chat', { patchFinal: true });
+    expect(patchFn).toHaveBeenCalledTimes(1);
+    const finalCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(finalCard.header.title.content).toBe('🔌 Watch stopped · 收到新消息');
+  });
+
+  test('user_stop stop with patchFinal uses user_stop header', async () => {
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.start();
+    await watcher.tick();
+    patchFn.mockClear();
+    await watcher.stop('user_stop', { patchFinal: true });
+    const finalCard = JSON.parse(patchFn.mock.calls[0][1] as string);
+    expect(finalCard.header.title.content).toBe('🔌 Watch stopped');
+  });
+
+  test('superseded stop with patchFinal: NO patch (silent per Q5=B)', async () => {
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.start();
+    await watcher.tick();
+    patchFn.mockClear();
+    await watcher.stop('superseded', { patchFinal: true });
+    expect(patchFn).not.toHaveBeenCalled();
+  });
+
+  test('shutdown stop with patchFinal: NO patch (process exiting)', async () => {
+    fetchSpy.mockResolvedValue({ ok: true, sessions: [makeSession('busy')] });
+    const watcher = new AttachedCardWatcher({
+      openId: 'ou_test',
+      sessionId: 'abc12345-9be0-4d5e-8b3f-1234567890ab',
+      shortId: 'abc12345',
+      name: 'test',
+      cwd: '/tmp',
+      cardMessageId: 'om_test',
+      patchFn,
+      config: { ...DEFAULT_ATTACHED_WATCH_CONFIG, intervalMs: 50 },
+      resolveContent,
+      onStop,
+    });
+    await watcher.start();
+    await watcher.tick();
+    patchFn.mockClear();
+    await watcher.stop('shutdown', { patchFinal: true });
+    expect(patchFn).not.toHaveBeenCalled();
   });
 
   test('session_gone + final patch fails: still stops (no infinite retry)', async () => {

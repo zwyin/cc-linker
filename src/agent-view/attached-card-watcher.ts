@@ -12,6 +12,7 @@ import { withTimeout } from '../utils/async';
 import { AgentSnapshotFetcher } from './snapshot-fetcher';
 import { buildAttachedCard } from './card';
 import type { FetchResult } from './snapshot-fetcher';
+import type { AgentSession } from './types';
 
 export interface AttachedWatchConfig {
  intervalMs: number;
@@ -24,6 +25,29 @@ export const DEFAULT_ATTACHED_WATCH_CONFIG: AttachedWatchConfig = {
  maxTicks:800,
  maxPatchFailures:3,
 };
+
+/**
+ * Stop 原因 → final card header title 映射。
+ * Per spec §3.4 状态机:idle_settled / user_chat / user_stop / max_ticks / session_gone 各有不同文案。
+ * superseded / patch_failed / shutdown 不 patch(per spec §3.7)。
+ */
+const FINAL_HEADER_TITLES: Record<string, string> = {
+ session_gone: '❌ Session 已结束',
+ idle_settled: '✅ 已结束',
+ user_chat: '🔌 Watch stopped · 收到新消息',
+ user_stop: '🔌 Watch stopped',
+ max_ticks: '⏱ Watch stopped (timeout)',
+};
+
+const DEFAULT_FINAL_HEADER = '🔌 Watch stopped';
+
+/**
+ * 不应 patch final card 的 stop reasons。
+ * superseded: 静默取代(per spec Q5 = B)
+ * patch_failed: 卡可能已删(per spec §3.7)
+ * shutdown: 进程退出,patch 没意义
+ */
+const PATCH_NO_FINAL_REASONS = new Set(['superseded', 'patch_failed', 'shutdown']);
 
 export interface AttachedWatchDeps {
  openId: string;
@@ -50,6 +74,8 @@ export class AttachedCardWatcher {
  private tickCount =0;
  private patchFailureCount =0;
  private stopped = false;
+ private lastRecentOutput = '';
+ private lastOutputFormat: 'markdown' | 'terminal' = 'markdown';
  private startedAt = Date.now();
  private inFlightTick: Promise<void> | null = null;
 
@@ -82,6 +108,13 @@ export class AttachedCardWatcher {
  clearInterval(this.intervalHandle);
  this.intervalHandle = null;
  }
+ //修 B2:per-reason header title 的 final patch(user_chat / user_stop 走这里)
+ if (opts?.patchFinal && !PATCH_NO_FINAL_REASONS.has(reason)) {
+ await this.patchFinalCard(reason, {
+ recentOutput: this.lastRecentOutput,
+ outputFormat: this.lastOutputFormat,
+ });
+ }
  const elapsedSec = Math.floor((Date.now() - this.startedAt) /1000);
  logger.info(
  `AttachedCardWatcher stop: openId=${this.deps.openId}, ` +
@@ -110,25 +143,10 @@ export class AttachedCardWatcher {
     const session = result.sessions.find(s => s.sessionId === this.deps.sessionId);
     if (!session) {
       // session 已不存在:patch final + stop
-      // final patch 包 try/catch:卡可能已删/限流,即便失败也要停,否则 watcher 会无限重试
-      const card = buildAttachedCard({
-        name: this.deps.name,
+      await this.patchFinalCard('session_gone', {
         status: 'unknown',
-        shortId: this.deps.shortId,
-        sessionId: this.deps.sessionId,
-        cwd: this.deps.cwd,
         recentOutput: '⚠️ session 已不存在',
-        outputFormat: 'markdown',
-        lastWatchedAt: new Date().toLocaleTimeString(),
       });
-      try {
-        await this.deps.patchFn(this.deps.cardMessageId, card);
-      } catch (err: any) {
-        logger.warn(
-          `AttachedCardWatcher final patch failed for session_gone: ` +
-          `cardMessageId=${this.deps.cardMessageId}: ${err?.message ?? err}`,
-        );
-      }
       // 不 await:stop() 内部 await inFlightTick,会自死锁;stopped=true 已同步设,后续 tick 会被 line 99 guard 拦下
       void this.stop('session_gone');
       return;
@@ -137,26 +155,13 @@ export class AttachedCardWatcher {
     // 3) idle + completed: final + stop
     if (session.status === 'idle' && session.completed) {
       const content = await this.deps.resolveContent(this.deps.shortId, 2048);
-      const card = buildAttachedCard({
-        name: this.deps.name,
+      await this.patchFinalCard('idle_settled', {
         status: session.status,
         completed: session.completed,
         waitingFor: session.waitingFor,
-        shortId: this.deps.shortId,
-        sessionId: this.deps.sessionId,
-        cwd: this.deps.cwd,
         recentOutput: content.text ?? '(无可用输出)',
         outputFormat: content.format,
-        lastWatchedAt: new Date().toLocaleTimeString(),
       });
-      try {
-        await this.deps.patchFn(this.deps.cardMessageId, card);
-      } catch (err: any) {
-        logger.warn(
-          `AttachedCardWatcher final patch failed for idle_settled: ` +
-          `cardMessageId=${this.deps.cardMessageId}: ${err?.message ?? err}`,
-        );
-      }
       // 不 await:同 session_gone(避免 self-deadlock on inFlightTick)
       void this.stop('idle_settled');
       return;
@@ -164,6 +169,8 @@ export class AttachedCardWatcher {
 
     // 4) 拉 recentOutput
     const content = await this.deps.resolveContent(this.deps.shortId, 2048);
+    this.lastRecentOutput = content.text ?? '(无可用输出)';
+    this.lastOutputFormat = content.format;
 
     // 5) build card(内含 25KB 智能截断)
     const card = buildAttachedCard({
@@ -196,10 +203,53 @@ export class AttachedCardWatcher {
       }
     }
 
-    // 7) maxTicks
+    // 7) maxTicks — 修 B1:per spec §3.4 max_ticks 也要 patch final 卡
     if (this.tickCount >= this.deps.config.maxTicks) {
+      await this.patchFinalCard('max_ticks', {
+        status: 'idle',
+        completed: true,
+        recentOutput: '⏱ Watch stopped (max time reached)',
+      });
       // 不 await:同上(避免 self-deadlock)
       void this.stop('max_ticks');
+    }
+  }
+
+  /**
+   * Build + patch final 卡(per-reason header title,内置 try/catch)。
+   * 失败不 throw(只 logger.warn),caller 仍继续 stop。
+   * 修 B2:每个 reason 对应不同 header title(spec §3.4)。
+   */
+  private async patchFinalCard(
+    reason: string,
+    overrides: {
+      status?: AgentSession['status'];
+      completed?: boolean;
+      waitingFor?: string;
+      recentOutput: string;
+      outputFormat?: 'markdown' | 'terminal';
+    },
+  ): Promise<void> {
+    const card = buildAttachedCard({
+      name: this.deps.name,
+      status: overrides.status ?? 'idle',
+      completed: overrides.completed,
+      waitingFor: overrides.waitingFor,
+      shortId: this.deps.shortId,
+      sessionId: this.deps.sessionId,
+      cwd: this.deps.cwd,
+      recentOutput: overrides.recentOutput,
+      outputFormat: overrides.outputFormat ?? 'markdown',
+      lastWatchedAt: new Date().toLocaleTimeString(),
+      headerTitle: FINAL_HEADER_TITLES[reason] ?? DEFAULT_FINAL_HEADER,
+    });
+    try {
+      await this.deps.patchFn(this.deps.cardMessageId, card);
+    } catch (err: any) {
+      logger.warn(
+        `AttachedCardWatcher final patch failed for ${reason}: ` +
+        `cardMessageId=${this.deps.cardMessageId}: ${err?.message ?? err}`,
+      );
     }
   }
 }
