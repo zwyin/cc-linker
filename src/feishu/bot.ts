@@ -1487,9 +1487,13 @@ export class FeishuBot {
           if (messageId) this.cancelledMessageIds.delete(messageId);
           // 方案 B(2026-06-09):把 sessionStatus 改 'active' 而非 'degraded'。
           // 原行为把 session 标 degraded 触发 /switch 阻断,但实际 session JSONL 仍完整、
-          // bg worker 已被用户选 3-button 中之一后 stop 掉,parent/新会话都 resume 同一个 JSONL。
+          // bg worker 是另一个 daemon 进程,user 选 3-button 之一后:
+          //   - 停bg → claude stop 杀掉 bg,parent/原 session resume 同 JSONL
+          //   - 新会话 → handleNewAndSend 另起 parent,旧 bg worker 继续独立
+          //   - 取消 → 啥都不发
           // 标 degraded 给用户错误信号(让 /switch 阻、说"自动修复"),其实不需要。
-          // 改 'active' 后:registry writer 写入 'active',/switch 不会再被自己的卡住。
+          // 改 'active' + error:undefined 后:registry writer 写入 'active' + last_error:null,
+          // /switch 不会再被自己的卡弹阻,last_error 也不留误导信号。
           return {
             result: {
               response: '(bg worker 冲突,已弹卡询问下一步)',
@@ -1498,7 +1502,7 @@ export class FeishuBot {
               sessionId: sessionUuid,
               jsonlPath: null,
               sessionStatus: 'active' as const,  // 方案 B:从 'degraded' 改 'active'
-              error: 'bg_worker_conflict',
+              // error: undefined, // 显式不写 → caller 写 last_error:null,避免'bg_worker_conflict'被误读为真错
             },
             handler: new PermissionHandler({ allowedTools: [], disallowedTools: [] }),
             cardMessageId,
