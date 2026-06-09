@@ -321,10 +321,13 @@ describe('FeishuBot.runChatSDK — v2.2.11 bg-conflict refuse card', () => {
     const newBtn = actions.find((a: any) => a.value?.tag === 'agent_view_new_and_send');
     expect(newBtn.value.text).toBe('继续处理');
 
-    // Result returned to spool layer is degraded with bg_worker_conflict error
+    // Result returned to spool layer: 方案 B(2026-06-09) 不再标 degraded。
+    // session JSONL 仍完整,bg worker 是另一个进程,user 选 3-button 中之一
+    // (停bg/新会话/取消) 之后 session 状态由后续 SDK 响应决定(通常是 active)。
+    // 原 degraded 标法触发 /switch 阻断 + "自动修复"误导信息,已修。
     expect(result).not.toBeNull();
     expect(result.result.error).toBe('bg_worker_conflict');
-    expect(result.result.sessionStatus).toBe('degraded');
+    expect(result.result.sessionStatus).toBe('active');
   });
 
   it('does NOT refuse when roster has no matching worker (normal SDK call proceeds)', async () => {
