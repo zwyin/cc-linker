@@ -968,7 +968,29 @@ export class FeishuBot {
       // 非 / 开头普通消息:检查 expectedReply
       const info = this.agentView.expectedReply.get(msg.openId);
       if (info) {
-        await this.agentView.handleReply(msg.openId, msg.text);
+        // v2.3.11 修正:reply 路径必须显式 markReplied + markDone。
+        //
+        // handleReply 内部用 replyFn 直接发"✅ Claude 已处理完..."/"❌ Reply 失败..."
+        // 反馈,replyFn(`src/cli/commands/start.ts:332`)只调飞书 API,不写 spool
+        // delivery。handleClaimed 在 catch 里才 markFailed,正常返回不做收尾。结果是
+        // 这条 spool 消息永远卡在 processing/。SpoolQueue.claimNext 看到同 serialKey
+        // (`new:openId`)的残骸就 return null,后续 reply 全部 starve 在 pending/ —
+        // 用户体验:"再次点 Reply → 看到 prompt → 输入文字 → 没反应"。
+        //
+        // handleReply 内层已经包了 try/finally,无论 SDK 是否成功都已 replyFn 反馈给
+        // 用户;外层这里只做 spool 收尾。handleReply 自己抛(replyFn 网络挂 / patch 失败
+        // 等极端 case)则 markFailed 兜底,同样把锁放掉。
+        try {
+          await this.agentView.handleReply(msg.openId, msg.text);
+          this.spoolQueue.markReplied(msg.messageId, msg.serialKey);
+          this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+        } catch (err: any) {
+          this.spoolQueue.markFailed(
+            msg.messageId,
+            msg.serialKey,
+            err?.message ?? String(err),
+          );
+        }
         return;
       }
     }

@@ -707,11 +707,13 @@ describe('handleReplyRequest (Step A)', () => {
     expect(replyFn).toHaveBeenCalledTimes(1);
     const msg = replyFn.mock.calls[0][0] as string;
     expect(msg).toContain('回复会话');
-    expect(msg).toContain('请直接发送文字消息');
+    // v2.3.10:文案与实现 (manager.ts:835-838) 一致化
+    expect(msg).toContain('请直接发送一条文字消息');
     expect(msg).toContain('/cancel');
     // 不再提"点 [取消等待] 按钮"(飞书纯文本不能放 button)
     expect(msg).not.toContain('[取消等待] 按钮');
-    expect(msg).toContain('可继续多次发文字');
+    // v2.3.9:reply 完成即清,后续需重新点 [Reply](不再"持续 reply")
+    expect(msg).toContain('重新点 [Reply]');
 
     // Clean up timer
     await mgr.expectedReply.clear('ou_rr_ok');

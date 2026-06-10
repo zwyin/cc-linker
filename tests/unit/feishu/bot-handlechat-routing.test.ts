@@ -43,6 +43,7 @@ let tmpDir: string;
 let bot: FeishuBot;
 let userManager: UserManager;
 let agentView: AgentViewManager;
+let spoolQueue: SpoolQueue;
 let textReplies: string[];
 
 // Track calls to handleCommand, handleReply, handleCancelReply on agentView
@@ -82,7 +83,7 @@ beforeEach(() => {
 
   userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
   const listSnapshotManager = new ListSnapshotManager(join(tmpDir, 'list-snapshot.json'));
-  const spoolQueue = new SpoolQueue(tmpDir);
+  spoolQueue = new SpoolQueue(tmpDir);
   const registry = new RegistryManager(tmpDir);
   const sessionManager = new ClaudeSessionManager();
 
@@ -291,6 +292,65 @@ describe('FeishuBot.handleChat routing with expectedReply (T23)', () => {
     } finally {
       (config as any).data.agent_view.enabled = true;
     }
+  });
+
+  // v2.3.11 regression: handleChat 在 expectedReply 路径下调完 handleReply 必须把 spool
+  // 消息从 processing/ 推到 done/。漏掉的话:消息卡 processing/,SpoolQueue.claimNext
+  // 看到同 serialKey 的残骸就 return null,下一条 reply 永远 starve 在 pending/(用户看到
+  // "没反应")。线下实测三条"继续"全卡死;deliveries 里查不到 messageId 证明 replyFn 不
+  // 触发任何 spool 收尾。
+  test('plain text reply path finalizes spool message (not stuck in processing/)', async () => {
+    const waiting: AgentSession = {
+      pid: 1234,
+      cwd: '/tmp/proj',
+      kind: 'background',
+      startedAt: Date.now() - 30_000,
+      sessionId: 'dddddddd-4444-4444-4444-dddddddddddd',
+      name: 'waiting-task',
+      status: 'waiting',
+      waitingFor: 'awaiting user reply',
+    };
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+    await agentView.expectedReply.set('ou_routing_1', {
+      shortId: waiting.sessionId.slice(0, 8),
+      sessionId: waiting.sessionId,
+      cwd: waiting.cwd,
+    });
+
+    // 进 spool:enqueue → claimNext 拿到 processing/ 状态(等同 dispatch worker 的拿牌)
+    const enqMsg = makeSpoolMessage({
+      text: '继续',
+      serialKey: 'new:ou_routing_1',
+      target: { type: 'no_target' },
+    });
+    expect(spoolQueue.enqueue(enqMsg)).toBe(true);
+    const claimed = spoolQueue.claimNext('new:ou_routing_1');
+    expect(claimed).not.toBeNull();
+    expect(spoolQueue.listProcessing()).toHaveLength(1);
+
+    await (bot as any).handleChat(claimed!);
+
+    // handleReply 被路由
+    expect(handleReplyCalls).toEqual([
+      { openId: 'ou_routing_1', text: '继续' },
+    ]);
+    // 关键断言:消息不能卡在 processing/(否则 claimNext 会永久拒后续 same-serialKey)
+    expect(spoolQueue.listProcessing()).toHaveLength(0);
+    // 后续同 serialKey 应能被 claim(即锁已释放)
+    const followUp = makeSpoolMessage({
+      text: '再继续',
+      serialKey: 'new:ou_routing_1',
+      target: { type: 'no_target' },
+    });
+    expect(spoolQueue.enqueue(followUp)).toBe(true);
+    const followUpClaimed = spoolQueue.claimNext('new:ou_routing_1');
+    expect(followUpClaimed?.messageId).toBe(followUp.messageId);
+
+    // Cleanup
+    await agentView.expectedReply.clear('ou_routing_1');
   });
 });
 
