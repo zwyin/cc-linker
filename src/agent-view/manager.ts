@@ -14,10 +14,44 @@ import { readJobState } from './job-state';
 
 /** Maximum list-card byte size. 飞书 card 25KB 上限;超过走 text fallback。 */
 const MAX_CARD_BYTES = 25_000;
-/** 列表卡显示上限:spec §6.1 "列表上限 10 个会话 + 折行"。 */
-const MAX_LIST_ITEMS = 10;
 /** 列表 fallback 文本:卡超 25KB 时降级。 */
 const LIST_FALLBACK_TEXT = (n: number) => `📋 Agent View · ${n} sessions · /agents to refresh`;
+/** v2.3.2 截断策略:completed 组的最多行数。waiting/busy/idle 不受此限,优先展示。 */
+const MAX_COMPLETED_ITEMS = 5;
+
+/**
+ * v2.3.2 截断:旧 `slice(0, 10)` 在 groupByStatus 前一刀切,completed 组"重"挤掉
+ * working(例如 1+7 active + 11 completed = 19 → 前 10 里有 5 个 completed,
+ * working 只剩 4 个,3 个被推到 ... N more 后面,跟 TUI 看到的 7 working
+ * 不一致)。新策略:先 groupByStatus → 各 group 内按 startedAt 倒序 → waiting/busy
+ * 全部进,completed 限额到 MAX_COMPLETED_ITEMS(5)。剩余 completed 计 hasMore。
+ */
+function buildCappedCard(sessions: AgentSession[], totalSessions: number): {
+  card: string;
+  hasMore: number;
+} {
+  const groupsAll = groupByStatus(sessions);
+  const sortByRecency = (arr: AgentSession[]) =>
+    [...arr].sort((a, b) => b.startedAt - a.startedAt);
+  const busySorted = sortByRecency(groupsAll.busy);
+  const waitingSorted = sortByRecency(groupsAll.waiting);
+  const completedSorted = sortByRecency(groupsAll.completed);
+  const completedCapped = completedSorted.slice(0, MAX_COMPLETED_ITEMS);
+  const groups: AgentSessionGroup = {
+    busy: busySorted,
+    waiting: waitingSorted,
+    idle: groupsAll.idle,
+    completed: completedCapped,
+  };
+  const hasMore = Math.max(
+    0,
+    totalSessions - busySorted.length - waitingSorted.length - groupsAll.idle.length - completedCapped.length,
+  );
+  return {
+    card: buildListCard(groups, new Date().toLocaleTimeString(), hasMore),
+    hasMore,
+  };
+}
 
 export interface AgentViewDeps {
   userManager: UserManager;
@@ -64,12 +98,9 @@ export class AgentViewManager {
       await this.deps.cardReplyFn(card, { openId });
       return;
     }
-    // 列表上限 10(spec §6.1)
-    const cappedSessions = result.sessions.slice(0, MAX_LIST_ITEMS);
-    const groups = groupByStatus(cappedSessions);
-    // v2.2 修正:>10 时 buildListCard 追加 "… N more" 折行
-    const hasMore = Math.max(0, result.sessions.length - MAX_LIST_ITEMS);
-    const card = buildListCard(groups, new Date().toLocaleTimeString(), hasMore);
+    // v2.3.2:截断逻辑(active 优先 + completed 限额)抽到 module-level helper,
+    // handleList 和 handleRefreshList 共用。
+    const { card } = buildCappedCard(result.sessions, totalSessions);
     const cardMessageId = await this.sendOrFallback(
       card,
       { openId },
@@ -126,11 +157,9 @@ export class AgentViewManager {
       await this.deps.patchFn(messageId, card);
       return null;
     }
-    const cappedSessions = result.sessions.slice(0, MAX_LIST_ITEMS);
-    const groups = groupByStatus(cappedSessions);
-    // v2.2 修正:>10 时 buildListCard 追加 "… N more" 折行
-    const hasMore = Math.max(0, result.sessions.length - MAX_LIST_ITEMS);
-    const card = buildListCard(groups, new Date().toLocaleTimeString(), hasMore);
+    // v2.3.2:同 handleList 截断逻辑(抽出 helper)
+    const { card, hasMore } = buildCappedCard(result.sessions, totalSessions);
+    void hasMore;  // refresh 路径忽略 hasMore(已被 buildListCard 内部消化)
     // G11:超 25KB 走 text fallback;用 replyFn 代替 patchFn(无法 patch 一个新消息)
     const size = new TextEncoder().encode(card).length;
     if (size > MAX_CARD_BYTES) {

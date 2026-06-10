@@ -204,8 +204,9 @@ describe('handleList', () => {
     expect(sentCard.elements[0].content).toContain('daemon not running');
   });
 
-  test('caps sessions to 10 in list card (spec §6.1)', async () => {
+  test('v2.3.2: active 优先 — busy 全进,completed 限额 5', async () => {
     const { mgr, cardReplyFn } = makeMgrWithSpies();
+    // 25 个 busy(active), 0 completed → 25 个全进(hasMore=0)
     const manySessions = Array.from({ length: 25 }, (_, i) =>
       makeBusySession({
         sessionId: `aaaaaaaa-bbbb-cccc-dddd-${String(i).padStart(12, '0')}`,
@@ -219,13 +220,78 @@ describe('handleList', () => {
 
     await mgr.handleList('ou_test_cap');
 
-    // 列表卡只显示前 10 个 — 计数每个 session 行的 markdown 数
     const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
-    // session 行 markdown 数(emoji + name 标识)
     const sessionRows = sentCard.elements.filter(
       (e: any) => e.tag === 'markdown' && /✽|✋|⏹/.test(e.content || ''),
     );
-    expect(sessionRows).toHaveLength(10);
+    expect(sessionRows).toHaveLength(25);  // 全进,不再 cap 10
+    // 验证 hasMore=0(所有 active 都展示了)
+    const hasMoreText = sentCard.elements.find((e: any) =>
+      e.tag === 'markdown' && /more/.test(e.content || ''));
+    expect(hasMoreText).toBeUndefined();
+  });
+
+  test('v2.3.2: 11 个 done + 0 active → 只展示 5 个最近 done,hasMore=6', async () => {
+    const { mgr, cardReplyFn } = makeMgrWithSpies();
+    // 11 个 done(带 startedAt 不同)— 应该只 cap 5 个最近
+    const doneSessions = Array.from({ length: 11 }, (_, i) => ({
+      pid: 0,
+      cwd: '/tmp/x',
+      kind: 'background' as const,
+      startedAt: Date.now() - i * 60000,  // 倒序时间戳
+      sessionId: `aaaaaaaa-bbbb-cccc-dddd-${String(i).padStart(12, '0')}`,
+      name: `task-${i}`,
+      status: 'idle' as const,
+      source: 'unknown' as const,
+      completed: true,
+    }));
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: doneSessions,
+    }));
+
+    await mgr.handleList('ou_test_cap_done');
+
+    const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+    const sessionRows = sentCard.elements.filter(
+      (e: any) => e.tag === 'markdown' && /✅|🛑|⏹/.test(e.content || ''),
+    );
+    expect(sessionRows).toHaveLength(5);  // MAX_COMPLETED_ITEMS = 5
+    // 验证 hasMore 提示 6 个被截断(11 - 5 = 6)
+    const sentCardStr = JSON.stringify(sentCard);
+    expect(sentCardStr).toMatch(/…\s*6\s*more/);
+  });
+
+  test('v2.3.2: 1 waiting + 6 busy + 0 done → 全部 active 进卡,hasMore=0', async () => {
+    const { mgr, cardReplyFn } = makeMgrWithSpies();
+    const sessions = [
+      // 1 waiting
+      makeBusySession({
+        sessionId: 'aaaaaaa1-bbbb-cccc-dddd-000000000001',
+        name: 'w1', status: 'waiting', waitingFor: 'continue?',
+      }),
+      // 6 busy
+      ...Array.from({ length: 6 }, (_, i) => makeBusySession({
+        sessionId: `aaaaaaa${String(i + 2)}-bbbb-cccc-dddd-00000000000${i + 2}`,
+        name: `b${i}`,
+      })),
+    ];
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions,
+    }));
+
+    await mgr.handleList('ou_test_cap_mixed');
+
+    const sentCard = JSON.parse(cardReplyFn.mock.calls[0][0] as string);
+    const sentCardStr = JSON.stringify(sentCard);
+    // 7 个 active session 行(waiting + busy)
+    const sessionRows = sentCard.elements.filter(
+      (e: any) => e.tag === 'markdown' && /✽|✋|⏹/.test(e.content || ''),
+    );
+    expect(sessionRows).toHaveLength(7);
+    // 不应出现 ... N more(hasMore = 0)
+    expect(sentCardStr).not.toMatch(/…\s*\d+\s*more/);
   });
 
   test('exceeds 25KB triggers text fallback (no card sent)', async () => {
