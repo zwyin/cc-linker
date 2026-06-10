@@ -1485,6 +1485,18 @@ export class FeishuBot {
         const short = sessionUuid.slice(0, 8);
         const worker = roster?.workers?.[short];
         if (worker) {
+          // v2.3.8:reply 路径在 pre-step 已 stop bg + 3s wait。即便 supervisor 重启 worker
+          // 残留(roster 还有记录),reply 路径下我们不弹 3 按钮冲突卡(用户已表达"接管"
+          // 意图 + 我们已尽力 stop 过),直接 fall through 调 SDK。bypass 的副作用是
+          // 真冲突(cwd 锁未释放)SDK 仍会失败,但届时 SDK 自己的 error result 会
+          // 报到 bot 然后 patch 错误卡(可接受)。
+          if (fromAgentViewReply) {
+            logger.info(
+              `runChatSDK: reply 路径跳过冲突卡,bg 已 pre-step stop(roster 残留 worker=${short} ` +
+                `pid=${worker.pid}),直接调 SDK`,
+            );
+            // 跳过弹卡,直接 fall through 到 SDK spawn
+          } else {
           const workerPid = (worker as any).pid;
           const workerName = (worker as any).dispatch?.seed?.name || short;
           // v2.2.13: 在拒绝时 pre-compute parent UUID(从 roster.launch.sessionId 提取
@@ -1556,7 +1568,8 @@ export class FeishuBot {
             handler: new PermissionHandler({ allowedTools: [], disallowedTools: [] }),
             cardMessageId,
           };
-        }
+          }  // close reply-path skip
+        }  // close if (worker)
       }
 
       const { result, handler } = await this.sessionManager.sendSDKMessage(
