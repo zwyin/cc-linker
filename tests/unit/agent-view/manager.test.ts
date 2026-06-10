@@ -1136,6 +1136,42 @@ describe('resolvePeekContent (v2.2.8 three-tier resolver)', () => {
   const origHooks = { ...AgentViewManager._peekHooks };
   beforeEach(() => {
     AgentViewManager._peekHooks = { ...origHooks };
+    // v2.3: default readJobState to null so old Tier-1/2/3 tests don't accidentally
+    // hit Tier 1a's new shortcut. Tests that want Tier 1a override this explicitly.
+    AgentViewManager._peekHooks.readJobState = (() => null) as any;
+  });
+
+  test('Tier 1a hit (v2.3): state.json.linkScanPath shortcut beats JsonlIndex scan', async () => {
+    const { mgr } = makeMgrWithSpies();
+    // state.json gives linkScanPath directly — no disk scan
+    AgentViewManager._peekHooks.readJobState = (() => ({
+      short: 'shortid0',
+      path: '/fake/state.json',
+      mtimeMs: 1, readAt: 2,
+      state: {
+        state: 'blocked',
+        detail: null, needs: null, inFlight: null,
+        linkScanPath: '/from/state-json.jsonl',
+        linkScanOffset: 0,
+        name: 'x', nameSource: 'auto',
+      },
+    })) as any;
+    // findJsonlForShort would also resolve, but Tier 1a should win
+    let scannedFor: string | null = null;
+    AgentViewManager._peekHooks.findJsonlForShort = (s) => {
+      scannedFor = s;  // record but should never be reached
+      return '/fake/own.jsonl';
+    };
+    AgentViewManager._peekHooks.extractRecentAssistantText = (path: string) => {
+      if (path === '/from/state-json.jsonl') return 'text from linkScanPath';
+      if (path === '/fake/own.jsonl') return 'text from JsonlIndex (should NOT be used)';
+      return null;
+    };
+
+    const result = await mgr.resolvePeekContent('shortid0', 1000);
+    expect(result.text).toBe('text from linkScanPath');
+    expect(result.format).toBe('markdown');
+    expect(scannedFor).toBeNull();  // confirm Tier 1b was bypassed
   });
 
   test('Tier 1 hit: own JSONL has assistant text', async () => {

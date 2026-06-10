@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 import { extractRecentAssistantText } from './jsonl-peek';
 import { JsonlIndex } from './jsonl-name';
 import { readRoster, lookupResumeFromPath } from './roster-source';
+import { readJobState } from './job-state';
 
 /** Maximum list-card byte size. 飞书 card 25KB 上限;超过走 text fallback。 */
 const MAX_CARD_BYTES = 25_000;
@@ -167,7 +168,15 @@ export class AgentViewManager {
     shortId: string,
     maxChars: number,
   ): Promise<{ text: string | null; format: 'markdown' | 'terminal' }> {
-    // Tier 1: 自己的 JSONL
+    // Tier 1a (v2.3):state.json.linkScanPath 直达(blocked / done 时有值)
+    //   优先于满磁盘扫,延迟 + 准确度都更好
+    const env = AgentViewManager._peekHooks.readJobState(shortId);
+    const linkScanPath = env?.state?.linkScanPath ?? null;
+    if (linkScanPath) {
+      const text = AgentViewManager._peekHooks.extractRecentAssistantText(linkScanPath, maxChars);
+      if (text) return { text, format: 'markdown' };
+    }
+    // Tier 1b: 自己的 JSONL(running/working 时 linkScanPath 空,降级到满磁盘扫)
     const ownPath = AgentViewManager._peekHooks.findJsonlForShort(shortId);
     if (ownPath) {
       const text = AgentViewManager._peekHooks.extractRecentAssistantText(ownPath, maxChars);
@@ -200,6 +209,7 @@ export class AgentViewManager {
 
   // v2.2.8: 注入点 —— tests 通过 swap 这些函数模拟各层命中/miss
   // 走 mutable object(不是 ESM 命名空间),绕开 bun mock.module 跨文件限制
+  // v2.3: 加 readJobState 让 Tier 1a 也可被测试 swap
   static _peekHooks = {
     findJsonlForShort: (short: string): string | null => {
       const idx = new JsonlIndex();
@@ -208,6 +218,7 @@ export class AgentViewManager {
     extractRecentAssistantText,
     readRoster,
     lookupResumeFromPath,
+    readJobState,
   };
 
   /**
