@@ -753,18 +753,11 @@ describe('handleReply (Step B)', () => {
   test('clears expectedReply when session no longer waiting (busy)', async () => {
     const { mgr, userManager } = makeMgrWithSpies();
     const waiting = makeWaitingSession();
-    // 第 1 次 fetch (Step B guard): waiting → 通过
-    // 第 2 次 fetch (持续 reply 检查): busy → 不重新 set
-    let fetchCount = 0;
-    (AgentSnapshotFetcher as any).fetch = mock(async () => {
-      fetchCount++;
-      return {
-        ok: true,
-        sessions: fetchCount === 1
-          ? [waiting]
-          : [{ ...waiting, status: 'busy' }],   // 第 2 次变 busy
-      };
-    });
+    // fetch 一次:Step B guard 看到 busy → throw "Claude 已切换到 busy,无法 reply" + clear
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [{ ...waiting, status: 'busy' }],
+    }));
     await mgr.expectedReply.set('ou_reply_ok', {
       shortId: waiting.sessionId.slice(0, 8),
       sessionId: waiting.sessionId,
@@ -775,9 +768,8 @@ describe('handleReply (Step B)', () => {
 
     await mgr.handleReply('ou_reply_ok', 'hello back');
 
-    expect(runSpy).toHaveBeenCalledTimes(1);
-    expect((runSpy.mock.calls[0][0] as any).promptText).toBe('hello back');
-    // session 变 busy → 不持续 reply,slot 清掉
+    // 守卫失败 → 不调 SDK + 清 expectedReply
+    expect(runSpy).not.toHaveBeenCalled();
     expect(mgr.expectedReply.get('ou_reply_ok')).toBeUndefined();
     expect(userManager.getEntry('ou_reply_ok')).toBeUndefined();
   });
@@ -809,10 +801,9 @@ describe('handleReply (Step B)', () => {
     expect(errMsg).toContain('runChatSDK boom');
   });
 
-  test('v2.3.4: 持续 reply — session 仍 waiting → 重新 set 让用户继续发文字', async () => {
+  test('v2.3.9: reply 完成即清,不再自动持续 reply(用户需重新点 [Reply])', async () => {
     const { mgr, userManager, replyFn } = makeMgrWithSpies();
     const waiting = makeWaitingSession();
-    // 两次 fetch 都返回 waiting(模拟 Claude 跑完一轮 turn 又再问)
     (AgentSnapshotFetcher as any).fetch = mock(async () => ({
       ok: true,
       sessions: [waiting],
@@ -827,13 +818,13 @@ describe('handleReply (Step B)', () => {
 
     await mgr.handleReply('ou_reply_cont', '第一条');
 
-    // 重新 set 之后 user-mapping 仍是 pending_agent_reply
-    expect(mgr.expectedReply.get('ou_reply_cont')?.sessionId).toBe(waiting.sessionId);
-    expect(userManager.getEntry('ou_reply_cont')?.type).toBe('pending_agent_reply');
-    // 提示用户可继续发
-    const continueMsg = replyFn.mock.calls.find(c => (c[0] as string).includes('仍在等输入'))?.[0] as string;
+    // v2.3.9 行为:reply 完成后,user-mapping + in-memory 都清空,不再持续
+    expect(mgr.expectedReply.get('ou_reply_cont')).toBeUndefined();
+    expect(userManager.getEntry('ou_reply_cont')).toBeUndefined();
+    // 提示用户重新点 [Reply]
+    const continueMsg = replyFn.mock.calls.find(c => (c[0] as string).includes('重新点'))?.[0] as string;
     expect(continueMsg).toBeDefined();
-    expect(continueMsg).toContain('/cancel');
+    expect(continueMsg).toContain('[Reply]');
   });
 });
 

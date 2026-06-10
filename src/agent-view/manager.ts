@@ -899,29 +899,25 @@ export class AgentViewManager {
       await this.deps.replyFn(`❌ Reply 失败:${sdkError?.message ?? sdkError}`, { openId });
       return;
     }
-    // 4. v2.3.4 持续 reply:SDK 跑完一轮 turn 后,bg session 状态可能仍然是 waiting
-    // (Claude 再次询问)或已经变 busy / done。如果还 waiting,自动重新 set expectedReply,
-    // 让用户能继续发文字 reply,不用再点 [Reply] 按钮——否则用户感觉"再发消息没反应"。
-    try {
-      const post = await AgentSnapshotFetcher.fetch();
-      if (post.ok) {
-        const sess = post.sessions.find(s => s.sessionId === info.sessionId);
-        if (sess && sess.status === 'waiting') {
-          await this.expectedReply.set(openId, {
-            shortId: info.shortId,
-            sessionId: info.sessionId,
-            cwd: info.cwd,
-          });
-          await this.deps.replyFn(
-            `↩️ Claude 仍在等输入,可继续发文字(5 分钟内有效)\n` +
-            `若想中断,发 /cancel。`,
-            { openId },
-          );
-        }
-      }
-    } catch {
-      // 后台 refresh 失败不影响主要 reply 流程
-    }
+    // v2.3.9 简化:不再"自动持续 reply" post-fetch re-set。
+    // 原 v2.3.4 设计:SDK 跑完后 fetch snapshot 看到 waiting 就 re-set,让用户
+    // 在 5min timeout 内连续发文字 reply。实操中,re-set 跟 user-mapping 其他路径
+    // (handleList 写 last_agent_list_card 等)race-prone,导致:
+    //   - 第二次 reply 时 user_mapping 偶发"已清 + 未 re-set"窗口
+    //   - handleChat 走普通 chat 而非 reply,bot 静默无回应
+    //   - 用户感觉"再发消息没反应"
+    //
+    // 修法:reply 完成即清,user 想继续 reply 必须重新点 [Reply] 按钮。
+    // 5min 内点 [Reply] 仍能正常(没动这条路径)。UX 退步(失去便利),但 100% 可靠。
+    // 持续 reply 的"需要"用 bot 端的 v2.3.8 pre-step stop 补足 —— user 重新点
+    // [Reply] 时,bot 自动停 bg + 调 SDK,流程一气呵成。
+    //
+    // 给一个友好提示让 user 知道下一次该点 [Reply]:
+    await this.deps.replyFn(
+      `✅ Claude 已处理完你的消息。\n` +
+      `若需继续 reply,在飞书 Agent View 重新点 [Reply] 即可。`,
+      { openId },
+    );
   }
 
   /**
