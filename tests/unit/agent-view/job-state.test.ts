@@ -173,4 +173,29 @@ describe('jobStateToSession mapping', () => {
     const s = jobStateToSession(makeEnv({ state: 'done', name: null }));
     expect(s!.name).toBe('abcdef12');
   });
+
+  test('v2.3.7: running + needs → waiting (worker 跑着但问用户问题)', () => {
+    // Claude CLI 行为:worker 进程在跑(state=running/working),但向用户提了问题
+    // (needs 字段被填)—— TUI/claude agents --json 都报 waiting,我们也得报。
+    // 这种"伪 busy 实 waiting"在过去是 state=blocked 表达,v2.1.163 把 needs 解耦了。
+    const s1 = jobStateToSession(makeEnv({
+      state: 'running',
+      needs: 'answer: 是否继续执行下一次 date 打印?',
+    }));
+    expect(s1!.status).toBe('waiting');
+    expect(s1!.waitingFor).toBe('answer: 是否继续执行下一次 date 打印?');
+
+    const s2 = jobStateToSession(makeEnv({
+      state: 'working',
+      needs: '需要更多信息',
+    }));
+    expect(s2!.status).toBe('waiting');
+    expect(s2!.waitingFor).toBe('需要更多信息');
+  });
+
+  test('v2.3.7: running + 无 needs → 仍是 busy (不会误判)', () => {
+    const s = jobStateToSession(makeEnv({ state: 'running' }));
+    expect(s!.status).toBe('busy');
+    expect(s!.waitingFor).toBeUndefined();
+  });
 });

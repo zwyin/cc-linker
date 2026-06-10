@@ -202,7 +202,17 @@ export function jobStateToSession(env: JobStateEnvelope): AgentSession | null {
   switch (stateVal) {
     case 'running':
     case 'working':
-      status = 'busy';
+      // v2.3.7 修正:Claude CLI 行为 —— worker 进程仍在跑(state=running/working),
+      // 但已经在向用户提问题(needs 字段被填),等用户回复。这种"伪 busy 实 waiting"
+      // 在老 CLI 是被简化成 state=blocked 表达,但 v2.1.163 新版 cli 把 needs 与 state
+      // 解耦:state 描述 worker 进程,needs 描述交互状态。我们把"worker 跑 + 问问题"
+      // 也归为 waiting(让飞书卡显示 Reply 按钮)。
+      if (f.needs) {
+        status = 'waiting';
+        waitingFor = f.needs ?? undefined;
+      } else {
+        status = 'busy';
+      }
       break;
     case 'blocked':
       status = 'waiting';
