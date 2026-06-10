@@ -168,7 +168,7 @@ describe('Agent View end-to-end', () => {
   });
 
   test('reply happy path: waiting → reply text → runChatSDK invoked → expectedReply cleared', async () => {
-    const { mgr, userManager, runChatSDK, replyFn } = makeEnv();
+    const { mgr, userManager, runChatSDK, replyFn, cardReplyFn } = makeEnv();
     const waiting = makeWaitingSession();
 
     // 第一次 fetch(handleList 用)返回 list
@@ -196,12 +196,18 @@ describe('Agent View end-to-end', () => {
     const info = mgr.expectedReply.get('ou_e2e_reply');
     expect(info).toBeDefined();
     expect(info?.sessionId).toBe(waiting.sessionId);
-    // 触发了"请发送文字消息作为回复"
-    expect(replyFn).toHaveBeenCalled();
-    expect(replyFn.mock.calls.some((c: any[]) => /回复会话/.test(c[0]))).toBe(true);
+    // v2.3.13:Reply prompt 从纯文本升级到交互卡(cardReplyFn),含 session 名 / 等待原因 /
+    // Peek 内容 / [❌ 取消等待] 按钮 — 用户不用回去翻 list 才能看到 AI 上一句问的啥。
+    expect(cardReplyFn).toHaveBeenCalled();
+    expect(
+      cardReplyFn.mock.calls.some((c: any[]) =>
+        /回复 ·|waiting-task|agent_view_cancel_reply/.test(JSON.stringify(c[0])),
+      ),
+    ).toBe(true);
 
     // Step 3: 模拟用户发送了回复文字 → handleReply
     replyFn.mockClear();
+    cardReplyFn.mockClear();
     runChatSDK.mockClear();
     await mgr.handleReply('ou_e2e_reply', '这是我的回复');
 

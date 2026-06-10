@@ -372,42 +372,62 @@ export function buildEmptyCard(): string {
   });
 }
 
-/** 等待输入卡:用户点 [Reply] 后 patch 原 list/peek 卡为此卡 */
+/** Reply prompt 卡:用户点 [Reply] 后发独立卡 — header + 等待原因 + AI 最近输出 + [取消等待]
+ *
+ * v2.3.13:之前是纯文本提示(replyFn),用户看不到 AI 最后一句问什么,无从下手。
+ * 改成交互卡 + Peek 同款 markdown 渲染,用户一眼就能看到上下文再回复。
+ *
+ * recentOutput / outputFormat 为可选:无 peek 内容时仍按老布局 fallback。
+ * 函数名沿用 buildWaitingCard 历史叫法(也保留对 v2.2 dead code 测试的兼容)。
+ */
 export function buildWaitingCard(opts: {
   name: string;
   status: AgentSessionStatus;
   waitingFor?: string;
   cwd: string;
+  recentOutput?: string;
+  outputFormat?: 'markdown' | 'terminal';
 }): string {
   const statusLabel = '等待输入';
+  const fmt = opts.outputFormat ?? 'markdown';
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content: `状态:${statusLabel} (${opts.status})${opts.waitingFor ? `\n❓ 等待原因: ${opts.waitingFor}` : ''}\nCWD: ${truncateCwd(opts.cwd)}`,
+    },
+  ];
+  if (opts.recentOutput && opts.recentOutput.trim()) {
+    const recentBlock =
+      fmt === 'terminal'
+        ? `📝 **最近输出** _(原始终端片段,可能含格式残留)_\n\`\`\`\n${opts.recentOutput}\n\`\`\``
+        : `📝 **最近输出**\n\n${opts.recentOutput}`;
+    elements.push({ tag: 'markdown', content: recentBlock });
+  }
+  elements.push({
+    tag: 'markdown',
+    content:
+      '请直接发送一条文字消息作为回复(5 分钟内有效)。\n' +
+      '若想中断等待,发 /cancel 或点下方按钮。\n' +
+      '若需继续 reply,再点 [Reply] 即可(每次 reply 都是一次独立操作)。',
+  });
+  elements.push({
+    tag: 'action',
+    actions: [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '❌ 取消等待' },
+        value: { tag: 'agent_view_cancel_reply' },
+        type: 'danger',
+      },
+    ],
+  });
   return JSON.stringify({
     ...TEMPLATE_HEADER,
     header: {
-      title: { tag: 'plain_text', content: `✍️ 等待输入回复 · \`${opts.name}\`` },
+      title: { tag: 'plain_text', content: `↩️ 回复 · \`${opts.name}\`` },
       template: 'yellow',
     },
-    elements: [
-      {
-        tag: 'markdown',
-        content: `状态:${statusLabel} (${opts.status})${opts.waitingFor ? `\n等待原因: ${opts.waitingFor}` : ''}\nCWD: ${truncateCwd(opts.cwd)}`,
-      },
-      {
-        tag: 'markdown',
-        content:
-          '请直接发送文字消息作为回复(5 分钟内有效)\n\n⏱ 等待输入中(5 分钟后超时)',
-      },
-      {
-        tag: 'action',
-        actions: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: '取消等待' },
-            value: { tag: 'agent_view_cancel_reply' },
-            type: 'danger',
-          },
-        ],
-      },
-    ],
+    elements,
   });
 }
 

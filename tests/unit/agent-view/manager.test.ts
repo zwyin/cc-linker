@@ -685,38 +685,52 @@ describe('handleReplyRequest (Step A)', () => {
     expect(mgr.expectedReply.get('ou_rr_busy')).toBeUndefined();
   });
 
-  test('v2.3.4: sets expectedReply + sends clear standalone prompt text (no patch依赖)', async () => {
+  test('v2.3.13: sends interactive card with peek content + cancel button (not plain text)', async () => {
     const { mgr, replyFn, cardReplyFn, patchFn } = makeMgrWithSpies();
-    const waiting = makeWaitingSession();
+    const waiting = makeWaitingSession({ waitingFor: '是否继续?' });
     (AgentSnapshotFetcher as any).fetch = mock(async () => ({
       ok: true,
       sessions: [waiting],
     }));
 
-    await mgr.handleReplyRequest('ou_rr_ok', waiting.sessionId.slice(0, 8), waiting.sessionId, waiting.cwd);
+    // Stub peek hooks so the card has known recentOutput content
+    const origHooks = { ...AgentViewManager._peekHooks };
+    AgentViewManager._peekHooks.readJobState = (async () => null) as any;
+    AgentViewManager._peekHooks.findJsonlForShort = (() => '/fake/own.jsonl') as any;
+    AgentViewManager._peekHooks.extractRecentAssistantText = (() =>
+      '当前时间: 2026年6月11日 00:50:51\n是否继续?') as any;
+    AgentViewManager._peekHooks.readRoster = (() => null) as any;
 
-    // expectedReply set
-    const info = mgr.expectedReply.get('ou_rr_ok');
-    expect(info).toBeDefined();
-    expect(info?.sessionId).toBe(waiting.sessionId);
-    expect(info?.cwd).toBe(waiting.cwd);
-    // v2.3.4 新设计:不再 patch list 卡 — 飞书纯文本消息没 button,patch 反而误导用户
-    expect(patchFn).not.toHaveBeenCalled();
-    expect(cardReplyFn).not.toHaveBeenCalled();
-    // 只发独立 prompt 消息,文案不含误导"点按钮"
-    expect(replyFn).toHaveBeenCalledTimes(1);
-    const msg = replyFn.mock.calls[0][0] as string;
-    expect(msg).toContain('回复会话');
-    // v2.3.10:文案与实现 (manager.ts:835-838) 一致化
-    expect(msg).toContain('请直接发送一条文字消息');
-    expect(msg).toContain('/cancel');
-    // 不再提"点 [取消等待] 按钮"(飞书纯文本不能放 button)
-    expect(msg).not.toContain('[取消等待] 按钮');
-    // v2.3.9:reply 完成即清,后续需重新点 [Reply](不再"持续 reply")
-    expect(msg).toContain('重新点 [Reply]');
+    try {
+      await mgr.handleReplyRequest(
+        'ou_rr_ok',
+        waiting.sessionId.slice(0, 8),
+        waiting.sessionId,
+        waiting.cwd,
+      );
 
-    // Clean up timer
-    await mgr.expectedReply.clear('ou_rr_ok');
+      // expectedReply set
+      const info = mgr.expectedReply.get('ou_rr_ok');
+      expect(info).toBeDefined();
+      expect(info?.sessionId).toBe(waiting.sessionId);
+
+      // v2.3.13:发交互卡(cardReplyFn),不再走 replyFn 纯文本
+      expect(patchFn).not.toHaveBeenCalled();
+      expect(replyFn).not.toHaveBeenCalled();
+      expect(cardReplyFn).toHaveBeenCalledTimes(1);
+      // 卡内容(JSON 字符串)应当含 session 名 / waitingFor / 最近输出 / cancel 按钮 tag
+      const cardJson = JSON.stringify(cardReplyFn.mock.calls[0][0]);
+      expect(cardJson).toContain('waiting-task'); // session name
+      expect(cardJson).toContain('是否继续?'); // waitingFor
+      expect(cardJson).toContain('2026年6月11日'); // recentOutput 片段
+      expect(cardJson).toContain('agent_view_cancel_reply'); // 按钮 tag
+      expect(cardJson).toContain('请直接发送一条文字消息'); // 操作提示
+
+      // Clean up timer
+      await mgr.expectedReply.clear('ou_rr_ok');
+    } finally {
+      AgentViewManager._peekHooks = origHooks;
+    }
   });
 
   test('v2.3.4: 真冲突场景 — user-mapping 有 pending_agent_reply 旧 entry → 智能 CAS 自动清', async () => {

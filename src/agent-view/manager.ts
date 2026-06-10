@@ -814,13 +814,8 @@ export class AgentViewManager {
       return;
     }
     // 2. 持久化 expectedReply
-    // 智能 CAS(expectedReplyState v2.3.3):transient / 同 session 自动清,真冲突 throw。
-    // 不再依赖"patch 触发的 list 卡为等待输入卡"——v2.2 这条路要求 preListEntry 是
-    // last_agent_list_card(飞书能 patch),但 v2.3.3 之后用户从 attach 切到 reply 时
-    // preListEntry 是 session 类型,triggerCardMessageId=undefined,patch 步骤不进
-    // → 文本消息却提"点 [取消等待] 按钮"(飞书纯文本无 button)→ 用户看不见按钮。
-    // 新设计:不用 patch 触发卡,改用 replyFn 发清晰文案 + 后续 reply 完成时
-    // 自动 restore expectedReply(见 handleReply 后段,让用户能连续发 reply)。
+    // 智能 CAS(expectedReplyState v2.3.12):仅 pending_new_session_claimed 拒,
+    // 其他类型(session 任意 / pending_new_session / transient)都自动清。
     try {
       await this.expectedReply.set(openId, { shortId: _shortId, sessionId, cwd });
     } catch (err: any) {
@@ -828,15 +823,29 @@ export class AgentViewManager {
       await this.deps.replyFn(`⚠️ ${err.message.replace(/^Failed to set expectedReply for .+?: /, '')}`, { openId });
       return;
     }
-    // 3. 发独立提示消息(纯文本,无 button —— 飞书 IM 限制)
-    // v2.3.9 文案与 v2.3.4 旧版一致化:reply 是 一次 一次 的(完成即清),
-    // 后续 reply 必须重新点 [Reply] 按钮(实际 bot 端 v2.3.8 pre-step stop 让流程一气呵成)。
-    await this.deps.replyFn(
+    // 3. 发交互卡 — header + 等待原因 + AI 最近输出 + [❌ 取消等待]
+    //
+    // v2.3.13:之前是纯文本 prompt(replyFn),用户看不到 AI 上一句问的是什么 —
+    // 在 bash loop / 长 agent 这种场景里,要先回到 list 卡点 Peek 看一眼,UX 痛。
+    // 现在用 buildWaitingCard(已加 recentOutput 字段)发卡,跟 Peek 同款 markdown
+    // 渲染 + Cancel 按钮,用户一眼能看到上下文。25KB 超限走 sendOrFallback 兜底文本。
+    const peekMaxBytes = config.get<number>('agent_view.peek_max_bytes', 2048);
+    const peek = await this.resolvePeekContent(_shortId, peekMaxBytes);
+    const card = buildWaitingCard({
+      name: session.name,
+      status: session.status,
+      waitingFor: session.waitingFor,
+      cwd,
+      recentOutput: peek.text ?? undefined,
+      outputFormat: peek.format,
+    });
+    await this.sendOrFallback(
+      card,
+      { openId },
       `↩️ 回复会话: ${session.name}\n` +
       `请直接发送一条文字消息。\n` +
-      `若想中断等待,发 /cancel。\n` +
-      `若需继续 reply,在飞书 Agent View 重新点 [Reply] 即可(每次 reply 都是一次独立操作)。`,
-      { openId },
+      `若想中断等待,发 /cancel。`,
+      openId,
     );
   }
 
