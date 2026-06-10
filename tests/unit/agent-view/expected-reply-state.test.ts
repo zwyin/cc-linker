@@ -82,6 +82,33 @@ describe('ExpectedReplyState — CAS conflict', () => {
     expect(state.get('open1')?.shortId).toBe('newS');
     expect((userManager.getEntry('open1') as any)?.sessionUuid).toBe('newUuid');
   });
+
+  test('v2.3.3: set auto-clears same-session session entry (user 先 Attach 再点 Reply)', async () => {
+    const userManager = new UserManager(tmpMapping);
+    // 模拟:用户之前点了 Attach 把 timer session attach 到飞书侧
+    const targetUuid = '3a41fe73-0951-470a-bd2f-fb5a9f0fbe6b';
+    await userManager.compareAndSwap('open1', null, {
+      type: 'session', sessionUuid: targetUuid, cwd: '/Users/x',
+      createdAt: new Date().toISOString(), casToken: 'old-token',
+    });
+    const state = new ExpectedReplyState(userManager, 300_000);
+    // 用户现在点 Reply 切到 waiting 模式 — 应当自动 detach + set 成功
+    await state.set('open1', { shortId: '3a41fe73', sessionId: targetUuid, cwd: '/Users/x' });
+    expect(state.get('open1')?.shortId).toBe('3a41fe73');
+    expect(userManager.getEntry('open1')?.type).toBe('pending_agent_reply');
+  });
+
+  test('v2.3.3: set rejects when existing session entry is for a DIFFERENT session', async () => {
+    // 模拟:用户 attach 到 session A,但点 Reply 想 reply session B → 真冲突
+    const userManager = new UserManager(tmpMapping);
+    await userManager.compareAndSwap('open1', null, {
+      type: 'session', sessionUuid: 'uuid-A', cwd: '/a',
+      createdAt: new Date().toISOString(), casToken: 'old-token',
+    });
+    const state = new ExpectedReplyState(userManager, 300_000);
+    await expect(state.set('open1', { shortId: 'sB', sessionId: 'uuid-B', cwd: '/b' }))
+      .rejects.toThrow(/different session/);
+  });
 });
 
 describe('ExpectedReplyState — timeout', () => {

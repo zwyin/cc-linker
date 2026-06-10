@@ -30,13 +30,15 @@ export class ExpectedReplyState {
    *
    * v2.3.3 智能 CAS:user-mapping 当前 entry 可能是:
    *   - null → 直接写
-   *   - `last_agent_list_card`(上一次 /agents 留下的 list 卡 pointer)
-   *   - `pending_agent_reply`(上一个 reply 没走完 cleanup,如 timeout 前又点 Reply)
-   *   - `session` / `pending_new_session` / `pending_new_session_claimed` → 真"另一端在操作"
+   *   - `last_agent_list_card`(上一次 /agents 留下的 list 卡 pointer) → 自动清
+   *   - `pending_agent_reply`(上一个 reply 没走完 cleanup) → 自动清
+   *   - `session`,sessionUuid 跟 info.sessionId 匹配(用户已 attach 此 session,
+   *     现在想"detach + 切到等用户回复"模式) → 自动清 + set
+   *   - 其他 active state(不同 session 的 session / pending_new_session /
+   *     pending_new_session_claimed)→ 真"另一端在操作",throw
    *
-   * transient entry (前 3 种)自动清掉再写,真 active state (后 3 种)throw 让调用方报错。
-   * 修这个之前,用户 attach 后再点 /agents 的 Reply 永远 throw(因为 user-mapping 残留 session entry
-   * 但 handleReplyRequest 只清 last_agent_list_card)。
+   * v2.3.3 修这个之前,用户 attach 后再点 /agents 的 Reply 永远 throw(因为
+   * user-mapping 残留 session entry 但 handleReplyRequest 只清 last_agent_list_card)。
    */
   async set(openId: string, info: ExpectedReplyInfo): Promise<void> {
     const now = Date.now();
@@ -51,21 +53,25 @@ export class ExpectedReplyState {
       shortId: info.shortId,
       casToken,
     };
-    // 智能 CAS:探测当前 entry,transient 类型的自动清,active 类型的 throw
+    // 智能 CAS:探测当前 entry
     const current = this.userManager.getEntry(openId);
-    const transientTypes = new Set(['last_agent_list_card', 'pending_agent_reply']);
-    if (current && !transientTypes.has(current.type)) {
-      // 真 active state:另一端在 session/pending_new_session
-      throw new Error(
-        `Failed to set expectedReply for ${openId}: existing entry is '${current.type}'`,
-      );
-    }
     if (current) {
-      // transient — 先清,再写
+      const isTransient = (current.type === 'last_agent_list_card'
+        || current.type === 'pending_agent_reply');
+      // session entry 只有在 sessionUuid 跟目标 session 匹配时才"自切"(用户已
+      // attach 同一 session,想从 attach 切到等用户回复)。其他 session /
+      // pending_new_session_claimed 都是"另一端在操作"。
+      const isSameSession = (current.type === 'session'
+        && current.sessionUuid === info.sessionId);
+      if (!isTransient && !isSameSession) {
+        throw new Error(
+          `Failed to set expectedReply for ${openId}: existing entry is '${current.type}' for a different session`,
+        );
+      }
+      // 自动清(transient 或同 session)
       const cleared = await this.userManager.compareAndSwap(openId, current, null);
       if (!cleared) {
-        // 极罕见 race:有人在我们清之前抢着改了 entry。直接 throw 让用户重试。
-        throw new Error(`Failed to set expectedReply for ${openId}: CAS conflict on transient clear`);
+        throw new Error(`Failed to set expectedReply for ${openId}: CAS conflict on clear`);
       }
     }
     // 现在 slot 是 null 了,写 pending_agent_reply
