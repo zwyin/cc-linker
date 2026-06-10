@@ -41,10 +41,20 @@ describe('ExpectedReplyState — basic set/clear', () => {
 });
 
 describe('ExpectedReplyState — CAS conflict', () => {
-  test('set fails when existing entry is a real active session (other end busy)', async () => {
+  test('set fails ONLY when existing entry is pending_new_session_claimed (real "other end busy")', async () => {
+    // v2.3.12:`pending_new_session_claimed` 是唯一真"另一端在跑"的状态 —— bot 正在
+    // spawn 新 session 的 Claude 进程,binding callback (bindSessionToClaim) 会回写
+    // 这条 entry。这时清掉它会让 SDK 收尾找不到目标 entry,sessionUuid 永远悬空。
+    // 其他类型(session / pending_new_session / transient)都是用户自己的状态,
+    // 用户点 [Reply] 即显式 override 意图,允许自动清。
     const userManager = new UserManager(tmpMapping);
     await userManager.compareAndSwap('open1', null, {
-      type: 'session', sessionUuid: 'u', cwd: '/x', createdAt: new Date().toISOString(),
+      type: 'pending_new_session_claimed',
+      sessionUuid: null,
+      cwd: '/x',
+      createdAt: new Date().toISOString(),
+      claimedByMessageId: 'om_claim_1',
+      claimedAt: new Date().toISOString(),
     });
     const state = new ExpectedReplyState(userManager, 300_000);
     await expect(state.set('open1', { shortId: 's1', sessionId: 'u1', cwd: '/a' }))
@@ -98,16 +108,36 @@ describe('ExpectedReplyState — CAS conflict', () => {
     expect(userManager.getEntry('open1')?.type).toBe('pending_agent_reply');
   });
 
-  test('v2.3.3: set rejects when existing session entry is for a DIFFERENT session', async () => {
-    // 模拟:用户 attach 到 session A,但点 Reply 想 reply session B → 真冲突
+  test('v2.3.12: set auto-clears DIFFERENT-session session entry (user attached to A, clicks Reply on B)', async () => {
+    // 真实复现 (2026-06-10):用户先 Attach session A → user-mapping 是
+    // { type:'session', sessionUuid:A }。然后 /agents 看列表点 Reply session B → 之前
+    // 智能 CAS 抛 "existing entry is 'session' for a different session",用户看到红色
+    // ⚠️ 误以为冲突。其实意图很明确 — 用户主动要切到 B,旧 attach 应当被踢掉。
     const userManager = new UserManager(tmpMapping);
     await userManager.compareAndSwap('open1', null, {
       type: 'session', sessionUuid: 'uuid-A', cwd: '/a',
       createdAt: new Date().toISOString(), casToken: 'old-token',
     });
     const state = new ExpectedReplyState(userManager, 300_000);
-    await expect(state.set('open1', { shortId: 'sB', sessionId: 'uuid-B', cwd: '/b' }))
-      .rejects.toThrow(/different session/);
+    await state.set('open1', { shortId: 'sB', sessionId: 'uuid-B', cwd: '/b' });
+    expect(state.get('open1')?.shortId).toBe('sB');
+    expect((userManager.getEntry('open1') as any)?.sessionUuid).toBe('uuid-B');
+  });
+
+  test('v2.3.12: set auto-clears pending_new_session entry (user pasted /new, then clicks Reply 改变主意)', async () => {
+    // /bridge new 没带 prompt → user-mapping 是 pending_new_session,等下一条 message。
+    // 没有任何 in-flight 异步工作 (区别于 claimed),用户点 Reply 改主意 — 安全自动清。
+    const userManager = new UserManager(tmpMapping);
+    await userManager.compareAndSwap('open1', null, {
+      type: 'pending_new_session',
+      sessionUuid: null,
+      cwd: '/x',
+      createdAt: new Date().toISOString(),
+    });
+    const state = new ExpectedReplyState(userManager, 300_000);
+    await state.set('open1', { shortId: 's1', sessionId: 'u1', cwd: '/a' });
+    expect(state.get('open1')?.shortId).toBe('s1');
+    expect(userManager.getEntry('open1')?.type).toBe('pending_agent_reply');
   });
 });
 

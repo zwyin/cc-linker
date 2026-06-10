@@ -28,17 +28,20 @@ export class ExpectedReplyState {
   /**
    * 设置 expectedReply 状态。CAS 写入 user-mapping。
    *
-   * v2.3.3 智能 CAS:user-mapping 当前 entry 可能是:
+   * v2.3.12 放宽智能 CAS:user-mapping 当前 entry 可能是:
    *   - null → 直接写
    *   - `last_agent_list_card`(上一次 /agents 留下的 list 卡 pointer) → 自动清
    *   - `pending_agent_reply`(上一个 reply 没走完 cleanup) → 自动清
-   *   - `session`,sessionUuid 跟 info.sessionId 匹配(用户已 attach 此 session,
-   *     现在想"detach + 切到等用户回复"模式) → 自动清 + set
-   *   - 其他 active state(不同 session 的 session / pending_new_session /
-   *     pending_new_session_claimed)→ 真"另一端在操作",throw
-   *
-   * v2.3.3 修这个之前,用户 attach 后再点 /agents 的 Reply 永远 throw(因为
-   * user-mapping 残留 session entry 但 handleReplyRequest 只清 last_agent_list_card)。
+   *   - `session`(任意 sessionUuid,无论同/不同 session) → 自动清
+   *     用户点 [Reply] 即显式 override 意图,把之前 attach 的 session 踢掉。
+   *     v2.3.3 ~ v2.3.11 这条路径里"不同 sessionUuid"会 throw,UX 极差(用户在
+   *     Agent View 点 Reply 别的 session 看到"⚠️ existing entry is 'session' for
+   *     a different session"误以为冲突 — 其实他就是想切)。
+   *   - `pending_new_session`(用户 /new 没带 prompt,等下一条) → 自动清
+   *     没有 in-flight 异步工作,用户改主意点 Reply 安全清。
+   *   - `pending_new_session_claimed`(bot 正在 spawn 新 session,bindSessionToClaim
+   *     callback 等着回写这条 entry)→ throw,这是唯一真"另一端在跑"
+   *     不能动的状态;清掉 SDK 收尾找不到目标 entry,sessionUuid 永远悬空。
    */
   async set(openId: string, info: ExpectedReplyInfo): Promise<void> {
     const now = Date.now();
@@ -56,19 +59,14 @@ export class ExpectedReplyState {
     // 智能 CAS:探测当前 entry
     const current = this.userManager.getEntry(openId);
     if (current) {
-      const isTransient = (current.type === 'last_agent_list_card'
-        || current.type === 'pending_agent_reply');
-      // session entry 只有在 sessionUuid 跟目标 session 匹配时才"自切"(用户已
-      // attach 同一 session,想从 attach 切到等用户回复)。其他 session /
-      // pending_new_session_claimed 都是"另一端在操作"。
-      const isSameSession = (current.type === 'session'
-        && current.sessionUuid === info.sessionId);
-      if (!isTransient && !isSameSession) {
+      // 唯一真不能动的状态:bot 正在 spawn 新 session,后续 callback 会回写这条 entry
+      if (current.type === 'pending_new_session_claimed') {
         throw new Error(
-          `Failed to set expectedReply for ${openId}: existing entry is '${current.type}' for a different session`,
+          `Failed to set expectedReply for ${openId}: bot is spawning a new session ` +
+          `(pending_new_session_claimed); please wait for it to finish or send /cancel.`,
         );
       }
-      // 自动清(transient 或同 session)
+      // 其他类型:用户自己的状态,Reply 是显式 override,安全清
       const cleared = await this.userManager.compareAndSwap(openId, current, null);
       if (!cleared) {
         throw new Error(`Failed to set expectedReply for ${openId}: CAS conflict on clear`);
