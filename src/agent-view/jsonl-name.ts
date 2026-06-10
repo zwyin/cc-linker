@@ -1,16 +1,14 @@
 // src/agent-view/jsonl-name.ts
 //
-// v2.2.7 新增:为已 settled session 从 ~/.claude/projects/<proj>/<UUID>.jsonl
-// 直读第一条用户 prompt 作为显示名兜底。
+// 从 ~/.claude/projects/<proj>/<UUID>.jsonl 直读第一条用户 prompt 作为 session
+// 显示名的"冷路径 fallback" + 提供 JsonlIndex 类(short → full path/UUID 查询)。
 //
-// 背景:v2.2.6 用 ~/.cc-linker/agent-names-cache.json 缓存 active 期看到的 name,
-// 但 bot 部署/重启之前就已经 settled 的 session 没机会进 cache,Feishu 上仍然显示
-// 短 hash(`✅ 3a41fe73`)。`claude logs <short>` 对 settled session 100% 失败
-// (daemon 已清 worker),v2.2.6 已实测确认。JSONL session 文件是用户原始 prompt
-// 唯一稳定的本地来源,实测 ~393 文件全扫 ~10ms,完全够用。
+// v2.3 重构后:state.json.name 是权威 name 源,本模块只在 state.json.name 为空时
+// 兜底(罕见,通常发生在用户直接构造 jobs 目录的场景)。JsonlIndex 仍被 bot.ts
+// 用于 short → full UUID 展开(独立 concern,跟 Agent View 解耦)。
 //
 // 用法:`deriveNameFromJsonl(short)` 返回 `{ name, sessionId }` 或 null;
-// snapshot-fetcher 命中后立刻 captureNames 写回 cache,下次走 hot path。
+// snapshot-fetcher 在 cold path 调用。
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'fs';
 import { basename, join } from 'path';
@@ -201,7 +199,7 @@ export function extractFirstUserPrompt(jsonlPath: string): string | null {
 
 /**
  * 给定 8 字符 short hash,从 JSONL 文件里挖出原始 user prompt 当 name。
- * 返回 `{ name, sessionId }`(sessionId 是 full UUID,用于写回 name-cache)
+ * 返回 `{ name, sessionId }`(sessionId 是 full UUID)
  * 或 null(找不到 / JSONL 无 candidate user message)。
  *
  * @param short 8 字符 short hash
