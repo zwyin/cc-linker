@@ -500,7 +500,7 @@ function truncateBytes(text: string, maxBytes: number): string {
   return text.slice(0, low) + '...';
 }
 
-function formatTokenCount(n: number): string {
+export function formatTokenCount(n: number): string {
   if (n < 1000) return n.toString();
   if (n < 1_000_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;

@@ -10,6 +10,10 @@ import { sessionManager as defaultSessionManager } from '../proxy/session';
 import type { AgentViewManager } from '../agent-view/manager';
 import { isAgentViewValue } from '../agent-view/action';
 import { buildBgConflictCard } from '../agent-view/card';
+import { checkRendezvousEligibility } from '../agent-view/rendezvous-fallback';
+import { RendezvousClient, type StatePatch } from '../agent-view/rendezvous-client';
+import { readLastAssistantTurn, type LastAssistantTurn } from '../agent-view/jsonl-last-assistant';
+import { formatTokenCount } from './card-updater';
 import { StreamChunk } from '../proxy/stream-parser';
 import { CardUpdater } from './card-updater';
 import { LiveProgressWatcher, isSessionProcessing, DEFAULT_LIVE_PROGRESS_CONFIG, type LiveProgressConfig } from './live-progress';
@@ -920,7 +924,13 @@ export class FeishuBot {
           await this.replyAndFinalize(msg, 'Agent View 已禁用(在 config.toml 设置 [agent_view].enabled = true)');
           return;
         }
-        await this.agentView.handleList(msg.openId, msg.messageId);
+        // v2.3.14 修正:handleList 之前返回 void,spool 消息卡在 processing/ 永远不 finalize,
+        // 100 条累积后 enqueue 触发"队列满"fallback → 用户看到"服务暂不可用"。
+        // 同 v2.3.11 handleReply 路径同模式 bug:依赖 handleXxx 内部收尾是不可靠的,
+        // 必须 caller 显式 markReplied + markDone 释放 serialKey 锁。
+        const cardMessageId = await this.agentView.handleList(msg.openId, msg.messageId);
+        this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
+        this.spoolQueue.markDone(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
         return;
 
       default:
@@ -1344,6 +1354,98 @@ export class FeishuBot {
   }
 
   /**
+   * Try to handle an Agent View Reply via the rendezvous socket.
+   *
+   * Returns true if handled — a reply (success or error) has been sent
+   * to the user via replyFn, and spool has been finalized. Caller should
+   * short-circuit (return from runChatSDK with rendezvousHandled: true).
+   *
+   * Returns false if rendezvous is not eligible — caller should fall
+   * through to the existing v2.3.5 auto-stop + SDK path.
+   *
+   * Failure handling:
+   *   - canUse=false (daemon_down, bg_busy, old_cli, etc.) → return false
+   *   - inject timeout → send timeout message, return true (bg may still
+   *     be running; falling through to SDK would conflict)
+   *   - socket_closed / state_error / daemon_error → send error message,
+   *     return true (no fallback possible)
+   */
+  private async tryRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
+    messageId?: string;
+  }): Promise<boolean> {
+    const { openId, sessionUuid, promptText, messageId } = params;
+    const short = sessionUuid.slice(0, 8);
+    const eligibility = await checkRendezvousEligibility(short);
+    if (!eligibility.canUse || !eligibility.rendezvousSock) {
+      logger.warn(`rendezvous: fallback to SDK because ${eligibility.reason}`);
+      return false;  // caller falls through to v2.3.5 auto-stop + SDK
+    }
+    logger.info(
+      `rendezvous: inject short=${short} text_len=${promptText.length} reason=bg_waiting`,
+    );
+    const rendezvousResult = await RendezvousClient.injectReply({
+      short,
+      text: promptText,
+      rendezvousSock: eligibility.rendezvousSock,
+      timeoutMs: config.get<number>('agent_view.rendezvous_timeout_ms', 60_000),
+    });
+
+    // Read JSONL for response text (bg may have written its reply)
+    const lastTurn = eligibility.jsonlPath
+      ? await readLastAssistantTurn(eligibility.jsonlPath)
+      : null;
+    const durationMs = rendezvousResult.durationMs ?? 0;
+    let replyText: string;
+
+    if (rendezvousResult.ok) {
+      // Success: compose response + token stats
+      const responseText = lastTurn?.text
+        ?? rendezvousResult.patches?.find(p => p.detail)?.detail
+        ?? '(bg 完成)';
+      const tokenCount = (lastTurn?.usage.input_tokens ?? 0)
+        + (lastTurn?.usage.output_tokens ?? 0)
+        + (lastTurn?.usage.cache_creation_input_tokens ?? 0)
+        + (lastTurn?.usage.cache_read_input_tokens ?? 0);
+      replyText = `✅ Claude 已处理完你的消息。\n\n${responseText}\n\n` +
+                  `⏱ ${durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`;
+      logger.info(
+        `rendezvous: ok reason=${rendezvousResult.reason} ` +
+        `duration=${durationMs}ms tokens_out=${lastTurn?.usage.output_tokens ?? 0}`,
+      );
+    } else {
+      // Failure: inject failed after eligibility passed.
+      // No fallback possible — bg may already be processing our inject,
+      // so running claude stop + SDK would create a conflict.
+      logger.error(
+        `rendezvous: inject failed reason=${rendezvousResult.reason} (no fallback)`,
+      );
+      replyText = rendezvousResult.reason === 'timeout'
+        ? `⏱ bg 处理超时（60s 内未完成），已停止等待。bg 可能仍在后台运行。`
+        : rendezvousResult.reason === 'socket_closed'
+        ? `⚠️ Claude daemon 已停止，无法处理 reply。请联系管理员重启 daemon。`
+        : `⚠️ Reply 失败：${rendezvousResult.reason}`;
+    }
+
+    // Send the reply via Feishu
+    if (messageId) {
+      await this.replyFn(replyText, { messageId, openId, requestUuid: stableUuid(messageId) });
+    } else {
+      await this.replyFn(replyText, { openId, requestUuid: uniqueUuid() });
+    }
+
+    // Spool finalize — idempotent with handleReply's caller
+    if (messageId) {
+      this.spoolQueue.markReplied(messageId, sessionUuid);
+      this.spoolQueue.markDone(messageId, sessionUuid);
+    }
+
+    return true;  // handled (success or failure message sent)
+  }
+
+  /**
    * SDK-driven chat streaming lifecycle (public, reusable from Agent View reply).
    *
    * Drives the full SDK streaming pipeline: processing card → streaming updates →
@@ -1391,8 +1493,29 @@ export class FeishuBot {
      * 普通 chat 路径(没设此 flag)行为不变,3 按钮让用户决策。
      */
     fromAgentViewReply?: boolean;
-  }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null }> {
+  }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null; rendezvousHandled?: boolean }> {
     const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId, fromAgentViewReply = false } = params;
+
+    // v2.4 rendezvous-first: short-circuit for Agent View Reply
+    if (
+      fromAgentViewReply &&
+      config.get<boolean>('agent_view.rendezvous_enabled', false)
+    ) {
+      const handled = await this.tryRendezvousReply({
+        openId, sessionUuid: inputSessionUuid, promptText, messageId,
+      });
+      if (handled) {
+        // Reply already sent, spool already finalized. Return sentinel.
+        return {
+          result: null as unknown as SendMessageResult,
+          handler: null as unknown as PermissionHandler,
+          cardMessageId: null,
+          rendezvousHandled: true,
+        };
+      }
+      // eligibility failed → fall through to existing v2.3.5/3.6 path
+    }
+
     // v2.2.14: defense-in-depth —— UserManager.sessionUuid 可能是 8 字符 short hash
     // (历史 settled bg 走旧 snapshot-fetcher 路径时种下),`claude -p --resume <short>`
     // 会被 SDK 拒(报 "Provided value ... is not a UUID")。handleAttach 已尝试
@@ -1687,7 +1810,22 @@ export class FeishuBot {
       // outside the SpoolQueue, so there is no SpoolMessage to update. Callers
       // that DO have a SpoolMessage (handleChat) handle the spool update inline.
 
-      return { result, handler, cardMessageId };
+      // P1-4: SDK fallback path for Agent View Reply — send a chat-text reply
+      // with response + token stats (rendezvous path already sent one in tryRendezvousReply).
+      if (fromAgentViewReply && result?.response) {
+        const tokenCount = (result.tokensIn ?? 0) + (result.tokensOut ?? 0);
+        const sdkReplyText = result.response.length > 0
+          ? `✅ Claude 已处理完你的消息。\n\n${result.response}\n\n` +
+            `⏱ ${result.durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`
+          : `✅ Claude 已处理完你的消息（无文本响应）。`;
+        if (messageId) {
+          await this.replyFn(sdkReplyText, { messageId, openId, requestUuid: stableUuid(messageId) });
+        } else {
+          await this.replyFn(sdkReplyText, { openId, requestUuid: uniqueUuid() });
+        }
+      }
+
+      return { result, handler, cardMessageId, rendezvousHandled: false };
     } catch (err: any) {
       logger.error(`runChatSDK 失败: ${err?.message ?? err}`);
       if (cardUpdater) {
