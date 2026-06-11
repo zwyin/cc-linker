@@ -93,6 +93,9 @@ export interface AgentViewConfig {
   stop_requires_confirm: boolean;
   min_claude_version: string;
   reply_throttle_ms: number;
+  // v2.4: rendezvous socket 注入 reply (替代 claude stop + SDK)
+  rendezvous_enabled: boolean;
+  rendezvous_timeout_ms: number;
 }
 
 const DEFAULTS: ConfigData = {
@@ -183,6 +186,9 @@ const DEFAULTS: ConfigData = {
     stop_requires_confirm: true,
     min_claude_version: '2.1.139',
     reply_throttle_ms: 500,
+    // v2.4 defaults
+    rendezvous_enabled: false,       // PR 2 默认 off, PR 4 Task 10 翻 true
+    rendezvous_timeout_ms: 60_000,
   },
 };
 
