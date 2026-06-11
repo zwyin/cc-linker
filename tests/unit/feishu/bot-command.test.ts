@@ -93,4 +93,46 @@ describe('FeishuBot.handleCommand /agents case', () => {
     expect(env.textReplies.length).toBe(1);
     expect(env.textReplies[0].text).toContain('Agent View 已禁用');
   });
+
+  /**
+   * v2.3.14 regression: /agents 之前不 markReplied/markDone,spool 消息卡 processing/
+   * 永远不 finalize,累积 100 后 enqueue 触发"队列满" → "服务暂不可用"。
+   * 这里直接通过 SpoolQueue 状态断言:handleCommand 后,processing/ 应为空。
+   * markReplied → replied/,markDone → done/(用 listReplied 验证 replied 状态存在即可,
+   * 实际生产中 cleanup 24h 后会转 done/ 不影响功能性)。
+   */
+  test('v2.3.14: /agents 完成后 spool 消息必须从 processing/ 移出(replied/done)', async () => {
+    // Arrange: install a mock agentView whose handleList 返回 cardMessageId
+    const mockAgentView = {
+      deps: {} as any,
+      handleList: async (_openId: string, _msgMessageId?: string): Promise<string | null> => {
+        return 'mock-card-msg-id-1';
+      },
+    };
+    env.bot.setAgentView(mockAgentView as any);
+
+    // 把消息 enqueue + claimNext 模拟 dispatch 后的状态(已经在 processing/)
+    const msg = buildMsg('/agents');
+    expect(env.spoolQueue.enqueue({ ...msg, status: 'pending' })).toBe(true);
+    expect(env.spoolQueue.claimNext(msg.serialKey)).not.toBeNull();
+    expect(env.spoolQueue.listProcessing().some(m => m.messageId === msg.messageId)).toBe(true);
+
+    // Act: handleCommand 走 /agents 路径
+    await env.bot.handleCommand(msg);
+
+    // Assert: 消息已移出 processing/(到 replied/ 或 done/)
+    expect(env.spoolQueue.listProcessing().some(m => m.messageId === msg.messageId)).toBe(false);
+  });
+
+  test('v2.4 regression: when rendezvous_enabled=false (default), /agents path still works', async () => {
+    const mockAgentView = {
+      deps: {} as any,
+      handleList: async () => 'card-msg-id',
+    };
+    env.bot.setAgentView(mockAgentView as any);
+    const msg = buildMsg('/agents');
+    await env.bot.handleCommand(msg);
+    // /agents should still send a card and finalize the spool
+    expect(env.spoolQueue.listProcessing().length).toBe(0);
+  });
 });
