@@ -1364,7 +1364,8 @@ export class FeishuBot {
    * through to the existing v2.3.5 auto-stop + SDK path.
    *
    * Failure handling:
-   *   - canUse=false (daemon_down, bg_busy, old_cli, etc.) → return false
+   *   - canUse=false (daemon_down, bg_busy, no_rendezvous_sock) → return false
+   *     so caller falls through to v2.3.5 auto-stop + SDK
    *   - inject timeout → send timeout message, return true (bg may still
    *     be running; falling through to SDK would conflict)
    *   - socket_closed / state_error / daemon_error → send error message,
@@ -1394,20 +1395,21 @@ export class FeishuBot {
       timeoutMs,
     });
 
-    // Wait briefly for bg to flush JSONL after completion.
-    // The rendezvous socket signals completion (state.json transition) before
-    // the bg worker necessarily finishes writing the assistant turn to JSONL.
-    // Without this delay, readLastAssistantTurn may return a stale previous turn.
-    await new Promise(r => setTimeout(r, 500));
-
-    // Read JSONL for response text (bg may have written its reply)
-    const lastTurn = eligibility.jsonlPath
-      ? await readLastAssistantTurn(eligibility.jsonlPath)
-      : null;
     const durationMs = rendezvousResult.durationMs ?? 0;
     let replyText: string;
 
     if (rendezvousResult.ok) {
+      // Wait briefly for bg to flush JSONL after completion.
+      // The rendezvous socket signals completion (state.json transition) before
+      // the bg worker necessarily finishes writing the assistant turn to JSONL.
+      // Without this delay, readLastAssistantTurn may return a stale previous turn.
+      // Only needed on success path — failure paths don't read JSONL.
+      await new Promise(r => setTimeout(r, 500));
+
+      // Read JSONL for response text (bg may have written its reply)
+      const lastTurn = eligibility.jsonlPath
+        ? await readLastAssistantTurn(eligibility.jsonlPath)
+        : null;
       // Success: compose response + token stats
       // lastTurn may be null if JSONL hasn't flushed yet (race with bg write).
       // Do NOT use patches[].detail as fallback — it contains state descriptors
