@@ -65,7 +65,7 @@ export interface AgentViewDeps {
     settingsPath?: string; messageId?: string;
     /** v2.3.5: 标记 AgentView reply 路径,bot 会自动 stop bg + 递归 SDK */
     fromAgentViewReply?: boolean;
-  }) => Promise<{ result: any; handler: any; cardMessageId: string | null }>;
+  }) => Promise<{ result: any; handler: any; cardMessageId: string | null; rendezvousHandled?: boolean }>;
   expectedReplyTimeoutMs?: number;
 }
 
@@ -86,19 +86,24 @@ export class AgentViewManager {
     );
   }
 
-  /** /agents 命令入口 — 抓取快照并发送列表卡;持久化 cardMessageId 以便后续 refresh patch */
-  async handleList(openId: string, _msgMessageId?: string): Promise<void> {
+  /**
+   * /agents 命令入口 — 抓取快照并发送列表卡;持久化 cardMessageId 以便后续 refresh patch
+   * 返回 cardMessageId(成功发卡)或 null(发错误/空/超限降级),供 bot.ts 做 spool markReplied/markDone。
+   * v2.3.14 修正:之前返回 void,spool 消息永远卡在 processing/,累积 100 后触发队列满 → "服务暂不可用"
+   * (同 v2.3.11 handleReply 路径同模式 bug 的另一个遗漏点)。
+   */
+  async handleList(openId: string, _msgMessageId?: string): Promise<string | null> {
     const result = await AgentSnapshotFetcher.fetch();
     if (!result.ok) {
       const card = buildErrorCard({ title: 'Agent View 错误', body: result.reason });
       await this.deps.cardReplyFn(card, { openId });
-      return;
+      return null;
     }
     const totalSessions = result.sessions.length;
     if (totalSessions === 0) {
       const card = buildEmptyCard();
       await this.deps.cardReplyFn(card, { openId });
-      return;
+      return null;
     }
     // v2.3.2:截断逻辑(active 优先 + completed 限额)抽到 module-level helper,
     // handleList 和 handleRefreshList 共用。
@@ -120,6 +125,7 @@ export class AgentViewManager {
         updatedAt: new Date().toISOString(),
       });
     }
+    return cardMessageId;
   }
 
   // ── Card action handlers (dispatched from FeishuBot.handleCardAction) ──
@@ -794,6 +800,7 @@ export class AgentViewManager {
     _shortId: string,
     sessionId: string,
     cwd: string,
+    messageId?: string,
   ): Promise<void> {
     // 1. 三重守卫
     const result = await AgentSnapshotFetcher.fetch();
@@ -817,7 +824,7 @@ export class AgentViewManager {
     // 智能 CAS(expectedReplyState v2.3.12):仅 pending_new_session_claimed 拒,
     // 其他类型(session 任意 / pending_new_session / transient)都自动清。
     try {
-      await this.expectedReply.set(openId, { shortId: _shortId, sessionId, cwd });
+      await this.expectedReply.set(openId, { shortId: _shortId, sessionId, cwd, messageId });
     } catch (err: any) {
       // 真正"另一端在操作" — 给明确指引让用户取消
       await this.deps.replyFn(`⚠️ ${err.message.replace(/^Failed to set expectedReply for .+?: /, '')}`, { openId });
@@ -866,6 +873,9 @@ export class AgentViewManager {
     const info = this.expectedReply.get(openId);
     if (!info) return;
 
+    // M7: 防御性 - 拒绝空文本
+    if (!text || !text.trim()) return;
+
     // 2. Step B 二次状态守卫
     const result = await AgentSnapshotFetcher.fetch();
     if (!result.ok) {
@@ -887,48 +897,53 @@ export class AgentViewManager {
       return;
     }
 
-    // 3. runChatSDK,try/finally 保证 clear 必发(v2.2 critical)
-    // v2.3.5: 传 fromAgentViewReply: true — bot runChatSDK 检测到 bg conflict 时
-    // 自动 stop bg + 3s wait + 递归 SDK(不再弹 3 按钮冲突卡),符合用户"接管"预期。
+    // M1 FIX (P0): T2 立即 markSent, 防双重 reply during the 60s wait
+    // finally 里的 clear() 仍保留,作为兜底 (idempotent)
+    await this.expectedReply.markSent(openId);
+
+    // 3. runChatSDK
+    //    - rendezvous path (tryRendezvousReply in bot.ts): sends chat-text reply
+    //      with response + token stats, returns rendezvousHandled: true.
+    //    - SDK fallback path: cards get patched live, bot.ts sends chat-text reply
+    //      at the end of runChatSDK (P1-4 step).
+    //    In BOTH cases, the completion message is handled inside runChatSDK.
     let sdkError: any = null;
+    let sdkResult: { rendezvousHandled?: boolean } | null = null;
     try {
-      await this.deps.runChatSDK({
+      sdkResult = await this.deps.runChatSDK({
         openId,
         sessionUuid: info.sessionId,
         cwd: info.cwd,
         promptText: text,
         serialKey: info.sessionId,
+        messageId: info.messageId,  // v2.4: 透传 card messageId
         isNew: false,
         fromAgentViewReply: true,
-      });
+      }) as { rendezvousHandled?: boolean };
     } catch (err: any) {
       sdkError = err;
     } finally {
       await this.expectedReply.clear(openId);
     }
+
     if (sdkError) {
       await this.deps.replyFn(`❌ Reply 失败:${sdkError?.message ?? sdkError}`, { openId });
       return;
     }
-    // v2.3.9 简化:不再"自动持续 reply" post-fetch re-set。
-    // 原 v2.3.4 设计:SDK 跑完后 fetch snapshot 看到 waiting 就 re-set,让用户
-    // 在 5min timeout 内连续发文字 reply。实操中,re-set 跟 user-mapping 其他路径
-    // (handleList 写 last_agent_list_card 等)race-prone,导致:
-    //   - 第二次 reply 时 user_mapping 偶发"已清 + 未 re-set"窗口
-    //   - handleChat 走普通 chat 而非 reply,bot 静默无回应
-    //   - 用户感觉"再发消息没反应"
-    //
-    // 修法:reply 完成即清,user 想继续 reply 必须重新点 [Reply] 按钮。
-    // 5min 内点 [Reply] 仍能正常(没动这条路径)。UX 退步(失去便利),但 100% 可靠。
-    // 持续 reply 的"需要"用 bot 端的 v2.3.8 pre-step stop 补足 —— user 重新点
-    // [Reply] 时,bot 自动停 bg + 调 SDK,流程一气呵成。
-    //
-    // 给一个友好提示让 user 知道下一次该点 [Reply]:
-    await this.deps.replyFn(
-      `✅ Claude 已处理完你的消息。\n` +
-      `若需继续 reply,在飞书 Agent View 重新点 [Reply] 即可。`,
-      { openId },
-    );
+
+    // v2.4: 如果 rendezvous 或 SDK 路径已发送 chat-text 回复,跳过旧的完成消息。
+    // rendezvousHandled=true → tryRendezvousReply 已发 (bot.ts)
+    // rendezvousHandled=false/undefined → SDK 路径的 P1-4 step 已发 (bot.ts)
+    // 只有 sdkResult 完全为 null (不应发生) 才 fallback 到旧消息。
+    if (!sdkResult) {
+      // Defensive fallback — should not happen in practice
+      await this.deps.replyFn(
+        `✅ Claude 已处理完你的消息。\n` +
+        `若需继续 reply,在飞书 Agent View 重新点 [Reply] 即可。`,
+        { openId },
+      );
+    }
+    // 正常情况下不发额外消息 — bot.ts 的 tryRendezvousReply 或 SDK P1-4 已发过。
   }
 
   /**

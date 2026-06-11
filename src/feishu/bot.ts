@@ -554,7 +554,7 @@ export class FeishuBot {
           );
         case 'agent_view_reply_request':
           await this.agentView.handleReplyRequest(
-            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd,
+            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd, messageId,
           );
           return null;
         case 'agent_view_cancel_reply':

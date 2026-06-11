@@ -817,7 +817,7 @@ describe('handleReply (Step B)', () => {
     expect(errMsg).toContain('runChatSDK boom');
   });
 
-  test('v2.3.9: reply 完成即清,不再自动持续 reply(用户需重新点 [Reply])', async () => {
+  test('v2.4: reply 完成后 cleared, 不再发旧完成消息 (bot.ts 负责 chat-text reply)', async () => {
     const { mgr, userManager, replyFn } = makeMgrWithSpies();
     const waiting = makeWaitingSession();
     (AgentSnapshotFetcher as any).fetch = mock(async () => ({
@@ -829,18 +829,19 @@ describe('handleReply (Step B)', () => {
       sessionId: waiting.sessionId,
       cwd: waiting.cwd,
     });
-    mgr.deps.runChatSDK = mock(async () => ({ result: {}, handler: {}, cardMessageId: '' })) as any;
+    // Mock returns valid result (rendezvousHandled: false = SDK path handled it)
+    mgr.deps.runChatSDK = mock(async () => ({ result: {}, handler: {}, cardMessageId: '', rendezvousHandled: false })) as any;
     replyFn.mockClear();
 
     await mgr.handleReply('ou_reply_cont', '第一条');
 
-    // v2.3.9 行为:reply 完成后,user-mapping + in-memory 都清空,不再持续
+    // v2.4 行为: reply 完成后 user-mapping + in-memory 都清空
     expect(mgr.expectedReply.get('ou_reply_cont')).toBeUndefined();
     expect(userManager.getEntry('ou_reply_cont')).toBeUndefined();
-    // 提示用户重新点 [Reply]
-    const continueMsg = replyFn.mock.calls.find(c => (c[0] as string).includes('重新点'))?.[0] as string;
-    expect(continueMsg).toBeDefined();
-    expect(continueMsg).toContain('[Reply]');
+    // v2.4: handleReply 不再发旧完成消息 — bot.ts 的 tryRendezvousReply 或 SDK P1-4 已发
+    // 所以 replyFn 不应被调用 (no error, no fallback)
+    const replyCalls = replyFn.mock.calls.filter(c => (c[0] as string).includes('已处理完'));
+    expect(replyCalls.length).toBe(0);
   });
 });
 
