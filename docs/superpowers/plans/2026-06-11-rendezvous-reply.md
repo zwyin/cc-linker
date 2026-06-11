@@ -42,7 +42,124 @@ tests/unit/agent-view/
 └── expected-reply-state.test.ts [MOD]  +2 markSent cases (M1)
 ```
 
-PR cut: PR 1 (Tasks 1-4) ships new modules + tests, no runChatSDK change. PR 2 (Tasks 5-8) wires everything. PR 3 (Task 9) is local manual E2E. PR 4 (Task 10) flips default flag.
+PR cut: PR 1 (Tasks 0-4) ships new modules + tests, no runChatSDK change. PR 2 (Tasks 5-8) wires everything. PR 3 (Task 9) is local manual E2E. PR 4 (Task 10) flips default flag.
+
+---
+
+## Task 0: Document empirical probe notes
+
+**Files:**
+- Create: `docs/qa/2026-06-11-rendezvous-probe-notes.md`
+
+- [ ] **Step 1: Write the probe notes doc from spec §10 evidence**
+
+Create `docs/qa/2026-06-11-rendezvous-probe-notes.md`:
+
+```markdown
+# Rendezvous Socket — Empirical Probe Notes (2026-06-11)
+
+## Test environment
+
+- Claude CLI 2.1.163 (Mach-O 64-bit arm64, /usr/local/bin/claude)
+- OS: macOS Darwin 24.6.0
+- Test session: dcb2ec25 (bash loop script, intent: "请每 5 秒 date 打印当前时间,循环 10 次")
+
+## Probe 1: roster.json structure reveals 2 IPC sockets per bg worker
+
+Roster snapshot at `~/.claude/daemon/roster.json` (excerpt):
+\`\`\`json
+"workers": {
+  "dcb2ec25": {
+    "pid": 5367,
+    "rendezvousSock": "/tmp/cc-daemon-503/02d85b02/rv/dcb2ec25.sock",
+    "ptySock":        "/tmp/cc-daemon-503/02d85b02/spare/173620cc.pty.sock",
+    "cliVersion": "2.1.163",
+    "dispatch": { ... }
+  }
+}
+\`\`\`
+
+Two sockets per bg worker:
+- `rendezvousSock` — control + message injection (JSON-RPC NDJSON)
+- `ptySock` — terminal emulation (lower-level byte stream)
+
+Plus a supervisor-level `control.sock` in `/tmp/cc-daemon-503/02d85b02/`.
+
+## Probe 2: rendezvous socket accepts reply and emits state patches
+
+\`\`\`bash
+echo '{"type":"reply","text":"hello from probe"}' | nc -U <rendezvousSock>
+\`\`\`
+
+Response (single line, immediately):
+\`\`\`json
+{"type":"state","patch":{"tempo":"active","needs":""}}
+\`\`\`
+
+This confirms: protocol is JSON-RPC, single-line request + NDJSON response, no handshake.
+
+## Probe 3: full state machine cycle
+
+Watching state.json after inject:
+| Time | state.json state | Notes |
+|---|---|---|
+| t=0 | `stopped` | bg was killed by user-initiated claude stop |
+| t+1s | `running`, tempo=`active` | worker respawned and processing |
+| t+30s | `done`, output.result="hello from probe" | bg completed |
+| (later) | away_summary: "the loop was stopped when you replied something other than '继续'" | Claude reflected on the conversation context |
+
+JSONL last assistant turn: `{"role":"assistant","content":[{"type":"text","text":"结束"}], "usage":{...}}` — bg wrote its own response.
+
+## Probe 4: PTY socket is bidirectional (not used in v2.4, but documented)
+
+\`\`\`bash
+echo "hello" | nc -U <ptySock>
+\`\`\`
+
+Connection accepted, bytes echoed back as PTY terminal output (with ANSI codes for screen clear, cursor positioning). The bg worker reads from the PTY as if it were a TTY.
+
+For v2.4 we use rendezvous (structured), not PTY (raw).
+
+## Probe 5: protocol variants
+
+Tested other message types on the rendezvous socket:
+- `{"type":"status"}` — no reply (daemon ignores)
+- `{"type":"send","text":"hi"}` — no reply (wrong type)
+- `{"type":"message","text":"hi"}` — no reply (wrong type)
+- `{"type":"stdin","data":"hi"}` — no reply (wrong type)
+
+Only `{"type":"reply","text":"..."}` is recognized. Other types are silently dropped.
+
+## Probe 6: completion trigger matrix
+
+Sent various state patches and observed daemon behavior:
+- `state: "done"` → bg terminates with success
+- `state: "stopped"` + `detail: "killed"` → bg terminated by external stop
+- `state: "stopped"` + `detail: "done"` → bg self-exit (rare)
+- `tempo: "blocked"` + `needs: "..."` → bg in waiting state, awaits user input
+- `tempo: "idle"` + no needs → bg completed without new question
+
+All five completion triggers observed in real sessions.
+
+## CLI version requirement
+
+Roster's `cliVersion` field is a STRING (e.g. "2.1.163"). The `rendezvousSock` field is populated starting CLI 2.1.139 (agent view introduction). For older CLI, fall back to SDK path.
+
+## Implementation implications
+
+1. Use `rendezvousSock` for structured reply injection (cleaner than PTY)
+2. `linkScanPath` is null in `running`/`working` state, populated in `blocked`/`done` state
+   - Fallback: use `roster.launch.sessionId` (a `.jsonl` path, not UUID)
+3. `detail: "killed"` is the user-initiated stop signal
+4. CLI < 2.1.139 has no rendezvousSock → must fall back to SDK
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add docs/qa/2026-06-11-rendezvous-probe-notes.md
+git commit -m "docs(qa): rendezvous socket empirical probe notes"
+```
 
 ---
 
@@ -869,12 +986,12 @@ export class RendezvousClient {
           if (env.type === 'state' && env.patch) {
             patches.push(env.patch);
             if (opts.onStatePatch) opts.onStatePatch(env.patch);
-            const completion = checkCompletion(env.patch);
-            if (completion) {
+            const result = classifyPatch(env.patch);
+            if (result.kind !== 'pending') {
               clearTimeout(timeoutTimer);
               finish({
-                ok: true,
-                reason: completion,
+                ok: result.kind === 'completed',
+                reason: result.reason,
                 durationMs: Date.now() - start,
                 patches,
               });
@@ -902,28 +1019,35 @@ export class RendezvousClient {
 }
 
 /**
- * Check if a state patch represents a terminal completion.
- * Returns the completion reason, or null if the bg is still processing.
+ * Classify a state patch as completed, failed, or still pending.
+ * Returns a discriminated union so the caller can distinguish
+ * success-completion, failure, and "still processing".
+ *
+ *   {kind:'completed', reason}  →  ok=true
+ *   {kind:'failed',    reason}  →  ok=false (no fallback possible)
+ *   {kind:'pending'}            →  no terminal event yet
  */
-function checkCompletion(patch: StatePatch): RendezvousCompletionReason | null {
-  // state=done: worker 主动结束
-  if (patch.state === 'done') return 'done';
-  // state=stopped: 被 stop
+type Classification =
+  | { kind: 'completed'; reason: RendezvousCompletionReason }
+  | { kind: 'failed'; reason: RendezvousFailureReason }
+  | { kind: 'pending' }
+  ;
+
+function classifyPatch(patch: StatePatch): Classification {
+  if (patch.state === 'done') return { kind: 'completed', reason: 'done' };
   if (patch.state === 'stopped') {
-    if (patch.detail === 'killed') return 'user_stopped';
-    return 'stopped';
+    return { kind: 'completed', reason: patch.detail === 'killed' ? 'user_stopped' : 'stopped' };
   }
-  // state=error: 错误
-  if (patch.state === 'error') return null; // handled by caller via state_error
-  // tempo=blocked + needs non-empty: bg 等下一轮
+  // state=error: bg 自己报失败. 不等 timeout, 立即 finish 为 ok=false.
+  // 否则会 hang 60s 才 timeout, 误导用户为"超时"。
+  if (patch.state === 'error') return { kind: 'failed', reason: 'state_error' };
   if (patch.tempo === 'blocked' && patch.needs && patch.needs.length > 0) {
-    return 'new_needs';
+    return { kind: 'completed', reason: 'new_needs' };
   }
-  // tempo=idle + no needs: bg 完成无新问题
   if (patch.tempo === 'idle' && !patch.needs) {
-    return 'idle';
+    return { kind: 'completed', reason: 'idle' };
   }
-  return null;
+  return { kind: 'pending' };
 }
 ```
 
@@ -1220,17 +1344,14 @@ git commit -m "fix(agent-view): expectedReply.markSent - T2 立即清, 防双重
 
 - [ ] **Step 1: Add config keys**
 
-Read `src/utils/config.ts` to find the AgentView section, then add:
+In `src/utils/config.ts`, find the AgentView zod schema block (search for the existing `peek_max_bytes` or `enabled` field), then add these two lines after them:
 
 ```typescript
-// In the AgentView section of the config schema:
-rendezvous_enabled: z.boolean().default(false),
-rendezvous_timeout_ms: z.number().int().positive().default(60_000),
+    rendezvous_enabled: z.boolean().default(false),
+    rendezvous_timeout_ms: z.number().int().positive().default(60_000),
 ```
 
-(If the schema is not using zod, follow the existing pattern for adding typed config keys.)
-
-Also update the project's `config.toml` documentation (if it has one) to include the new keys.
+(If the schema uses a different validation library, mirror the existing style. The defaults are: `rendezvous_enabled=false` in PR 2, flipped to `true` in PR 4 Task 10. `rendezvous_timeout_ms=60_000` for both.)
 
 - [ ] **Step 2: Verify typecheck**
 
@@ -1249,163 +1370,403 @@ git commit -m "feat(config): add [agent_view].rendezvous_enabled + timeout_ms"
 ### Task 6: runChatSDK pre-step wiring
 
 **Files:**
-- Modify: `src/feishu/bot.ts:1473-1526` (the existing pre-step block)
+- Modify: `src/feishu/bot.ts` (add imports + insert new branch before existing pre-step)
 - No new test file (covered by integration test in Task 9)
 
-This task replaces the v2.3.5/3.6 `claude stop + 3s wait` block with the rendezvous-first logic. The old behavior becomes the fallback.
+This task INSERTS a new rendezvous branch BEFORE the existing v2.3.5/3.6 pre-step. On rendezvous success, the new branch returns a synthetic `SendMessageResult` and FALLS THROUGH to the existing post-processing (registry.upsert + spoolQueue.updateProcessingMessage + markReplied/markDone). On rendezvous failure, control continues to the existing v2.3.5/3.6 path.
 
-- [ ] **Step 1: Read the existing pre-step block**
+- [ ] **Step 1: Add imports at the top of bot.ts**
 
-Read `src/feishu/bot.ts:1473-1526` to understand the current structure. The block sits inside `runChatSDK` after the `sessionUuid && !isNew` check. It calls `claude stop` then falls through to either the conflict-detection or the SDK spawn.
-
-- [ ] **Step 2: Replace the pre-step block**
-
-Replace the existing block (lines 1473-1526) with:
-
-```typescript
-      // v2.4 (rendezvous-first): try inject reply into running bg via
-      // Claude CLI's rendezvous socket before falling back to the
-      // legacy v2.3.5/3.6 claude-stop path. Falls through on
-      // canUse=false (busy/old CLI/daemon down) or rendezvous failure
-      // (which is rare; bg may still be processing).
-      if (sessionUuid && !isNew) {
-        const rendezvousEnabled = config.get<boolean>('agent_view.rendezvous_enabled', false);
-        if (rendezvousEnabled && fromAgentViewReply) {
-          const short = sessionUuid.slice(0, 8);
-          const eligibility = await checkRendezvousEligibility(short);
-          if (eligibility.canUse && eligibility.rendezvousSock) {
-            logger.info(
-              `rendezvous: inject short=${short} text_len=${promptText.length} reason=bg_waiting`,
-            );
-            const rendezvousResult = await RendezvousClient.injectReply({
-              short,
-              text: promptText,
-              rendezvousSock: eligibility.rendezvousSock,
-              timeoutMs: config.get<number>('agent_view.rendezvous_timeout_ms', 60_000),
-            });
-            if (rendezvousResult.ok) {
-              // Read the response from JSONL
-              const lastTurn = eligibility.jsonlPath
-                ? await readLastAssistantTurn(eligibility.jsonlPath)
-                : null;
-              const responseText = lastTurn?.text
-                ?? (rendezvousResult.patches?.find(p => p.detail)?.detail ?? '(bg 完成)');
-              const tokenStats = lastTurn
-                ? ` · ${formatTokens(lastTurn.usage)}`
-                : '';
-              const replyText =
-                `✅ Claude 已处理完你的消息。\n\n` +
-                `${responseText}\n\n` +
-                `⏱ ${rendezvousResult.durationMs}ms${tokenStats} · 1 轮数`;
-              await this.replyTo({ messageId, openId } as any, replyText).catch(async () => {
-                // Fallback to plain replyFn if replyTo unavailable
-                await this.replyFn(replyText, {
-                  messageId, openId, requestUuid: stableUuid(messageId),
-                });
-              });
-              return {
-                result: { ok: true, reason: rendezvousResult.reason },
-                handler: null,
-                cardMessageId: null,
-              };
-            } else {
-              // rendezvous failed mid-flight; cannot fallback (bg already processing)
-              logger.error(
-                `rendezvous: inject failed mid-flight reason=${rendezvousResult.reason} ` +
-                  `(no fallback possible)`,
-              );
-              const failText =
-                rendezvousResult.reason === 'timeout'
-                  ? `⏱ bg 处理超时（60s 内未完成），已停止等待。bg 可能仍在后台运行。`
-                  : rendezvousResult.reason === 'socket_closed'
-                  ? `⚠️ Claude daemon 已停止，无法处理 reply。请联系管理员重启 daemon。`
-                  : `⚠️ Reply 失败：${rendezvousResult.reason}`;
-              await this.replyFn(failText, {
-                messageId, openId, requestUuid: stableUuid(messageId),
-              });
-              return {
-                result: { ok: false, reason: rendezvousResult.reason },
-                handler: null,
-                cardMessageId: null,
-              };
-            }
-          } else {
-            logger.warn(`rendezvous: fallback to SDK because ${eligibility.reason}`);
-          }
-        }
-        // Fallback / no rendezvous: v2.3.5/3.6 path
-        const roster = _bgConflictHooks.readRoster();
-        const short = sessionUuid.slice(0, 8);
-        const worker = roster?.workers?.[short];
-        if (fromAgentViewReply && worker) {
-          // v2.3.5: stop bg, fall through
-          logger.info(
-            `runChatSDK: reply 路径 fallback 自动 stop bg worker ${short}(pid=${worker.pid})`,
-          );
-          try {
-            await new Promise<void>((resolve, reject) => {
-              require('node:child_process').execFile(
-                'claude', ['stop', short],
-                (err: any) => {
-                  const msg = err?.stderr || err?.message || String(err);
-                  if (err && !/No job matching/i.test(msg)) {
-                    logger.warn(`runChatSDK: reply 路径 claude stop 失败: ${msg}`);
-                  }
-                  resolve();
-                },
-              );
-            });
-            await new Promise(r => setTimeout(r, 3000));
-          } catch {
-            // graceful continue
-          }
-        }
-        const roster2 = _bgConflictHooks.readRoster();
-        const worker2 = roster2?.workers?.[short];
-        if (worker2 && !fromAgentViewReply) {
-          // 冲突卡路径（非 reply 路径）— 保持 v2.3.5/3.6 行为
-          // ... (existing 3-button conflict card logic) ...
-        }
-      }
-```
-
-(Trim the v2.2.11 conflict card branch to keep behavior; refer to existing lines for the exact text.)
-
-Add the imports at the top of bot.ts:
+After the existing `SERVICE_UNAVAILABLE_REPLY` import, add:
 
 ```typescript
 import { checkRendezvousEligibility } from '../agent-view/rendezvous-fallback';
 import { RendezvousClient } from '../agent-view/rendezvous-client';
 import { readLastAssistantTurn } from '../agent-view/jsonl-last-assistant';
+import { formatTokenCount } from './card-updater';
+import type { SendMessageResult } from '../proxy/session';
 ```
 
-Add a helper function (near other private helpers):
+(The last import gets the existing `SendMessageResult` type from `src/proxy/session.ts:21-33`.)
+
+- [ ] **Step 2: Add a helper near other private methods**
+
+Insert before the `runChatSDK` method (around line 1380):
 
 ```typescript
-function formatTokens(usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null }): string {
-  const total = usage.input_tokens + usage.output_tokens
-    + (usage.cache_creation_input_tokens ?? 0)
-    + (usage.cache_read_input_tokens ?? 0);
-  if (total >= 1000) return `${(total / 1000).toFixed(1)}K tokens`;
-  return `${total} tokens`;
+  /**
+   * Build a synthetic SendMessageResult for the rendezvous reply path.
+   * The existing handleChat post-processing (registry.upsert, spoolQueue
+   * finalize, etc.) expects a real SendMessageResult, so we construct
+   * one from the rendezvous result + last assistant turn.
+   */
+  private buildRendezvousResult(
+    rendezvousResult: { durationMs?: number; patches?: StatePatch[] },
+    lastTurn: LastAssistantTurn | null,
+    jsonlPath: string | null,
+  ): SendMessageResult {
+    return {
+      response: lastTurn?.text ?? '(bg 完成)',
+      costUsd: 0,
+      durationMs: rendezvousResult.durationMs ?? 0,
+      sessionId: '',
+      jsonlPath,
+      sessionStatus: 'active',
+      tokensIn: lastTurn?.usage.input_tokens ?? 0,
+      tokensOut: lastTurn?.usage.output_tokens ?? 0,
+    };
+  }
+```
+
+(Add `StatePatch` and `LastAssistantTurn` to existing imports if not present.)
+
+- [ ] **Step 3: INSERT the rendezvous branch BEFORE the existing pre-step block**
+
+In `src/feishu/bot.ts`, find the existing block that starts with the comment "v2.2.11: bg-worker 并发 **拒绝**" (around line 1460-1473, BEFORE the `if (sessionUuid && !isNew)` block) or alternatively INSERT it as the FIRST thing inside the existing `if (sessionUuid && !isNew)` block. The cleaner approach is to add it as a separate conditional before the existing one.
+
+Insert this NEW block immediately BEFORE the existing `if (sessionUuid && !isNew) {` line:
+
+```typescript
+      // v2.4 (rendezvous-first): try inject reply into running bg via
+      // Claude CLI's rendezvous socket. On success, fall through to the
+      // existing post-processing (registry/spool finalize) with a
+      // synthetic SendMessageResult. On failure, control continues to
+      // the v2.3.5/3.6 claude-stop fallback below.
+      //
+      // Only entered when:
+      //   - rendezvous_enabled=true (config flag, PR 2 default off, PR 4 default on)
+      //   - fromAgentViewReply=true (Agent View Reply path, not regular chat)
+      //   - sessionUuid && !isNew (existing session, not new session creation)
+      let rendezvousSynthResult: SendMessageResult | null = null;
+      if (
+        sessionUuid && !isNew && fromAgentViewReply &&
+        config.get<boolean>('agent_view.rendezvous_enabled', false)
+      ) {
+        const short = sessionUuid.slice(0, 8);
+        const eligibility = await checkRendezvousEligibility(short);
+        if (eligibility.canUse && eligibility.rendezvousSock) {
+          logger.info(
+            `rendezvous: inject short=${short} text_len=${promptText.length} reason=bg_waiting`,
+          );
+          const rendezvousResult = await RendezvousClient.injectReply({
+            short,
+            text: promptText,
+            rendezvousSock: eligibility.rendezvousSock,
+            timeoutMs: config.get<number>('agent_view.rendezvous_timeout_ms', 60_000),
+          });
+          if (rendezvousResult.ok) {
+            // Success: read response, build synthetic result, fall through
+            const lastTurn = eligibility.jsonlPath
+              ? await readLastAssistantTurn(eligibility.jsonlPath)
+              : null;
+            rendezvousSynthResult = this.buildRendezvousResult(
+              rendezvousResult,
+              lastTurn,
+              eligibility.jsonlPath ?? null,
+            );
+            logger.info(
+              `rendezvous: bg completed reason=${rendezvousResult.reason} ` +
+                `duration=${rendezvousResult.durationMs}ms tokens_out=${lastTurn?.usage.output_tokens ?? 0}`,
+            );
+            // Compose the user-facing text and send it as a chat reply
+            // (the rendezvous path produces a TEXT reply, not a card).
+            // replyFn is the callback set in constructor (FeishuBot.ts:124),
+            // accepts { messageId, openId, requestUuid } - NOT replyTo
+            // (which requires a full SpoolMessage we don't have here).
+            const responseText = lastTurn?.text
+              ?? rendezvousResult.patches?.find(p => p.detail)?.detail
+              ?? '(bg 完成)';
+            const tokenCount = (lastTurn?.usage.input_tokens ?? 0)
+              + (lastTurn?.usage.output_tokens ?? 0)
+              + (lastTurn?.usage.cache_creation_input_tokens ?? 0)
+              + (lastTurn?.usage.cache_read_input_tokens ?? 0);
+            const replyText =
+              `✅ Claude 已处理完你的消息。\n\n` +
+              `${responseText}\n\n` +
+              `⏱ ${rendezvousResult.durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`;
+            if (messageId) {
+              await this.replyFn(replyText, {
+                messageId,
+                openId,
+                requestUuid: stableUuid(messageId),
+              });
+            } else {
+              // Defensive: no messageId, use openId as fallback
+              await this.replyFn(replyText, {
+                openId,
+                requestUuid: uniqueUuid(),
+              });
+            }
+            // FALL THROUGH to existing post-processing using rendezvousSynthResult.
+            // The if (rendezvousSynthResult) check below swaps it in.
+          } else {
+            // Failure (timeout / socket_closed / state_error / daemon_error):
+            // bg may already be processing, so we cannot fallback to SDK
+            // (would create a new conflict). Report error to user.
+            logger.error(
+              `rendezvous: inject failed mid-flight reason=${rendezvousResult.reason} ` +
+                `(no fallback possible)`,
+            );
+            const failText =
+              rendezvousResult.reason === 'timeout'
+                ? `⏱ bg 处理超时（60s 内未完成），已停止等待。bg 可能仍在后台运行。`
+                : rendezvousResult.reason === 'socket_closed'
+                ? `⚠️ Claude daemon 已停止，无法处理 reply。请联系管理员重启 daemon。`
+                : `⚠️ Reply 失败：${rendezvousResult.reason}`;
+            await this.replyFn(failText, {
+              openId,
+              requestUuid: uniqueUuid(),
+            });
+            // Don't fall through to SDK; mark this as a sentinel that the
+            // post-processing should NOT do (no real result to record).
+            rendezvousSynthResult = { __skipPostProcess: true } as any;
+          }
+        } else {
+          logger.warn(`rendezvous: fallback to SDK because ${eligibility.reason}`);
+        }
+      }
+```
+
+(We use `rendezvousSynthResult` as a sentinel to either inject a synthetic result OR skip post-processing. To keep types clean, we can use a discriminated approach instead — see Step 4 simplification.)
+
+- [ ] **Step 4: Simplify the type-safe approach**
+
+The above `__skipPostProcess: true` cast is a code smell. Better approach: handle the reply in a separate path that doesn't go through `handleChat`'s post-processing. Wrap the rendezvous reply in a private method:
+
+Replace Step 3's sentinel approach with this cleaner pattern. After the rendezvous injection (success or failure), call a dedicated method that:
+- Reads JSONL for response
+- Sends reply via replyFn
+- Marks spool replied + done
+- DOES NOT return to the handleChat post-processing
+
+To do this, throw a `ReplyHandledSentinel` exception. The handleChat caller (bot.ts:1058) catches it as a special case.
+
+```typescript
+// In src/feishu/bot.ts, add:
+class ReplyHandledSentinel extends Error {
+  constructor(public readonly reason: 'rendezvous_ok' | 'rendezvous_fail') {
+    super(`reply_handled:${reason}`);
+    this.name = 'ReplyHandledSentinel';
+  }
 }
 ```
 
-- [ ] **Step 3: Run typecheck**
+Then in the rendezvous branch, instead of setting `rendezvousSynthResult`, throw the sentinel:
+
+```typescript
+            // (inside the success block)
+            throw new ReplyHandledSentinel('rendezvous_ok');
+
+            // (inside the failure block)
+            throw new ReplyHandledSentinel('rendezvous_fail');
+```
+
+And in the runChatSDK entry point wrapper (we'll modify handleChat in Task 7), catch the sentinel and return early.
+
+**Wait** — `runChatSDK` is called from handleChat and handleReply. handleReply (manager.ts:870) doesn't have post-processing that consumes `result`. handleChat (bot.ts:1058) does.
+
+The cleanest split:
+- Add a check at the top of `runChatSDK`: if `fromAgentViewReply: true` AND rendezvous is enabled, run rendezvous FIRST. If rendezvous handles it (success or fail), return immediately without doing SDK work. If rendezvous is not eligible, fall through to existing logic.
+
+Modify `runChatSDK` like this (pseudocode, full code in step 5):
+
+```typescript
+public async runChatSDK(params): Promise<{ result, handler, cardMessageId }> {
+  const { fromAgentViewReply, ... } = params;
+  
+  // v2.4 rendezvous-first: short-circuit for Agent View Reply
+  if (fromAgentViewReply && config.get<boolean>('agent_view.rendezvous_enabled', false)) {
+    const handled = await this.tryRendezvousReply(params);
+    if (handled) {
+      // Reply already sent + spool finalized. Return empty result.
+      return { result: null as any, handler: null, cardMessageId: null };
+    }
+    // eligibility failed → fall through to existing v2.3.5/3.6 path
+  }
+  
+  // ... existing runChatSDK body unchanged ...
+}
+```
+
+The `tryRendezvousReply` private method:
+- Checks eligibility
+- Calls RendezvousClient.injectReply
+- On success: read JSONL, send reply via replyFn, markReplied+markDone, return true
+- On failure: send error reply, markReplied+markDone, return true
+- On canUse=false: return false (caller falls through to SDK)
+
+This is much cleaner. **Use this approach instead of Step 3's sentinel.**
+
+- [ ] **Step 5: Implement tryRendezvousReply as a private method**
+
+Insert this method into `FeishuBot` class (near other private methods like `claimOne`):
+
+```typescript
+  /**
+   * Try to handle an Agent View Reply via the rendezvous socket.
+   * Returns true if handled (success or failure message already sent
+   * to user + spool finalized). Returns false if rendezvous is not
+   * eligible (caller should fall through to SDK).
+   */
+  private async tryRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
+    messageId?: string;
+  }): Promise<boolean> {
+    const { openId, sessionUuid, promptText, messageId } = params;
+    const short = sessionUuid.slice(0, 8);
+    const eligibility = await checkRendezvousEligibility(short);
+    if (!eligibility.canUse || !eligibility.rendezvousSock) {
+      logger.warn(`rendezvous: fallback to SDK because ${eligibility.reason}`);
+      return false;
+    }
+    logger.info(
+      `rendezvous: inject short=${short} text_len=${promptText.length} reason=bg_waiting`,
+    );
+    const rendezvousResult = await RendezvousClient.injectReply({
+      short,
+      text: promptText,
+      rendezvousSock: eligibility.rendezvousSock,
+      timeoutMs: config.get<number>('agent_view.rendezvous_timeout_ms', 60_000),
+    });
+    // Helper: build reply text
+    const lastTurn = eligibility.jsonlPath
+      ? await readLastAssistantTurn(eligibility.jsonlPath)
+      : null;
+    const responseText = lastTurn?.text
+      ?? rendezvousResult.patches?.find(p => p.detail)?.detail
+      ?? '(bg 完成)';
+    const tokenCount = (lastTurn?.usage.input_tokens ?? 0)
+      + (lastTurn?.usage.output_tokens ?? 0)
+      + (lastTurn?.usage.cache_creation_input_tokens ?? 0)
+      + (lastTurn?.usage.cache_read_input_tokens ?? 0);
+    const durationMs = rendezvousResult.durationMs ?? 0;
+    let replyText: string;
+    let ok: boolean;
+    if (rendezvousResult.ok) {
+      replyText = `✅ Claude 已处理完你的消息。\n\n${responseText}\n\n` +
+                  `⏱ ${durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`;
+      ok = true;
+    } else {
+      // Failure: no fallback possible
+      replyText = rendezvousResult.reason === 'timeout'
+        ? `⏱ bg 处理超时（60s 内未完成），已停止等待。bg 可能仍在后台运行。`
+        : rendezvousResult.reason === 'socket_closed'
+        ? `⚠️ Claude daemon 已停止，无法处理 reply。请联系管理员重启 daemon。`
+        : `⚠️ Reply 失败：${rendezvousResult.reason}`;
+      ok = false;
+    }
+    // Send the reply
+    if (messageId) {
+      await this.replyFn(replyText, { messageId, openId, requestUuid: stableUuid(messageId) });
+    } else {
+      await this.replyFn(replyText, { openId, requestUuid: uniqueUuid() });
+    }
+    // Spool finalize (caller would normally do this via handleChat post-processing,
+    // but we bypassed that path, so do it here).
+    if (messageId) {
+      // Find the SpoolMessage for this messageId to get serialKey
+      // In practice, handleReply path's caller (manager.ts:901) already does
+      // markReplied+markDone in its finally block, so we may double-call.
+      // That's idempotent (moveMessage no-ops if file doesn't exist).
+      // For safety, we still do it here since tryRendezvousReply may be called
+      // from other paths.
+      // serialKey is conventionally sessionUuid for reply path.
+      this.spoolQueue.markReplied(messageId, sessionUuid);
+      this.spoolQueue.markDone(messageId, sessionUuid);
+    }
+    return true;  // handled (success or failure message sent)
+  }
+```
+
+- [ ] **Step 6.5: Make SDK path also send a chat-text reply (P1-4)**
+
+The rendezvous path's `tryRendezvousReply` sends its own chat-text reply. The SDK path (the existing `sessionManager.sendMessage` call inside `runChatSDK`) only patches a card. We need the SDK path to also send a chat-text reply, so the user gets response + token stats regardless of which path ran.
+
+In `src/feishu/bot.ts`, find the call to `this.sessionManager.sendMessage(...)` inside `runChatSDK` (around line 1228, in the `handleChatNonStreaming` path — wait, that's a separate function. The actual SDK call inside `runChatSDK` proper is in the `claude -p` invocation that `runChatSDK` orchestrates).
+
+Looking at the structure: `runChatSDK` doesn't directly call `sessionManager.sendMessage`. It spawns the `claude -p` process via `_doStopAndSend`-like flow. The response is delivered via the CardUpdater or via a streaming/non-streaming helper.
+
+**Simpler approach**: in `runChatSDK`, AFTER the existing conflict-card and SDK-spawn logic completes (right before the function returns), check if `fromAgentViewReply=true` AND we have a real `SendMessageResult` (i.e., SDK path was taken, not rendezvous). If so, send a chat-text reply with response + token stats.
+
+Add this just before the final `return { result, handler, cardMessageId };` of the existing `runChatSDK`:
+
+```typescript
+    // P1-4: SDK fallback path - send a chat-text reply with response + token stats
+    // (rendezvous path already sent one in tryRendezvousReply)
+    if (fromAgentViewReply && result?.response) {
+      const responseText = result.response;
+      const tokenCount = (result.tokensIn ?? 0) + (result.tokensOut ?? 0);
+      const replyText = responseText.length > 0
+        ? `✅ Claude 已处理完你的消息。\n\n${responseText}\n\n` +
+          `⏱ ${result.durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`
+        : `✅ Claude 已处理完你的消息（无文本响应）。`;
+      if (messageId) {
+        await this.replyFn(replyText, { messageId, openId, requestUuid: stableUuid(messageId) });
+      }
+    }
+```
+
+(This goes inside the existing `runChatSDK` body, after the SDK-spawn logic but before the final return. The actual location depends on the function's structure — see Step 7 to verify.)
+
+- [ ] **Step 6: Wire runChatSDK to call tryRendezvousReply first**
+
+At the top of `runChatSDK` (right after the destructuring of params, before the existing `if (sessionUuid && !isNew)` block):
+
+```typescript
+  public async runChatSDK(params: {
+    openId: string;
+    sessionUuid: string;
+    cwd: string;
+    settingsPath?: string;
+    promptText: string;
+    serialKey: string;
+    isNew?: boolean;
+    messageId?: string;
+    fromAgentViewReply?: boolean;
+  }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null }> {
+    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId, fromAgentViewReply = false } = params;
+
+    // v2.4 rendezvous-first: short-circuit for Agent View Reply
+    if (
+      fromAgentViewReply &&
+      config.get<boolean>('agent_view.rendezvous_enabled', false)
+    ) {
+      const handled = await this.tryRendezvousReply({
+        openId, sessionUuid: inputSessionUuid, promptText, messageId,
+      });
+      if (handled) {
+        // Reply already sent, spool already finalized. Return empty.
+        return {
+          result: null as unknown as SendMessageResult,
+          handler: null as unknown as PermissionHandler,
+          cardMessageId: null,
+        };
+      }
+      // Fall through to existing path (eligibility failed)
+    }
+
+    // ... rest of existing runChatSDK body unchanged ...
+```
+
+(The `null as unknown as X` casts are safe because the reply path (handleReply) doesn't read the return value, and the handleChat path is bypassed by the early return.)
+
+- [ ] **Step 7: Run typecheck**
 
 Run: `bun run typecheck`
 Expected: clean.
 
-- [ ] **Step 4: Run existing tests**
+- [ ] **Step 8: Run existing tests**
 
 Run: `bun test tests/unit/feishu/ 2>&1 | tail -10`
-Expected: PASS (all existing tests still pass; flag is off by default so old path runs).
+Expected: PASS (all existing tests still pass; flag is off by default so tryRendezvousReply is not called).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/feishu/bot.ts
-git commit -m "feat(bot): runChatSDK pre-step 走 rendezvous 优先, 老路径 fallback"
+git commit -m "feat(bot): runChatSDK 走 tryRendezvousReply 优先, 老路径 fallback"
 ```
 
 ---
@@ -1416,7 +1777,7 @@ git commit -m "feat(bot): runChatSDK pre-step 走 rendezvous 优先, 老路径 f
 - Modify: `src/agent-view/manager.ts:870-938` (handleReply)
 - Test: `tests/unit/feishu/bot-command.test.ts` (regression)
 
-- [ ] **Step 1: Add empty text defense + markSent call**
+- [ ] **Step 1: Add empty text defense + markSent + JSONL fallback reply**
 
 In `src/agent-view/manager.ts`, modify the `handleReply` method (around line 870):
 
@@ -1456,7 +1817,13 @@ Replace the existing handleReply (lines 870-938) with:
     // finally 里的 clear() 仍保留,作为兜底 (idempotent)
     await this.expectedReply.markSent(openId);
 
-    // 3. runChatSDK, try/finally 保证 markSent 幂等 + 错误兜底
+    // 3. runChatSDK
+    //    - rendezvous path (tryRendezvousReply in bot.ts): sends a chat-text
+    //      reply with response + token stats, then returns. Spool finalized
+    //      by bot.ts via markReplied+markDone.
+    //    - SDK fallback path: cards get patched live, but no chat text is
+    //      sent. We send a chat text here, after runChatSDK returns, by
+    //      reading the latest assistant turn from the session's JSONL.
     let sdkError: any = null;
     try {
       await this.deps.runChatSDK({
@@ -1473,12 +1840,38 @@ Replace the existing handleReply (lines 870-938) with:
     } finally {
       await this.expectedReply.clear(openId);
     }
+
     if (sdkError) {
       await this.deps.replyFn(`❌ Reply 失败:${sdkError?.message ?? sdkError}`, { openId });
+      return;
     }
-    // Note: successful runChatSDK now sends its own reply (with response text)
-    // via the new rendezvous path. We no longer send the generic "✅ 已处理" here
-    // because runChatSDK has already replied.
+
+    // P1-4: For SDK fallback path, runChatSDK didn't send a chat-text reply.
+    // Send one now from the latest JSONL turn (response + token stats).
+    // We can't easily distinguish "rendezvous sent already" from "SDK path
+    // needs fallback reply" at this layer, so we always try. The rendezvous
+    // path's reply is already delivered, but if the SDK path is the one
+    // that ran, the JSONL turn reflects the SDK's response.
+    //
+    // Note: for the rendezvous path, runChatSDK has already called replyFn
+    // (via tryRendezvousReply). Reading the same JSONL and sending again
+    // would double-reply. We need a way to skip this. The simplest: check
+    // if a reply was already sent for this openId recently. Use a lightweight
+    // marker: pass a flag via the SpoolQueue or via user-mapping.
+    //
+    // Concrete approach: handleReply doesn't have visibility into whether
+    // rendezvous or SDK handled the reply. The cleanest fix: move the
+    // success-reply-sending into runChatSDK's BOTH paths (Task 6's
+    // tryRendezvousReply already does this; add a similar post-reply for
+    // the SDK path).
+    //
+    // For this Task 7, we LEAVE the SDK path's success-reply logic for a
+    // follow-up: in the SDK path of runChatSDK (after SessionManager.sendMessage
+    // returns), send a chat-text reply using the same JSONL-last-turn helper.
+    // This is a clean follow-up to Task 6.
+    //
+    // For now: do nothing here (rendezvous path already replied; SDK path
+    // relies on the user seeing the live card updates).
   }
 ```
 
@@ -1603,15 +1996,43 @@ Pre-req: deploy PR 2 with `rendezvous_enabled = true` in config.toml.
    - Terminal: session is `stopped`
    - state.json: `state: stopped, detail: killed`
 
-## Scenario 5: daemon 重启
+## Scenario 5: rendezvous socket unavailable (daemon_down fallback)
+
+**Important**: there are TWO daemons in this system, do not confuse:
+- **cc-linker bot daemon** (`~/.cc-linker/owner.lock`): runs the Feishu bot. Killing it stops the BOT, not the bg.
+- **Claude bg supervisor daemon** (`/tmp/cc-daemon-503/...`): manages bg workers. Owns the rendezvous sockets.
+
+To simulate "rendezvous unavailable" without killing the Claude daemon (which we don't have a clean way to restart from the CLI):
+1. Continue from Scenario 1 (bg is running, waiting)
+2. Find the rendezvous socket for the bg session:
+   ```bash
+   SOCK=$(jq -r '.workers["<short>"].rendezvousSock' ~/.claude/daemon/roster.json)
+   ```
+3. Move the socket file (or chmod 000) so the bot can't connect:
+   ```bash
+   mv "$SOCK" "${SOCK}.disabled"
+   ```
+4. In Feishu, send a reply
+5. **Verify**:
+   - `checkRendezvousEligibility` returns `daemon_down` (socket missing)
+   - Bot falls back to SDK path
+   - `claude stop` runs (from v2.3.5/3.6 fallback)
+   - Bot reply comes back with response text (from SDK path's chat-text reply in Task 6 Step 6.5)
+6. Restore the socket:
+   ```bash
+   mv "${SOCK}.disabled" "$SOCK"
+   ```
+
+## Scenario 6: cc-linker bot daemon restart (separate from Claude daemon)
 
 1. Continue from Scenario 1
-2. `kill -9 $(cat ~/.cc-linker/daemon.pid)` (or `cc-linker daemon stop`)
-3. In Feishu, send a reply (the bg should still be alive in Claude daemon)
+2. Restart only the **bot** daemon: `cc-linker daemon stop && cc-linker start --daemon` (or `bun run deploy`)
+3. Wait for bot to come back up (~5s)
 4. **Verify**:
-   - bot reply indicates daemon 不可用
-   - Or, the rendezvous falls back to SDK
-   - Or, the reply completes normally (depending on which daemon — Claude vs cc-linker)
+   - The Feishu bot is responsive to new messages
+   - The bg is still running (Claude daemon was not affected)
+   - The bot's `restoreExpectedReplyStates` correctly restores any in-flight expectedReply
+   - Any active Agent View state is preserved (attached watchers restart)
 ```
 
 - [ ] **Step 2: Run on local dev machine**
@@ -1709,7 +2130,7 @@ git commit -m "feat(agent_view): rendezvous_enabled default true (v2.4 GA)"
 - `RendezvousCompletionReason` — Task 3 defines, Task 6's `result.reason` matches. ✓
 - `markSent` — Task 4 defines (in `ExpectedReplyState`), Task 7 calls. Same method name. ✓
 - `readLastAssistantTurn(jsonlPath)` — Task 1 defines, Task 6 calls. Same signature. ✓
-- `formatTokens` — Task 6 defines, only used in Task 6. ✓
+- `formatTokenCount` — exists in `card-updater.ts:503`, Task 6 imports and reuses ✓
 - `config.get<boolean>('agent_view.rendezvous_enabled', false)` — Task 5 introduces, Task 6 reads. Same key. ✓
 - `stableUuid(messageId)` — exists in bot.ts, Task 6 uses. ✓
 - `replyTo` method — exists in bot.ts, Task 6 uses. ✓
