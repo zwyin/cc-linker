@@ -4,6 +4,106 @@ All notable changes to cc-linker are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/), version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-06-13
+
+Agent View 在这个版本完成两次大改造:
+
+1. **数据源切到 `~/.claude/jobs/<short>/state.json`**(v2.3 系列): CLI 的 background
+   session 状态机由 `state.json` 落盘, `/agents` 列表、Peek、状态名都从这里读;
+   `claude agents --json` 在 v2.1.163 起 `status` 始终为 `idle`, 仅保留为
+   smoke test。
+2. **Rendezvous Reply GA**(v2.4): 飞书侧给 background waiting session 回复时,
+   不再 spawn 新 `claude` 进程, 而是通过 JSON-RPC 直接把 reply 喂回正在等待
+   的 daemon, 完整流式 reply 实时 patch 到分层 Feishu 卡片。
+   `[agent_view].rendezvous_enabled` 默认开启。
+
+### Added
+
+#### Agent View — state.json 数据源 (v2.3)
+
+- **`job-state.ts`** — 新模块, 包含 `readJobState` / `readAllJobStates` /
+  `jobStateToSession` 三个主入口, 把 `~/.claude/jobs/<short>/state.json` envelope
+  映射为 `AgentSession`(waiting / busy / idle / completed, 🛑 / ✅ 前缀)。
+- **`CLAUDE_JOBS_DIR`** 路径常量(`src/utils/paths.ts`)。
+- **`snapshot-fetcher` 流水线**: VersionGuard → DaemonProbe → `claude agents --json`
+  smoke test(返回值丢弃) → `readAllJobStates()` 为主数据源 → `roster.json` +
+  `daemon.log` 兜底 `dispatch.source` → `deriveNameFromJsonl` 仅做 cold-path
+  fallback。
+- **Card v2.3** — `buildListCard` 改为 waiting-first 排序, detail 行作为副标题,
+  footer 注明 "data: state.json"。
+- **Peek 优先用 `state.json.linkScanPath`**(Tier 1a), 比 JSONL index 更准。
+
+#### Agent View — Rendezvous Reply (v2.4)
+
+- **`RendezvousClient`**(`src/agent-view/rendezvous-client.ts`): JSON-RPC over UDS,
+  发 `reply` 给 daemon, 拉 state patch 流, 把流式 chunk 透传给 CardUpdater。
+- **`readLastAssistantTurn`**: 从 JSONL 抽取上一轮 assistant 输出, 灌入
+  Reply 卡片的 "AI 最近输出" 区。
+- **`checkRendezvousEligibility`**: 判断当前 session 是否满足 rendezvous reply
+  前置条件(bg waiting / daemon alive / linkScanPath 可达)。
+- **`runChatSDK` 改造**: rendezvous-first 路径, 不命中再 fall back 到 spawn
+  `claude -p`; reply 路径补 `markSent` (M1) + `messageId` 透传 + 空文本防御 (M7)
+  + 条件化完成消息。
+- **`[agent_view].rendezvous_enabled` 配置项**(默认 `true`) + `timeout_ms`
+  (默认 30000)。
+- **流式 reply 分层卡片** — header(状态 / 名称) + 流式 body(thinking + text) +
+  分组 action(Refresh / Reply / Stop / Cancel), CardUpdater 按 `stream.throttle_ms`
+  节流 patch。
+- **`/cancel` 命令** — 撤回当前 pending reply slot, 区分 `/stop` (杀 session)。
+
+### Changed
+
+- **Agent View 状态名优先级**: `state.json.name` > JSONL derive (cold fallback);
+  `name-cache.ts` 已退役。
+- **Completed session 限额 5 条**(v2.3.2), 老 settle session 不再塞满 list。
+- **`jobStateToSession` 状态合并**: `running` / `working` 且有 `needs` →
+  waiting, 简化前端分组。
+- **Reply UX**(v2.3.4 - v2.3.13):
+  - 独立 reply 消息 + 持续 reply, 不再原地改 list 卡;
+  - 抛弃自动持续 reply, 让 `expectedReply` 自然走 5min timeout;
+  - Reply prompt 升级到交互卡, 内嵌 AI 最近输出;
+  - Reply 智能 CAS 放宽 — 仅 `pending_new_session_claimed` 才拒, 自动清 transient entry;
+  - Reply 路径自动 stop bg, 用 pre-step 模式而不是递归 SDK。
+- **`handleChat` reply 路径**补 `markReplied` + `markDone` 释放 spool 锁(v2.3.11),
+  防 worker 卡死。
+- **`bot.handleChat` busy 路径**(v0.5.0 起): 检测到 bg worker 时升级发 3 按钮
+  bg-conflict 卡。
+- **README**(`README.md` + `README_en.md`): 用户视角重写, 把 "rendezvous" /
+  "spool" 等内部术语外翻为 "回到正在等待的 session" / "消息队列"。
+
+### Fixed
+
+- **state.json torn write 抢读**: 文件原子写中途读到不完整 JSON → 自动 retry,
+  日志 warn 但不抛(v2.3.1)。
+- **Reply 智能 CAS race**: user-mapping 残留 transient entry 不再 throw,
+  允许同 session 转换(v2.3.3 + v2.3.3 修订)。
+- **handleReply markSent + messageId 透传**(M1): rendezvous 流式 reply 启动后
+  立刻 mark sent, 防 watcher 重复发卡。
+- **rendezvous 空文本防御**(M7): assistant 输出空 chunk 不触发 patch。
+- **Code review round 1 — 6 issues**(commit `f25e53d`): 鉴权日志 / 错误码统一 /
+  patch 失败兜底 / linkScanPath 校验 / config default / 状态名 fallback。
+- **Code review round 2 — JSDoc drift + wait only on success**(commit `71fa35f`):
+  注释和实现同步, rendezvous 流只在 daemon 真返回 success 时 await。
+- **handleReplyRequest 文案与 v2.3.9 一致化**(v2.3.10)。
+
+### Tests
+
+- **15 real + 3 negative state.json fixtures**(`tests/fixtures/agent-view/job-states/`)。
+- **Job-state hooks**: `_jobStateHooks.daemonLogReader` / `daemonProbe` 改为可变
+  hook, 避免跨文件 mock 污染。
+- **Integration canary**: waiting → Reply button 的端到端用例。
+- **Rendezvous regression**: 接入不影响 `/agents` 既有路径(`890b67c`)。
+- **QA E2E v2.4 rendezvous 6 场景**(`docs/qa/`)。
+
+### Docs
+
+- `CLAUDE.md`: Agent View 数据源段落改写为 "state.json 主, `agents --json`
+  smoke, `daemon.log` 兜底, JSONL 仅 cold fallback"。
+- `docs/spec/` + `docs/plan/`: rendezvous reply 完整 spec + plan + 两轮 review
+  修复(共 25 处 review 落地)。
+- `/cancel` 命令文档补完, 明确和 `/stop` 的区别。
+- v2.4 GA 状态描述同步: state emoji 顺序 / 名称来源 / 溢出折叠。
+
 ## [0.5.1] - 2026-06-09
 
 ### Fix: Completed session 的 Peek/Attach 按钮报"未知操作"
