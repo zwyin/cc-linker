@@ -152,11 +152,15 @@ Send these in a Feishu private chat with the Bot:
 | `/resume <index\|UUID>` | Get terminal resume command |
 | `/model [index\|alias\|--clear]` | View, set, or clear the default model |
 | `/status` | Check status |
+| `/stop` | **Hard-kill** the current session's claude process (works for both regular and bg sessions; state is cleared automatically) |
+| `/cancel` | **Soft-exit** the Agent View "waiting for reply" state — only clears `pending_agent_reply`; **the bg keeps running**, and the next chat message takes the default path instead of rendezvous |
 | `/whoami` | Get your open_id |
 
 > **Note 1**: numeric indexes used by `/switch` and `/resume` come from the most recent `/list` snapshot and expire after 10 minutes by default. Run `/list` again if needed.
 >
 > **Note 2**: `/new` also supports a "prepare first, create on the next message" flow. `/model` sets the per-user default model until you clear it with `/model --clear`.
+>
+> **Note 3**: `/stop` vs `/cancel` — `/stop` kills the process (irreversible), `/cancel` only clears the waiting state (bg keeps running). Use `/cancel` to immediately exit "I just clicked [Reply]" mode; use `/stop` to terminate a hung Claude process. The two are independent.
 
 ### Bot Runtime Management
 
@@ -172,21 +176,21 @@ Send these in a Feishu private chat with the Bot:
 
 ## Agent View Integration
 
-Agent View is cc-linker's "remote session takeover" capability: from Feishu, inspect live status of any background `claude` session running on your terminal, then Peek its log tail, Reply with text, Stop the process, or Attach it back into the main chat flow. It depends on the `claude agents --json` interface (Claude Code CLI >= 2.1.139 required).
+Agent View is cc-linker's "remote session takeover" capability: from Feishu, inspect live status of any background `claude` session running on your terminal, then Peek its log tail, Reply with text, Stop the process, or Attach it back into the main chat flow. The primary data source is `~/.claude/jobs/<short>/state.json` (the authoritative state machine maintained by Claude CLI). Requires Claude Code CLI >= 2.1.139 with the daemon running.
 
 ### Commands and Button Semantics
 
 | Entry | Behavior |
 |-------|----------|
-| `/agents` | Fetch all background sessions, group by busy / waiting / idle, send an interactive list card |
-| List card `[Peek]` | Grab session metadata + tail 30 lines of `claude logs <shortId>` (capped at 2KB), send as a peek card |
-| List card `[Reply]` | Shown only on waiting sessions: writes `pending_agent_reply` state, patches the trigger card to a waiting card, prompts the user to send text |
+| `/agents` | Fetch all background sessions, group by busy / waiting / idle / completed (completed group capped at 5, overflow shown as "… N more"), send an interactive list card; auto-fallback to plain text if card exceeds 25KB |
+| List card `[Peek]` | Resolves the latest assistant output via a 3-tier fallback: Tier 1 reads JSONL directly (via `state.json.linkScanPath` or JsonlIndex) → Tier 2 reads the roster parent JSONL (resume-from scenarios) → Tier 3 falls back to `claude logs`; sends a dedicated peek card |
+| List card `[Reply]` | Shown only on waiting sessions: writes `pending_agent_reply` state, patches the trigger card to a waiting card, prompts the user to send text (5-minute timeout) |
 | List card `[Stop]` | Shown only on busy sessions: first shows a confirmation card (to prevent mis-clicks), then `claude stop <shortId>` on confirm |
-| List card `[Attach]` | Switches the openId to that session; subsequent plain messages go through the SDK (preserves the user's defaultProvider) |
+| List card `[Attach]` | Switches the openId to that session; subsequent plain messages go through the SDK (preserves the user's defaultProvider); also auto-starts the Attached Card live watcher (see below) |
 | List card `[Refresh]` | Patches the original card (2s debounce); if messageId mismatches, sends a new card to avoid patching a stale card that was already overwritten |
 | List card `[Back to chat]` | Plain text reply, no state change, drops back into the regular message flow |
-| Peek card `[Cancel wait]` | Clears the `pending_agent_reply` state |
-| `/cancel` | Same as above (text form) |
+| Peek card `[❌ Cancel wait]` | Clears the `pending_agent_reply` state (only shown while a Reply wait is active) |
+| `/cancel` | Same as above, text command form |
 
 ### Configuration
 
@@ -200,16 +204,19 @@ A new `[agent_view]` section in `config.toml` (all keys optional — defaults ar
 # /agents list card [Refresh] debounce interval (ms)
 # refresh_min_interval_ms = 2000
 
-# How many recent lines of `claude logs` output the peek card shows
+# How many recent lines of `claude logs` output to fetch in Tier 3 fallback;
+# ignored when Tier 1/2 reads JSONL directly
 # peek_lines = 30
 
-# Peek card byte cap (over the cap is truncated by character; avoids Feishu card size limits)
+# Peek card recentOutput byte cap (over the cap is truncated by character;
+# avoids Feishu card size limits)
 # peek_max_bytes = 2048
 
 # waiting → how long to wait for the user's reply text before auto-cancelling (ms)
 # expected_reply_timeout_ms = 300000
 
-# Whether only `kind=background` sessions appear in the list
+# Whether to filter out daemon-spawned sub-agent sessions (source=spare);
+# only user-dispatched sessions appear in the list
 # background_only = true
 
 # Whether the Stop button needs a confirmation card
@@ -220,9 +227,17 @@ A new `[agent_view]` section in `config.toml` (all keys optional — defaults ar
 
 # Minimum gap between two replies on the Reply path (ms), anti-spam
 # reply_throttle_ms = 500
+
+# v2.4: inject reply via rendezvous socket + state.json polling
+# (replaces the old stop+SDK path)
+# rendezvous_enabled = true
+
+# v2.4: max time (ms) to wait for state.json to reach a terminal state
+# after submitting a reply
+# rendezvous_timeout_ms = 60000
 ```
 
-Corresponding environment variables (take precedence over the config file):
+Corresponding environment variables (take precedence over the config file; `min_claude_version`, `rendezvous_enabled`, `rendezvous_timeout_ms` are config-file only):
 
 | Variable | Field |
 |----------|-------|
@@ -235,7 +250,45 @@ Corresponding environment variables (take precedence over the config file):
 | `CC_LINKER_AGENT_VIEW_STOP_REQUIRES_CONFIRM` | `stop_requires_confirm` |
 | `CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS` | `reply_throttle_ms` |
 
-> **Prerequisite**: a `claude` daemon must be running locally (>= `agent_view.min_claude_version`). `/agents` first runs a `claude --version` version guard, then `claude agents --json` to grab the snapshot. When the version is too old, it returns a red error card without polluting the user's main flow.
+> **Prerequisite**: a `claude` daemon must be running locally (>= `agent_view.min_claude_version`). `/agents` first runs a `claude --version` version guard, then checks that `~/.claude/daemon/roster.json` exists, then reads `~/.claude/jobs/*/state.json` to build the snapshot. When the version is too old or the daemon is not running, it returns a red error card without polluting the user's main flow.
+
+### Live Progress Card
+
+When you `/switch` to a session that is actively processing, the Feishu overview card automatically refreshes every 10 seconds (`LiveProgressWatcher`), showing the latest assistant output, elapsed runtime, and time since last output — until the session finishes or the user sends a new message / switches / manually stops.
+
+```toml
+[feishu_bot.live_progress]
+# interval_ms = 10000     # poll interval (~133 min max duration = 800 ticks)
+# max_ticks = 800
+# max_patch_failures = 3  # auto-stop after 3 consecutive Feishu API failures
+```
+
+### Attached Card Auto-Refresh
+
+After a successful `[Attach]`, an `AttachedCardWatcher` is created automatically, polling the target session every 10 seconds and patching the card with the latest assistant output and runtime status. The card sets `update_multi: true` to prevent Feishu's concurrent-patch content-revert bug. Stop conditions mirror Live Progress Card (session ends, repeated patch failures, user intervention, bot shutdown, etc.).
+
+### Session Activity Sync (CLI-side Activity Detection)
+
+When the CLI side is actively using a session, sending a message to the same session from Feishu triggers a yellow warning card about concurrent conflict risk. The user can:
+- Wait for the CLI to finish
+- Click `⚠️ I understand the risk, send anyway` to force-send (auto-forces after 60s of inactivity)
+- Send a new message, which automatically overrides the old force-send request
+
+Detection signal priority: activity marker sidecar file > OS process detection (find claude process by cwd + sample child processes CPU) > JSONL mtime double-sampling.
+
+For 100% accurate CLI-side activity reporting, configure `cc-linker activity-hook` as a Claude Code hook (see "Enable CLI-side activity marker" section below).
+
+### BG-Conflict Rejection Card (Safety Guard)
+
+When a user Attaches to a session whose daemon background worker is still running and then sends a message, Feishu shows a three-choice recovery card:
+
+| Button | Behavior |
+|--------|----------|
+| 🛑 `[Stop bg and send]` | Runs `claude stop` → waits for worker to exit → falls back to the parent session → sends the message |
+| 🌿 `[Open new session]` | Creates a brand-new session for the message; original worker is unaffected |
+| ❌ `[Cancel]` | Cancels the send; bg worker is unaffected |
+
+This prevents two claude processes from sharing the same cwd and causing file-write conflicts (safety > convenience).
 
 ## Feishu Integration (First Supported Platform)
 
