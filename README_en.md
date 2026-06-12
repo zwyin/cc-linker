@@ -26,7 +26,7 @@ Have you ever found yourself in these situations:
 | Feature | Description |
 |---------|-------------|
 | Seamless cross-device switching | Chat app sessions resumed on terminal (with context & directory); terminal sessions visible in chat app |
-| Streaming card interaction | See Claude's thinking and replies in real-time in your chat app — no more "spinning wait" |
+| Streaming card interaction | See Claude's thinking, tool_use summary (≤80 chars), and replies in real-time in your chat app, with a 5s tick showing elapsed time — no more "spinning wait" |
 | SDK permission control | Optional SDK mode: approve/deny each tool use via interactive cards before Claude executes |
 | Image message support | Feishu images are downloaded automatically and passed to Claude for analysis |
 | Directory browsing | Use `/listDir` to browse directories and choose where the next new session should start |
@@ -45,12 +45,12 @@ Have you ever found yourself in these situations:
   <tr>
     <td align="center"><b>Session List</b><br><code>/list</code> to view all sessions</td>
     <td align="center"><b>Processing</b><br>Instant feedback after sending</td>
-    <td align="center"><b>Streaming Feedback</b><br>Real-time thinking process</td>
+    <td align="center"><b>Streaming Feedback</b><br>thinking + tool_use + reply, 5s tick</td>
   </tr>
   <tr>
     <td align="center"><img src="docs/images/feishu-list.png" alt="Feishu session list" width="280"></td>
     <td align="center"><img src="docs/images/feishu-start-processing.png" alt="Processing" width="280"></td>
-    <td align="center"><img src="docs/images/feishu-streaming-thinking.png" alt="Streaming thinking" width="280"></td>
+    <td align="center"><img src="docs/images/feishu-streaming-thinking.png" alt="Streaming thinking + tool_use + reply" width="280"></td>
   </tr>
 </table>
 
@@ -151,6 +151,7 @@ Send these in a Feishu private chat with the Bot:
 | `/switch <index\|UUID>` | Switch session |
 | `/resume <index\|UUID>` | Get terminal resume command |
 | `/model [index\|alias\|--clear]` | View, set, or clear the default model |
+| `/agents` | View the list of background `claude` sessions on the terminal (grouped by busy / waiting / idle / completed) — see "Agent View Integration" below |
 | `/status` | Check status |
 | `/stop` | **Hard-kill** the current session's claude process (works for both regular and bg sessions; state is cleared automatically) |
 | `/cancel` | **Soft-exit** the Agent View "waiting for reply" state — only clears `pending_agent_reply`; **the bg keeps running**, and the next chat message takes the default path instead of rendezvous |
@@ -184,7 +185,7 @@ Agent View is cc-linker's "remote session takeover" capability: from Feishu, ins
 |-------|----------|
 | `/agents` | Fetch all background sessions, group by busy / waiting / idle / completed (completed group capped at 5, overflow shown as "… N more"), send an interactive list card; auto-fallback to plain text if card exceeds 25KB |
 | List card `[Peek]` | Resolves the latest assistant output via a 3-tier fallback: Tier 1 reads JSONL directly (via `state.json.linkScanPath` or JsonlIndex) → Tier 2 reads the roster parent JSONL (resume-from scenarios) → Tier 3 falls back to `claude logs`; sends a dedicated peek card |
-| List card `[Reply]` | Shown only on waiting sessions: writes `pending_agent_reply` state, patches the trigger card to a waiting card, prompts the user to send text (5-minute timeout) |
+| List card `[Reply]` | Shown only on waiting sessions: triggers an "✍️ waiting for reply" card, just send text within 5 minutes. The processing card auto-refreshes every 5s (thinking + tool_use + reply). **If the bg runs and asks a new question, just type your reply in chat — you do NOT need to click [Reply] again** (v2.4.x chained reply) |
 | List card `[Stop]` | Shown only on busy sessions: first shows a confirmation card (to prevent mis-clicks), then `claude stop <shortId>` on confirm |
 | List card `[Attach]` | Switches the openId to that session; subsequent plain messages go through the SDK (preserves the user's defaultProvider); also auto-starts the Attached Card live watcher (see below) |
 | List card `[Refresh]` | Patches the original card (2s debounce); if messageId mismatches, sends a new card to avoid patching a stale card that was already overwritten |
@@ -228,14 +229,17 @@ A new `[agent_view]` section in `config.toml` (all keys optional — defaults ar
 # Minimum gap between two replies on the Reply path (ms), anti-spam
 # reply_throttle_ms = 500
 
-# v2.4: inject reply via rendezvous socket + state.json polling
-# (replaces the old stop+SDK path)
+# v2.4 GA: inject reply via rendezvous socket submit + state.json polling
+# Defaults to true (v2.4 GA flipped the default; previously opt-in).
+# Set to false to fall back to the v2.3.5 SDK path
 # rendezvous_enabled = true
 
 # v2.4: max time (ms) to wait for state.json to reach a terminal state
 # after submitting a reply
 # rendezvous_timeout_ms = 60000
 ```
+
+> **v2.4 GA default behavior**: Reply goes through the rendezvous channel by default, no setup needed. If the bg doesn't support rendezvous (daemon offline, bg truly processing, or socket missing), cc-linker automatically falls back to the legacy SDK path. To force the legacy behavior, explicitly set `rendezvous_enabled = false`.
 
 Corresponding environment variables (take precedence over the config file; `min_claude_version`, `rendezvous_enabled`, `rendezvous_timeout_ms` are config-file only):
 
@@ -251,6 +255,34 @@ Corresponding environment variables (take precedence over the config file; `min_
 | `CC_LINKER_AGENT_VIEW_REPLY_THROTTLE_MS` | `reply_throttle_ms` |
 
 > **Prerequisite**: a `claude` daemon must be running locally (>= `agent_view.min_claude_version`). `/agents` first runs a `claude --version` version guard, then checks that `~/.claude/daemon/roster.json` exists, then reads `~/.claude/jobs/*/state.json` to build the snapshot. When the version is too old or the daemon is not running, it returns a red error card without polluting the user's main flow.
+
+#### `waiting` State Decision (v2.4.x)
+
+**TL;DR: if the bg is waiting for user input (whether explicitly blocked or "pseudo-busy, real waiting"), it shows up in the `waiting` group with a [Reply] button.** The actual implementation uses the `checkRendezvousEligibility` decision tree, covering three cases:
+
+- `tempo=blocked && needs` — bg explicitly waits for user input
+- `state in {running, working} && needs` — CLI 2.1.163 behavior: the worker process is alive but is actually waiting for the user ("pseudo-busy, real waiting")
+- `state=blocked` — no needs but still in the `blocked` state (conservative: lets the user actively decide via [Peek])
+
+Sessions in any other busy/idle state do NOT show a `[Reply]` button — either the bg is truly processing (`tempo=active`, no needs), or it's already done / stopped.
+
+### Reply UX Improvements (v2.4.x)
+
+> **What you'll see**: after clicking [Reply], the original "↩️ waiting for reply" card stays in history and a new processing card appears. The processing card has three sections that refresh every 5 seconds:
+>
+> - **💭 Thinking**: Claude's current thinking blocks (concatenated)
+> - **🔧 Current action**: the tool Claude is calling + an input summary (≤80 chars, so you can scan what it's doing)
+> - **📝 Reply**: the final text Claude has produced so far
+>
+> When the bg runs and asks a new question, the processing card transitions seamlessly back to a "waiting for input" card (same card patched, not rebuilt) — just type your reply in chat. **5-second refresh is by design, not a hang** — hit [Refresh] to force update.
+
+#### Implementation details (optional reading)
+
+- **Layered cards**: original "↩️ waiting for reply" card **kept as history**; new processing card is sent (`buildProcessingCard() = buildStreamingCard('', '', 0)`, `card-updater.ts:483-484`). On `new_needs`, the same card is `patchWaitingCard` (`bot.ts:1602-1618`) — NOT `cancel()` (that would render a misleading gray "🛑 Cancelled" card)
+- **5s tick elapsed time**: streaming patches throttled at `bot.ts:1484`
+- **JSONL rich content**: `readLastAssistantTurn` extracts thinking blocks (joined with `\n`) + tool_use name + input summary (`INPUT_SUMMARY_MAX = 80`)
+- **`new_needs` chained reply**: rendezvous returns `new_needs` → `runChatSDK` passes `bgAskedNewQuestion` through to `handleReply` → `handleReply` re-`set()`s `expectedReply`
+- **markSent (M1) double-reply guard**: T2 immediately calls `expectedReply.markSent(openId)`, so any subsequent chat message during the 60s wait does NOT take the rendezvous path (`manager.ts:915-917` + `expected-reply-state.ts:130`)
 
 ### Live Progress Card
 
