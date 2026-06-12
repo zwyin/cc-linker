@@ -2,6 +2,8 @@ import { logger } from '../utils/logger';
 import { config } from '../utils/config';
 import type { ActivityResult } from '../utils/session-activity';
 import { esc } from './markdown-escape';
+import { buildWaitingCard } from '../agent-view/card';
+import type { AgentSessionStatus } from '../agent-view/types';
 
 export type CardState = 'processing' | 'streaming' | 'complete' | 'error' | 'cancelled';
 
@@ -26,7 +28,12 @@ export class CardUpdater {
   private client: FeishuClient;
   private cardMessageId: string | null = null;
   private lastPatchAt = 0;
-  private pendingUpdate: { thinking: string; text: string; elapsed: number } | null = null;
+  private pendingUpdate: {
+    thinking: string;
+    text: string;
+    elapsed: number;
+    toolUses: Array<{ name: string; inputSummary: string }>;
+  } | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly throttleMs: number;
   private readonly maxCardBytes: number;
@@ -42,6 +49,66 @@ export class CardUpdater {
 
   getCardMessageId(): string | null { return this.cardMessageId; }
   getState(): CardState { return this.state; }
+
+  /**
+   * v2.4.x: 接管一张已存在的卡片(例如 handleReplyRequest 创建的"等待输入"卡),
+   * 让后续 updateStream/complete/error 直接 patch 这张卡, 而不是新发。
+   *
+   * 不立即 patch — 由调用方后续的 updateStream() 触发首帧。
+   * 如果调用方想立刻把"等待输入"卡变成"处理中"卡, 传 initialPatch=true。
+   */
+  async adoptExistingCard(messageId: string, initialPatch = false): Promise<void> {
+    this.cardMessageId = messageId;
+    this.state = 'processing';
+    this.lastPatchAt = Date.now();
+    if (initialPatch) {
+      await this.patchCard(this.buildProcessingCard());
+    }
+  }
+
+  /**
+   * v2.4.x: 取消 pending timer + 清空 pendingUpdate。
+   *
+   * 必须在终态 patch (patchWaitingCard / complete / error) 之后调,
+   * 否则 5s 节流的 pending timer 会在终态后 fire, 把卡片 revert 回
+   * 上一次 updateStream 的内容 (例如从 "↩️ 回复" revert 成 "💭 处理中")。
+   *
+   * 这就是用户看到"处理中卡片卡在 3s 不刷新"的根因。
+   */
+  cancelPending(): void {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    this.pendingUpdate = null;
+  }
+
+  /**
+   * v2.4.x: bg 处理完一个 reply 又问新问题 (new_needs) 时, patch 卡回
+   * "等待输入" 状态(黄色 header + [取消等待] 按钮)。语义是 bg 没死, 只是
+   * 发完一个 turn 后又问下一个 — 跟 🛑 已取消 (cancel) 完全相反。
+   *
+   * 必须先 adoptExistingCard / startProcessing 设过 cardMessageId,
+   * 否则 patch 不知道 patch 哪张卡。
+   *
+   * 注意: buildWaitingCard 返回 string(JSON-serialized), 而 patchCard
+   * 期望 Record<string, unknown>。这里 parse 回来避免 double-encode。
+   * (其他 buildXxxCard 返回 object, 不用 parse。)
+   */
+  async patchWaitingCard(opts: {
+    name: string;
+    status: AgentSessionStatus;
+    waitingFor?: string;
+    cwd: string;
+    recentOutput?: string;
+    outputFormat?: 'markdown' | 'terminal';
+  }): Promise<void> {
+    const cardStr = buildWaitingCard(opts);
+    const card = JSON.parse(cardStr);
+    await this.patchCard(card);
+    // 状态切回 'processing' — 表达"在等用户回"(不是 cancelled, 不是 streaming)
+    this.state = 'processing';
+  }
 
   async startProcessing(openId: string): Promise<string> {
     const card = this.buildProcessingCard();
@@ -60,8 +127,18 @@ export class CardUpdater {
     return this.cardMessageId;
   }
 
-  async updateStream(thinking: string, text: string, elapsedMs: number): Promise<void> {
-    this.pendingUpdate = { thinking, text, elapsed: elapsedMs };
+  /**
+   * v2.4.x: updateStream 多接 toolUses 数组 (默认 []), 跟 thinking/text
+   * 一起放进 pendingUpdate。throttle 没变 (5s 默认), flushPending 统一
+   * 调 buildStreamingCard 渲染。
+   */
+  async updateStream(
+    thinking: string,
+    text: string,
+    elapsedMs: number,
+    toolUses: Array<{ name: string; inputSummary: string }> = [],
+  ): Promise<void> {
+    this.pendingUpdate = { thinking, text, elapsed: elapsedMs, toolUses };
     const now = Date.now();
     if (now - this.lastPatchAt >= this.throttleMs) {
       await this.flushPending();
@@ -77,8 +154,8 @@ export class CardUpdater {
     if (!this.pendingUpdate || !this.cardMessageId) return;
     // Clear any pending timer — we're flushing now, no need for deferred call
     if (this.pendingTimer) { clearTimeout(this.pendingTimer); this.pendingTimer = null; }
-    const { thinking, text, elapsed } = this.pendingUpdate;
-    await this.patchCard(this.buildStreamingCard(thinking, text, elapsed));
+    const { thinking, text, elapsed, toolUses } = this.pendingUpdate;
+    await this.patchCard(this.buildStreamingCard(thinking, text, elapsed, toolUses));
     this.pendingUpdate = null;
     this.state = 'streaming';
   }
@@ -397,38 +474,54 @@ export class CardUpdater {
     }
   }
 
+  /**
+   * v2.4.x: 初始处理卡用 streaming 布局 (跟 buildStreamingCard 一致),
+   * header 是 "💭 处理中" 而不是 "⏳ 正在处理...". 这样后续 updateStream
+   * patch 不会改 header, 视觉更连贯。用户也直接看到流式区域, bg 一写
+   * 内容就填充进去。
+   */
   private buildProcessingCard(): Record<string, unknown> {
-    return {
-      config: { wide_screen_mode: true, update_multi: true },
-      header: { title: { tag: 'plain_text', content: '⏳ 正在处理...' }, template: 'blue' },
-      elements: [
-        { tag: 'markdown', content: 'Claude 正在处理你的请求，预计 **2-10 秒**...' },
-        {
-          tag: 'action',
-          actions: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '🛑 停止处理' },
-              type: 'danger',
-              value: { tag: 'stop' },
-            },
-          ],
-        },
-      ],
-    };
+    return this.buildStreamingCard('', '', 0);
   }
 
-  private buildStreamingCard(thinking: string, text: string, elapsedMs: number): Record<string, unknown> {
+  /**
+   * v2.4.x: 富内容 streaming 卡片, 接收 thinking + toolUses + text + elapsedMs。
+   * 渲染顺序: 思考过程 → 当前操作 (工具调用) → 回复 → 已用时。
+   * 任意一段为空就跳过 (不显示空标题)。
+   */
+  private buildStreamingCard(
+    thinking: string,
+    text: string,
+    elapsedMs: number,
+    toolUses: Array<{ name: string; inputSummary: string }> = [],
+  ): Record<string, unknown> {
     const elapsedSec = Math.floor(elapsedMs / 1000);
     const elements: Array<Record<string, unknown>> = [];
     // Show full content but enforce byte limit to stay within Feishu's 30KB card body
     const maxThinkingBytes = Math.min(2000, this.maxCardBytes);
     const maxTextBytes = Math.min(8000, this.maxCardBytes);
+
     if (this.showThinking && thinking) {
-      elements.push({ tag: 'markdown', content: `**思考过程：**\n> ${esc(truncateBytes(thinking, maxThinkingBytes))}` });
+      elements.push({
+        tag: 'markdown',
+        content: `**思考过程：**\n> ${esc(truncateBytes(thinking, maxThinkingBytes))}`,
+      });
+    }
+    // v2.4.x: 当前操作 (工具调用) — 一个工具一行, 名字 + 摘要
+    if (this.showThinking && toolUses.length > 0) {
+      const lines = toolUses
+        .map(t => `🔧 \`${esc(t.name)}\` ${esc(t.inputSummary)}`)
+        .join('\n');
+      elements.push({
+        tag: 'markdown',
+        content: `**当前操作：**\n${lines}`,
+      });
     }
     if (text) {
-      elements.push({ tag: 'markdown', content: `**回复：**\n${esc(truncateBytes(text, maxTextBytes))}` });
+      elements.push({
+        tag: 'markdown',
+        content: `**回复：**\n${esc(truncateBytes(text, maxTextBytes))}`,
+      });
     }
     elements.push({ tag: 'markdown', content: `⏱ 已用时 ${elapsedSec}s` });
     elements.push({
@@ -500,7 +593,7 @@ function truncateBytes(text: string, maxBytes: number): string {
   return text.slice(0, low) + '...';
 }
 
-function formatTokenCount(n: number): string {
+export function formatTokenCount(n: number): string {
   if (n < 1000) return n.toString();
   if (n < 1_000_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;

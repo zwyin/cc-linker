@@ -10,6 +10,11 @@ import { sessionManager as defaultSessionManager } from '../proxy/session';
 import type { AgentViewManager } from '../agent-view/manager';
 import { isAgentViewValue } from '../agent-view/action';
 import { buildBgConflictCard } from '../agent-view/card';
+import { checkRendezvousEligibility } from '../agent-view/rendezvous-fallback';
+import { RendezvousClient, type StatePatch } from '../agent-view/rendezvous-client';
+import { readLastAssistantTurn, type LastAssistantTurn } from '../agent-view/jsonl-last-assistant';
+import { readJobState } from '../agent-view/job-state';
+import { formatTokenCount } from './card-updater';
 import { StreamChunk } from '../proxy/stream-parser';
 import { CardUpdater } from './card-updater';
 import { LiveProgressWatcher, isSessionProcessing, DEFAULT_LIVE_PROGRESS_CONFIG, type LiveProgressConfig } from './live-progress';
@@ -550,7 +555,7 @@ export class FeishuBot {
           );
         case 'agent_view_reply_request':
           await this.agentView.handleReplyRequest(
-            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd,
+            openId, valueObj.shortId, valueObj.sessionId, valueObj.cwd, messageId,
           );
           return null;
         case 'agent_view_cancel_reply':
@@ -864,10 +869,35 @@ export class FeishuBot {
     }
   }
 
-  /** Dispatch a `/` command message to the appropriate handler. */
+  /**
+   * Dispatch a `/` command message to the appropriate handler.
+   *
+   * v2.4.x fix: 命令消息不再经过 handleChat (走独立 fast path), 所以
+   * expectedReply 清空逻辑也从 handleChat 搬到这里, 保证所有写命令都清
+   * (包括 /list, /switch, /new, /stop 等)。否则用户 Agent View 流程里:
+   *   1. 点 [Reply] 设 expectedReply=session A
+   *   2. /switch B → user-mapping 切到 B, 但 expectedReply 还 set 着 A
+   *   3. 发文本 → handleChat 看到 expectedReply 有 → 发到 A (BUG)
+   *
+   * 只读命令 (/help, /status, /whoami) 不清, 跟 handleChat 行为一致。
+   */
   async handleCommand(msg: SpoolMessage): Promise<void> {
     const parts = msg.text.split(/\s+/);
     const cmd = parts[0]?.replace(/^\/+/, '')?.toLowerCase();
+
+    // v2.4.x: 命令消息入口清 expectedReply (只在写命令)
+    // 防御: 旧 mock 可能没装 expectedReply (Field like), 跳过而不是 throw
+    const isReadOnly = ['help', 'status', 'whoami'].includes(cmd || '');
+    if (!isReadOnly && this.agentView?.expectedReply) {
+      const info = this.agentView.expectedReply.get(msg.openId);
+      if (info) {
+        await this.agentView.expectedReply.clear(msg.openId, 'overwrite');
+        await this.replyFn(
+          `⏱ 等待输入已自动取消(因你跑了 /${cmd})`,
+          { openId: msg.openId, requestUuid: uniqueUuid() },
+        );
+      }
+    }
 
     switch (cmd) {
       case 'help':
@@ -920,7 +950,13 @@ export class FeishuBot {
           await this.replyAndFinalize(msg, 'Agent View 已禁用(在 config.toml 设置 [agent_view].enabled = true)');
           return;
         }
-        await this.agentView.handleList(msg.openId, msg.messageId);
+        // v2.3.14 修正:handleList 之前返回 void,spool 消息卡在 processing/ 永远不 finalize,
+        // 100 条累积后 enqueue 触发"队列满"fallback → 用户看到"服务暂不可用"。
+        // 同 v2.3.11 handleReply 路径同模式 bug:依赖 handleXxx 内部收尾是不可靠的,
+        // 必须 caller 显式 markReplied + markDone 释放 serialKey 锁。
+        const cardMessageId = await this.agentView.handleList(msg.openId, msg.messageId);
+        this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
+        this.spoolQueue.markDone(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
         return;
 
       default:
@@ -930,11 +966,9 @@ export class FeishuBot {
   }
 
   private async handleChat(msg: SpoolMessage): Promise<void> {
-    // v2.2 修正:Agent View expectedReply 检查(spec §5.3)
-    // - /cancel  → handleCancelReply(总是,无视只读白名单)
-    // - /<cmd>   → 只读命令(/help /status /whoami)透传 handleCommand,不清 expectedReply
-    //              写命令 清 expectedReply + 提示"已自动取消",再走 handleCommand
-    // - 普通文本 → expectedReply 激活时 → handleReply,否则走原 switch
+    // v2.4.x: 预期消息只可能是普通文本(命令消息在 dispatcher 就走 handleCommand
+    // 不进这里)。原 spec §5.3 提到的"写命令清 expectedReply"逻辑已搬到
+    // handleCommand 入口(命令消息必走), 这里只剩 /cancel + 普通文本分支。
     if (this.agentView && config.get<boolean>('agent_view.enabled', true)) {
       // 新增:任何进入 handleChat 的消息都停掉当前 attached watch
       if (this.agentView.attachedWatchers.has(msg.openId)) {
@@ -944,11 +978,15 @@ export class FeishuBot {
         await this.agentView.handleCancelReply(msg.openId, msg.messageId);
         return;
       }
+      // 注意: 这里的 if (msg.text.startsWith('/')) 分支在 v2.4.x 已成死代码 —
+      // 命令消息在 dispatcher (line ~848) 走 isCommandMessage → handleCommand
+      // 不进 handleChat。保留只是为了 safety net (万一某条消息漏过 dispatcher)。
       if (msg.text.startsWith('/')) {
         const cmd = msg.text.split(/\s+/)[0]?.replace(/^\/+/, '').toLowerCase();
+        // 只读命令直接转交 (不清 expectedReply)
         const isReadOnly = ['help', 'status', 'whoami'].includes(cmd || '');
         if (!isReadOnly) {
-          // 写命令:清 expectedReply + 提示"已自动取消"
+          // 写命令: 防御性清 expectedReply + 提示
           const info = this.agentView.expectedReply.get(msg.openId);
           if (info) {
             await this.agentView.expectedReply.clear(msg.openId, 'overwrite');
@@ -957,11 +995,7 @@ export class FeishuBot {
               { openId: msg.openId, requestUuid: uniqueUuid() },
             );
           }
-          // 写命令:走原 handleCommand 分发
-          await this.handleCommand(msg);
-          return;
         }
-        // 只读命令:不清 expectedReply,继续按命令分发
         await this.handleCommand(msg);
         return;
       }
@@ -1344,6 +1378,294 @@ export class FeishuBot {
   }
 
   /**
+   * Try to handle an Agent View Reply via the rendezvous socket.
+   *
+   * Returns true if handled — a reply (success or error) has been sent
+   * to the user via replyFn, and spool has been finalized. Caller should
+   * short-circuit (return from runChatSDK with rendezvousHandled: true).
+   *
+   * Returns false if rendezvous is not eligible — caller should fall
+   * through to the existing v2.3.5 auto-stop + SDK path.
+   *
+   * v2.4.x 失败处理(基于 docs/qa/2026-06-11-rendezvous-probe-notes.md 真协议):
+   *   - canUse=false (daemon_down, bg_busy, no_rendezvous_sock) → return false
+   *     so caller falls through to v2.3.5 auto-stop + SDK
+   *   - inject ok → return true (成功路径)
+   *   - inject socket_closed (Phase 1 ECONNREFUSED 等真连接失败) → return false
+   *     v2.3.5 claude stop (对死 bg 是 no-op) + SDK resume 仍能工作
+   *   - inject daemon_error (state.json 缺失) → return false (同上)
+   *   - inject timeout (bg 在跑但 state.json 一直不终结) → return true, 仅报告
+   *     fallback 会 claude stop 打断活 bg, 风险大
+   *   - inject state_error / 其他 reason → return true, 仅报告
+   */
+  /**
+   * v2.4.x: 返 { handled, bgAskedNewQuestion, cardMessageId } 替代之前的 boolean。
+   * - handled=true: rendezvous 路径已处理, caller 不要再走 SDK
+   * - bgAskedNewQuestion=true: bg 跑了并问新问题, caller (handleReply)
+   *   应该重新 set expectedReply 让用户直接接着回
+   * - cardMessageId: 处理中卡 → 等待卡 (transition 后) 的 messageId,
+   *   给 caller re-set expectedReply 用
+   */
+  private async tryRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
+    messageId?: string;
+  }): Promise<{
+    handled: boolean;
+    bgAskedNewQuestion: boolean;
+    cardMessageId: string | null;
+  }> {
+    const { openId, sessionUuid, promptText, messageId } = params;
+    const short = sessionUuid.slice(0, 8);
+    const eligibility = await checkRendezvousEligibility(short);
+    if (!eligibility.canUse || !eligibility.rendezvousSock) {
+      logger.warn(`rendezvous: fallback to SDK because ${eligibility.reason}`);
+      return { handled: false, bgAskedNewQuestion: false, cardMessageId: null };
+    }
+    logger.info(
+      `rendezvous: inject short=${short} text_len=${promptText.length} reason=bg_waiting`,
+    );
+    const timeoutMs = config.get<number>('agent_view.rendezvous_timeout_ms', 60_000);
+
+    // v2.4.x 流式 reply: 提交 + 接管"等待输入"卡 + 边 poll 边流式 patch
+    //
+    // 流程:
+    //   1. Phase 1 (≤200ms): fire-and-forget 提交 reply 到 bg
+    //      - 成功 submitted → 进入第 2 步
+    //      - 失败 rejected (ECONNREFUSED 等) → return false 走 v2.3.5
+    //   2. 接管"等待输入"卡 (有 messageId 时) 或新发"处理中"卡
+    //   3. Phase 2 (≤timeoutMs): pollStateJsonStreaming + onPoll 回调
+    //      - 每次 poll: 读 JSONL 末次 assistant turn, 文本变化就 patch
+    //      - 终结 (done/stopped/blocked-needs/error) → 终态 patch
+    //   4. 失败 fallback (socket_closed/daemon_error): 走 v2.3.5 SDK
+    //      (Phase 1 已经做了 ECONNREFUSED 检测, 这里 catch Phase 2 的 daemon_error)
+    return await this.runStreamingRendezvousReply({
+      openId, sessionUuid, promptText, messageId, eligibility, timeoutMs,
+    });
+  }
+
+  /**
+   * v2.4.x 流式 reply 实际实现。从 tryRendezvousReply 拆出来,
+   * 让主流程读起来线性(失败返 false, 成功返 true)。
+   */
+  private async runStreamingRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
+    messageId?: string;
+    eligibility: Awaited<ReturnType<typeof checkRendezvousEligibility>>;
+    timeoutMs: number;
+  }): Promise<{
+    handled: boolean;
+    bgAskedNewQuestion: boolean;
+    cardMessageId: string | null;
+  }> {
+    const { openId, sessionUuid, promptText, messageId, eligibility, timeoutMs } = params;
+    const short = sessionUuid.slice(0, 8);
+
+    // Phase 1: 提交
+    const submit = await RendezvousClient.submitReplyOnly(
+      eligibility.rendezvousSock!, promptText,
+    );
+    if (submit === 'rejected') {
+      logger.warn(
+        `rendezvous: submit rejected (ECONNREFUSED/EPIPE) → falling back to v2.3.5`,
+      );
+      return { handled: false, bgAskedNewQuestion: false, cardMessageId: null };
+    }
+
+    // v2.4.x 分层卡片: 总是新发"处理中"卡。原"↩️ 回复"等待卡保留为
+    // 历史不动, 不会被 transition。这样 chat 列表保留完整上下文:
+    //   [旧等待卡(黄)] → 继续 → [新处理中卡(蓝)] → 终结 → [完成/新等待(绿/黄)]
+    // 旧设计 "接管等待卡" 会丢掉 waiting reason / cwd / recent output,
+    // 而且 transition 过程用户看不清卡在切换。
+    const cardUpdater = new CardUpdater(this.feishuClient!, {
+      throttle_ms: 5000,  // v2.4.x: 流式 patch 5s 节流
+    });
+    // 总是新发"处理中"卡。原"↩️ 回复"等待卡保留为历史, 不动。
+    await cardUpdater.startProcessing(openId);
+
+    // Phase 2: 边 poll 边流式 patch
+    const startTime = Date.now();
+    let lastText = '';
+    let streamCount = 0;
+    // v2.4.x: 首次 poll 时记下"基线" — bg 启动前 JSONL 已有的末次 assistant
+    // turn(通常就是 bg 上一轮的"等待问题")。只 patch 相对基线**新增**的内容,
+    // 避免把旧 waiting 文本误显示为"回复:"。
+    let baselineText: string | null = null;
+    let isNewTurn = false;
+    // v2.4.x: bg 跑了并问新问题 (new_needs) → 告诉 caller re-set expectedReply
+    let bgAskedNewQuestion = false;
+
+    const rendezvousResult = await RendezvousClient.pollStateJsonStreaming({
+      short,
+      stateJsonPath: eligibility.stateJsonPath!,
+      timeoutMs,
+      // poll 间隔: 默认 500ms (RendezvousClient 内部), 配合 5s 卡片节流
+      // 形成 1Hz 卡片刷新节奏
+      onPoll: async (state) => {
+        if (state.kind === 'active' && eligibility.jsonlPath) {
+          // bg 在跑: 读 JSONL 末次 turn (含 thinking + tool_uses + text)
+          const lastTurn = await readLastAssistantTurn(eligibility.jsonlPath);
+          const currentText = lastTurn?.text ?? '';
+          const currentThinking = lastTurn?.thinking ?? '';
+          const currentToolUses = lastTurn?.toolUses ?? [];
+
+          // 第一次 poll: 记基线, 不 patch (initial patch 已由 adoptExistingCard 完成)
+          if (baselineText === null) {
+            baselineText = currentText;
+            return;
+          }
+
+          // 检测是否进入新 turn: text 完全不同于基线
+          if (currentText !== baselineText && !isNewTurn) {
+            isNewTurn = true;
+          }
+
+          // 总是 update stream — 即使没新内容也更新 elapsed time (5s tick)。
+          // CardUpdater.updateStream 内部 5s 节流, 不会真每 500ms 都 patch。
+          // 这样用户至少看到"⏱ 5s" → "⏱ 10s" 持续变化, 知道 bg 还活着。
+          //
+          // v2.4.x: 进入新 turn 后, 把 thinking + toolUses + text 一起传过去,
+          // 让卡片展示"💭 思考过程" / "🔧 当前操作" / "📝 回复" 三段。
+          const showRich = isNewTurn;
+          await cardUpdater.updateStream(
+            showRich ? currentThinking : '',
+            showRich ? currentText : '',
+            Date.now() - startTime,
+            showRich ? currentToolUses : [],
+          ).catch(err => logger.warn(`rendezvous: updateStream failed: ${err?.message ?? err}`));
+
+          if (isNewTurn && currentText !== lastText) {
+            lastText = currentText;
+            streamCount += 1;
+            logger.debug(
+              `rendezvous: stream patch #${streamCount} text_len=${lastText.length} ` +
+              `thinking_len=${currentThinking.length} tools=${currentToolUses.length}`,
+            );
+          }
+        } else if (state.kind === 'blocked-needs') {
+          // bg 又问新问题: 提前结束轮询, caller 会基于 onPoll 已设的 lastState
+          // 判定 reason='new_needs'。卡片 patch 留给 caller 在终态统一处理
+          // (调 patchWaitingCard 而不是 cancel, 避免"已取消"误报)。
+          return 'stop';
+        }
+      },
+    });
+
+    // 终态 patch
+    if (rendezvousResult.ok && rendezvousResult.reason === 'done') {
+      // Wait briefly for bg to flush JSONL after completion.
+      // The rendezvous socket signals completion (state.json transition) before
+      // the bg worker necessarily finishes writing the assistant turn to JSONL.
+      // Without this delay, readLastAssistantTurn may return a stale previous turn.
+      await new Promise(r => setTimeout(r, 500));
+
+      const lastTurn = eligibility.jsonlPath
+        ? await readLastAssistantTurn(eligibility.jsonlPath)
+        : null;
+      const responseText = lastTurn?.text ?? '(bg 完成，请在 Agent View 查看完整回复)';
+      const tokens = lastTurn?.usage ?? {
+        input_tokens: 0, output_tokens: 0,
+        cache_creation_input_tokens: null, cache_read_input_tokens: null,
+      };
+      try {
+        await cardUpdater.complete(
+          responseText,
+          tokens.input_tokens ?? 0,
+          tokens.output_tokens ?? 0,
+          (rendezvousResult.durationMs ?? Date.now() - startTime),
+          1,
+        );
+      } catch (err: any) {
+        logger.warn(`rendezvous: cardUpdater.complete 失败: ${err?.message ?? err}`);
+      }
+      logger.info(
+        `rendezvous: ok reason=done ` +
+        `duration=${Date.now() - startTime}ms ` +
+        `tokens_out=${tokens.output_tokens ?? 0} ` +
+        `stream_patches=${streamCount}`,
+      );
+    } else if (rendezvousResult.ok && rendezvousResult.reason === 'new_needs') {
+      // bg 又问新问题 — patch 卡回"等待输入" 状态(黄色 header + [取消等待]
+      // 按钮)。语义: bg 没死没被停, 只是发完一个 turn 后又问下一个。
+      // 之前 v2.4.x 简化版用 cardUpdater.cancel() 会显示 "🛑 已取消" 灰色卡,
+      // 让用户误以为 bg 没了, UX 错乱。
+      try {
+        // 从 state.json 读最新 needs + name, 从 JSONL 读 recent output
+        const stateObj = await readJobState(short, eligibility.stateJsonPath!);
+        const lastTurn = eligibility.jsonlPath
+          ? await readLastAssistantTurn(eligibility.jsonlPath)
+          : null;
+        if (stateObj) {
+          await cardUpdater.patchWaitingCard({
+            name: stateObj.state.name ?? short,
+            status: 'waiting',
+            waitingFor: stateObj.state.needs ?? undefined,
+            cwd: stateObj.state.cwd ?? '',
+            recentOutput: lastTurn?.text,
+            outputFormat: 'markdown',
+          });
+        } else {
+          // 兜底: state.json 没了(daemon 异常), 降级用 cancel 文案
+          await cardUpdater.cancel('bg 已就绪，等待你的下一步指令');
+        }
+      } catch (err: any) {
+        logger.warn(`rendezvous: patchWaitingCard 失败: ${err?.message ?? err}`);
+      }
+      logger.info(`rendezvous: ok reason=new_needs, 卡 patch 回"等待输入", bg 在等用户新输入`);
+      bgAskedNewQuestion = true;  // 让 caller re-set expectedReply
+    } else {
+      // 失败分类 (跟 v2.3.5 fallback 同样的语义)
+      if (
+        rendezvousResult.reason === 'socket_closed' ||
+        rendezvousResult.reason === 'daemon_error'
+      ) {
+        logger.warn(
+          `rendezvous: reason=${rendezvousResult.reason} ` +
+          `→ falling back to v2.3.5 auto-stop + SDK resume`,
+        );
+        // 不发错误消息, 让 v2.3.5 路径发"处理中"卡 + SDK 完成回复
+        // 这里没有"撤掉处理中卡", v2.3.5 会在原卡上覆盖 (也合理:
+        // 跟 chat-text "Claude daemon 已停止" 误报对比, 这是过渡版, 下次大改再做)
+        return { handled: false, bgAskedNewQuestion: false, cardMessageId: null };
+      }
+      try {
+        const errMsg = rendezvousResult.reason === 'timeout'
+          ? `⏱ bg 处理超时（${Math.round(timeoutMs / 1000)}s 内未完成）`
+          : `❌ Reply 失败：${rendezvousResult.reason}`;
+        await cardUpdater.error(errMsg);
+      } catch (err: any) {
+        logger.warn(`rendezvous: cardUpdater.error 失败: ${err?.message ?? err}`);
+      }
+      logger.error(
+        `rendezvous: inject failed reason=${rendezvousResult.reason} (no fallback)`,
+      );
+    }
+
+    // v2.4.x: 终态 patch 完必须 cancelPending, 否则 5s 节流的 pending timer
+    // 会在终态后 fire, 把卡片从"↩️ 回复"/"✅ 完成"/"❌ 错误" revert 回
+    // "💭 处理中"。用户就看到卡片卡在 3s 不刷新 (因为 revert 时刻的
+    // elapsed 正是 3s 左右)。
+    cardUpdater.cancelPending();
+
+    // 不发 chat-text, 卡片已经是反馈
+
+    // Spool finalize — idempotent with handleReply's caller
+    if (messageId) {
+      this.spoolQueue.markReplied(messageId, sessionUuid);
+      this.spoolQueue.markDone(messageId, sessionUuid);
+    }
+
+    return {
+      handled: true,
+      bgAskedNewQuestion,
+      cardMessageId: cardUpdater.getCardMessageId(),
+    };
+  }
+
+  /**
    * SDK-driven chat streaming lifecycle (public, reusable from Agent View reply).
    *
    * Drives the full SDK streaming pipeline: processing card → streaming updates →
@@ -1391,8 +1713,42 @@ export class FeishuBot {
      * 普通 chat 路径(没设此 flag)行为不变,3 按钮让用户决策。
      */
     fromAgentViewReply?: boolean;
-  }): Promise<{ result: SendMessageResult; handler: PermissionHandler; cardMessageId: string | null }> {
+  }): Promise<{
+    result: SendMessageResult;
+    handler: PermissionHandler;
+    cardMessageId: string | null;
+    rendezvousHandled?: boolean;
+    /**
+     * v2.4.x: bg 处理完一轮又问新问题 (new_needs)。true 时, 处理中卡
+     * 已 transition 成"↩️ 回复" 新等待卡, caller (handleReply) 应该
+     * 重新 set expectedReply, 让用户可以直接在 chat 接着回, 不用再点 [Reply]。
+     * false 时 bg 真跑完 (done) / 报失败 (error) / 超时 / 走 v2.3.5, 保持 cleared。
+     */
+    bgAskedNewQuestion?: boolean;
+  }> {
     const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId, fromAgentViewReply = false } = params;
+
+    // v2.4 rendezvous-first: short-circuit for Agent View Reply
+    if (
+      fromAgentViewReply &&
+      config.get<boolean>('agent_view.rendezvous_enabled', false)
+    ) {
+      const rv = await this.tryRendezvousReply({
+        openId, sessionUuid: inputSessionUuid, promptText, messageId,
+      });
+      if (rv.handled) {
+        // Reply already sent, spool already finalized. Return sentinel.
+        return {
+          result: null as unknown as SendMessageResult,
+          handler: null as unknown as PermissionHandler,
+          cardMessageId: rv.cardMessageId,
+          rendezvousHandled: true,
+          bgAskedNewQuestion: rv.bgAskedNewQuestion,
+        };
+      }
+      // eligibility failed → fall through to existing v2.3.5/3.6 path
+    }
+
     // v2.2.14: defense-in-depth —— UserManager.sessionUuid 可能是 8 字符 short hash
     // (历史 settled bg 走旧 snapshot-fetcher 路径时种下),`claude -p --resume <short>`
     // 会被 SDK 拒(报 "Provided value ... is not a UUID")。handleAttach 已尝试
@@ -1687,7 +2043,22 @@ export class FeishuBot {
       // outside the SpoolQueue, so there is no SpoolMessage to update. Callers
       // that DO have a SpoolMessage (handleChat) handle the spool update inline.
 
-      return { result, handler, cardMessageId };
+      // P1-4: SDK fallback path for Agent View Reply — send a chat-text reply
+      // ONLY when the card failed to initialize (cardInitFailed=true).
+      // When card succeeded, cardUpdater.complete() already delivered response +
+      // token stats via the interactive card — no need for a duplicate chat-text.
+      if (fromAgentViewReply && result?.response && cardInitFailed) {
+        const tokenCount = (result.tokensIn ?? 0) + (result.tokensOut ?? 0);
+        const sdkReplyText = `✅ Claude 已处理完你的消息。\n\n${result.response}\n\n` +
+          `⏱ ${result.durationMs}ms · ${formatTokenCount(tokenCount)} · 1 轮数`;
+        if (messageId) {
+          await this.replyFn(sdkReplyText, { messageId, openId, requestUuid: stableUuid(messageId) });
+        } else {
+          await this.replyFn(sdkReplyText, { openId, requestUuid: uniqueUuid() });
+        }
+      }
+
+      return { result, handler, cardMessageId, rendezvousHandled: false };
     } catch (err: any) {
       logger.error(`runChatSDK 失败: ${err?.message ?? err}`);
       if (cardUpdater) {
@@ -2422,7 +2793,8 @@ export class FeishuBot {
       '  /new [路径] [-- prompt]            - 创建新会话',
       '  /new [路径] --model <别名> [-- p]  - 指定模型创建会话',
       '  /switch <序号|UUID>                - 切换会话',
-      '  /stop                              - 停止当前会话的处理',
+      '  /stop                              - 停止当前会话的处理 (硬杀进程)',
+      '  /cancel                            - 取消 Agent View 等待输入状态 (软退出, bg 继续跑)',
       '  /model                             - 查看可用模型和默认设置',
       '  /model <序号|别名>                  - 设置默认模型',
       '  /model --clear                     - 清除默认设置',

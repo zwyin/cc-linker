@@ -4,6 +4,8 @@ export interface ExpectedReplyInfo {
   shortId: string;
   sessionId: string;   // = MappingEntry.sessionUuid
   cwd: string;
+  /** v2.4: 飞书 card action 的 messageId,用于 tryRendezvousReply 线程化回复 */
+  messageId?: string;
   // startedAt / timeoutMs 由 state 内部管理
 }
 
@@ -11,6 +13,7 @@ interface InternalEntry {
   shortId: string;
   sessionId: string;
   cwd: string;
+  messageId?: string;
   startedAt: number;   // epoch ms
   timeoutMs: number;
   casToken: string;
@@ -54,6 +57,7 @@ export class ExpectedReplyState {
       startedAt: new Date(now).toISOString(),
       timeoutMs: this.defaultTimeoutMs,
       shortId: info.shortId,
+      cardMessageId: info.messageId,  // v2.4: persist for crash recovery
       casToken,
     };
     // 智能 CAS:探测当前 entry
@@ -82,6 +86,7 @@ export class ExpectedReplyState {
       shortId: info.shortId,
       sessionId: info.sessionId,
       cwd: info.cwd,
+      messageId: info.messageId,
       startedAt: now,
       timeoutMs: this.defaultTimeoutMs,
       casToken,
@@ -105,10 +110,36 @@ export class ExpectedReplyState {
     this.clearTimer(openId);
   }
 
+  /**
+   * Mark the reply as sent (T2 in rendezvous flow). This is called
+   * immediately after the reply is successfully injected into the bg
+   * worker, BEFORE waiting for completion. The point is to prevent the
+   * user from sending a second reply during the rendezvous wait window
+   * (60s+ for slow bg tasks), which would cause duplicate responses
+   * because expectedReply is still set.
+   *
+   * M1 fix: v2.3.11 only cleared in finally, after runChatSDK returned.
+   * During the 60s wait, expectedReply stayed set, so a second user
+   * text would re-enter handleReply and re-inject.
+   *
+   * Idempotent: safe to call multiple times or when nothing is pending.
+   * After markSent, get() returns undefined and handleChat routes the
+   * user's text as regular chat (which the SDK may reject as bg-conflict
+   * or accept as new chat).
+   */
+  async markSent(openId: string): Promise<void> {
+    const current = this.userManager.getEntry(openId);
+    if (current && current.type === 'pending_agent_reply') {
+      await this.userManager.compareAndSwap(openId, current, null);
+    }
+    this.inMemory.delete(openId);
+    this.clearTimer(openId);
+  }
+
   get(openId: string): ExpectedReplyInfo | undefined {
     const e = this.inMemory.get(openId);
     if (!e) return undefined;
-    return { shortId: e.shortId, sessionId: e.sessionId, cwd: e.cwd };
+    return { shortId: e.shortId, sessionId: e.sessionId, cwd: e.cwd, messageId: e.messageId };
   }
 
   private scheduleTimeout(openId: string): void {
@@ -156,6 +187,7 @@ export class ExpectedReplyState {
           shortId: entry.shortId!,
           sessionId: entry.sessionUuid!,
           cwd: entry.cwd || '',
+          messageId: entry.cardMessageId,  // v2.4: restore from user-mapping
           startedAt,
           timeoutMs: entry.timeoutMs!,
           casToken: entry.casToken || '',

@@ -221,6 +221,24 @@ describe('FeishuBot', () => {
     expect(env.textReplies.some(r => r.text.includes('listDir'))).toBe(true);
   });
 
+  it('/help includes /cancel (区别于 /stop 的软退命令)', async () => {
+    await bot.onMessage({
+      open_id: 'ou_user1',
+      message_id: 'msg-help-cancel',
+      content: JSON.stringify({ text: '/help' }),
+      chat_type: 'p2p',
+      message_type: 'text',
+    });
+    await bot.dispatch();
+
+    const helpText = env.textReplies.find(r => r.text.includes('可用命令'))?.text ?? '';
+    expect(helpText).toContain('/cancel');
+    // /cancel 和 /stop 应该都在 help 列表, 且文案区分
+    expect(helpText).toContain('/stop');
+    expect(helpText).toContain('软退出');
+    expect(helpText).toContain('硬杀');
+  });
+
   it('rejects unknown commands', async () => {
     await bot.onMessage({
       open_id: 'ou_user1',

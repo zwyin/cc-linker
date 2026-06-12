@@ -175,3 +175,47 @@ describe('ExpectedReplyState — bot restart recovery (R8)', () => {
     expect(newState.get('open2')?.shortId).toBe('short2');
   });
 });
+
+describe('ExpectedReplyState.markSent (M1 fix)', () => {
+  let userManager: UserManager;
+  let state: ExpectedReplyState;
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = join(tmpdir(), `er-mark-test-${Date.now()}-${Math.random()}.json`);
+    userManager = new UserManager(tmpFile);
+    state = new ExpectedReplyState(userManager);
+  });
+
+  afterEach(() => {
+    // cleanup temp file created in beforeEach
+    try { rmSync(tmpFile, { force: true }); } catch {}
+  });
+
+  test('markSent clears in-memory state immediately', async () => {
+    await state.set('ou_a', { shortId: 'dcb2ec25', sessionId: 's1', cwd: '/tmp' });
+    expect(state.get('ou_a')).toBeDefined();
+    await state.markSent('ou_a');
+    expect(state.get('ou_a')).toBeUndefined();
+  });
+
+  test('markSent clears user-mapping entry', async () => {
+    await state.set('ou_a', { shortId: 'dcb2ec25', sessionId: 's1', cwd: '/tmp' });
+    expect(userManager.getEntry('ou_a')?.type).toBe('pending_agent_reply');
+    await state.markSent('ou_a');
+    expect(userManager.getEntry('ou_a')).toBeUndefined();
+  });
+
+  test('after markSent, second reply is rejected (no double-reply)', async () => {
+    await state.set('ou_a', { shortId: 'dcb2ec25', sessionId: 's1', cwd: '/tmp' });
+    await state.markSent('ou_a');
+    expect(state.get('ou_a')).toBeUndefined();
+  });
+
+  test('messageId stored and returned via get()', async () => {
+    await state.set('ou_a', { shortId: 'dcb2ec25', sessionId: 's1', cwd: '/tmp', messageId: 'msg_123' });
+    const info = state.get('ou_a');
+    expect(info).toBeDefined();
+    expect(info!.messageId).toBe('msg_123');
+  });
+});

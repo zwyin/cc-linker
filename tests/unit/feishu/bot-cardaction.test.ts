@@ -108,7 +108,7 @@ describe('FeishuBot handleCardAction — agent_view_* dispatch (T13)', () => {
     // Handler returns void; dispatcher normalises to null.
     expect(result).toBeNull();
     expect((agentView as any).handleReplyRequestCalls).toEqual([
-      ['ou_user1', 's1', 'uuid-1', '/tmp/proj'],
+      ['ou_user1', 's1', 'uuid-1', '/tmp/proj', 'm_av_1'],
     ]);
   });
 

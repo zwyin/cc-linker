@@ -75,3 +75,121 @@ test('truncateContent cuts to max_card_bytes', () => {
   const encoder = new TextEncoder();
   expect(encoder.encode(truncated).length).toBeLessThanOrEqual(13);
 });
+
+/**
+ * v2.4.x: 当 bg 处理完一个 reply 又问新问题 (new_needs), 卡应当 patch 回
+ * "等待输入" 状态(黄色 header + [取消等待] 按钮), 而不是 "🛑 已取消"。
+ * 语义: bg 没死, 只是发完一个 turn 后又问下一个。
+ */
+test('patchWaitingCard patches with yellow waiting header + cancel button', async () => {
+  const m = createMockClient();
+  const updater = new CardUpdater(m as any, { throttle_ms: 0 });
+  // adopt 一张已有卡(模拟 reply 路径接管等待卡)
+  await updater.adoptExistingCard('om_existing_456', false);
+  expect(m.patchFn).not.toHaveBeenCalled();
+
+  await updater.patchWaitingCard({
+    name: 'bash loop script',
+    status: 'waiting',
+    waitingFor: '是否继续?',
+    cwd: '~',
+    recentOutput: '当前时间: 02:32',
+  });
+
+  expect(m.patchFn).toHaveBeenCalledTimes(1);
+  const lastCall = m.patchFn.mock.calls[m.patchFn.mock.calls.length - 1];
+  const card = JSON.parse(lastCall[0].data.content);
+  expect(card.header.template).toBe('yellow');  // 等待卡是黄色
+  expect(card.header.title.content).toContain('回复');
+  expect(card.header.title.content).toContain('bash loop script');
+  // 等待原因要在 elements 里
+  const md = card.elements.find((e: any) => e.tag === 'markdown');
+  expect(md.content).toContain('是否继续?');
+  // [取消等待] 按钮要在
+  const action = card.elements.find((e: any) => e.tag === 'action');
+  expect(action).toBeDefined();
+  const cancelBtn = action.actions.find((a: any) => a.text?.content?.includes('取消等待'));
+  expect(cancelBtn).toBeDefined();
+});
+
+test('patchWaitingCard preserves existing cardMessageId (no new card created)', async () => {
+  const m = createMockClient();
+  const updater = new CardUpdater(m as any, { throttle_ms: 0 });
+  await updater.adoptExistingCard('om_existing_789', false);
+  await updater.patchWaitingCard({
+    name: 'test',
+    status: 'waiting',
+    cwd: '~',
+  });
+  expect(updater.getCardMessageId()).toBe('om_existing_789');
+  // patch 用的是 adopt 的 id, 不是 create
+  expect(m.createFn).not.toHaveBeenCalled();
+});
+
+/**
+ * v2.4.x UX 改进: 处理中卡的初始布局跟 streaming 卡片一致 (header "💭 处理中"
+ * + ⏱ 0s), 而不是静态"Claude 正在处理你的请求, 预计 2-10 秒..."文本。
+ * 这样 updateStream 的 patch 不会改变 header, 视觉更连贯。
+ */
+test('startProcessing initial card uses streaming layout (💭 处理中 + ⏱ 0s)', async () => {
+  const m = createMockClient();
+  const updater = new CardUpdater(m as any);
+  await updater.startProcessing('ou_user123');
+  const lastCall = m.createFn.mock.calls[m.createFn.mock.calls.length - 1];
+  const card = JSON.parse(lastCall[0].data.content);
+  expect(card.header.template).toBe('blue');
+  expect(card.header.title.content).toBe('💭 处理中');
+  // 应该有 ⏱ 0s 元素 (elapsed time), 但不应该有静态"Claude 正在处理"文本
+  const elapsedEl = card.elements.find((e: any) => e.tag === 'markdown' && e.content?.includes('⏱'));
+  expect(elapsedEl).toBeDefined();
+  expect(elapsedEl.content).toContain('0s');
+  // 不应该再有"Claude 正在处理你的请求" 那种占位文本
+  const placeholderEl = card.elements.find((e: any) =>
+    e.tag === 'markdown' && e.content?.includes('Claude 正在处理你的请求')
+  );
+  expect(placeholderEl).toBeUndefined();
+});
+
+/**
+ * v2.4.x: adoptExistingCard + initialPatch=true 也应该用 streaming 布局,
+ * 这样 reply 路径接管等待卡时, 不会先变成"⏳ 正在处理"再变成"💭 处理中"。
+ */
+test('adoptExistingCard with initialPatch uses streaming layout (💭 处理中)', async () => {
+  const m = createMockClient();
+  const updater = new CardUpdater(m as any, { throttle_ms: 0 });
+  await updater.adoptExistingCard('om_existing_adopt', true);
+  const lastCall = m.patchFn.mock.calls[m.patchFn.mock.calls.length - 1];
+  const card = JSON.parse(lastCall[0].data.content);
+  expect(card.header.template).toBe('blue');
+  expect(card.header.title.content).toBe('💭 处理中');
+  // 不应该有静态占位文本
+  const placeholderEl = card.elements.find((e: any) =>
+    e.tag === 'markdown' && e.content?.includes('Claude 正在处理你的请求')
+  );
+  expect(placeholderEl).toBeUndefined();
+});
+
+/**
+ * v2.4.x bug fix: updateStream 调后会 schedule 一个 5s 后执行的 pending
+ * timer (throttle 节流)。如果调用方在 timer 触发前做了终态 patch
+ * (patchWaitingCard/complete/error), 旧 timer 仍会 fire, 把卡片 revert
+ * 回去 (例如从 "↩️ 回复" revert 成 "💭 处理中")。这导致用户看到卡片卡住
+ * 在处理中状态, 不刷新。
+ *
+ * cancelPending() 必须取消这个 timer, 让终态保持。
+ */
+test('cancelPending cancels scheduled timer — 终态 patch 不会被回退', async () => {
+  const m = createMockClient();
+  const updater = new CardUpdater(m as any, { throttle_ms: 1000 });
+  await updater.startProcessing('ou_user123');
+  m.patchFn.mockClear();
+
+  await updater.updateStream('', 'partial text', 100);
+  expect(m.patchFn).not.toHaveBeenCalled();
+
+  updater.cancelPending();
+
+  await new Promise(r => setTimeout(r, 1500));
+
+  expect(m.patchFn).not.toHaveBeenCalled();
+});
