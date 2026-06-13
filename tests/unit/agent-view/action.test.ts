@@ -64,3 +64,18 @@ describe('isAgentViewValue', () => {
     expect(isAgentViewValue({ tag: 'agent_view_future_feature' })).toBe(true);
   });
 });
+
+describe('isAgentViewValue — rendezvous tags', () => {
+  test('accepts agent_view_rendezvous_abort_wait without payload', () => {
+    expect(isAgentViewValue({ tag: 'agent_view_rendezvous_abort_wait' })).toBe(true);
+  });
+  test('accepts agent_view_rendezvous_stop_bg_request with shortId', () => {
+    expect(isAgentViewValue({ tag: 'agent_view_rendezvous_stop_bg_request', shortId: 'abc12345' })).toBe(true);
+  });
+  test('rejects agent_view_rendezvous_stop_bg_request without shortId', () => {
+    expect(isAgentViewValue({ tag: 'agent_view_rendezvous_stop_bg_request' })).toBe(false);
+  });
+  test('accepts agent_view_rendezvous_stop_bg_confirm with shortId', () => {
+    expect(isAgentViewValue({ tag: 'agent_view_rendezvous_stop_bg_confirm', shortId: 'abc12345' })).toBe(true);
+  });
+});
