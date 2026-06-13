@@ -29,6 +29,8 @@ export interface MappingEntry {
   timeoutMs?: number;        // pending_agent_reply: 超时毫秒
   cardMessageId?: string;    // last_agent_list_card: 飞书卡片 message_id
   updatedAt?: string;        // last_agent_list_card: ISO 更新时间
+  // v2.4.x (Attach path): 标识 entry 是通过 handleAttach 写入的,后续发消息走 rendezvous
+  attachedAt?: string;       // ISO 时间;null/undefined = 普通 session(非 attached)
 }
 
 export interface UserMapping {
