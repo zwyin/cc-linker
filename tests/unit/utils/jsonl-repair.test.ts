@@ -119,4 +119,28 @@ describe('repairJsonlLastPrompt', () => {
     expect(lastPrompts.length).toBe(1);
     expect(lastPrompts[0].leafUuid).toBe('a1');
   });
+
+  it('recognizes sdk-ts (Claude Agent SDK) as Feishu — same priority as sdk-cli', () => {
+    // Real cc-linker Feishu bot uses Claude Agent SDK which writes entrypoint='sdk-ts'.
+    // Repair must treat sdk-ts as Feishu, not fall back to cli stubs.
+    const path = join(tmpDir, 'session.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'feishu msg via SDK' }, uuid: 'u1', timestamp: '2026-05-16T09:00:00Z', sessionId: 's1', entrypoint: 'sdk-ts' }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'feishu PR review reply' }] }, uuid: 'a1', timestamp: '2026-05-16T09:00:05Z', sessionId: 's1', entrypoint: 'sdk-ts' }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: '<local-command-stdout>Catch you later!</local-command-stdout>' }, uuid: 'u2', timestamp: '2026-05-16T09:01:00Z', sessionId: 's1', entrypoint: 'cli' }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] }, uuid: 'a2', timestamp: '2026-05-16T09:01:10Z', sessionId: 's1', entrypoint: 'cli' }),
+      JSON.stringify({ type: 'last-prompt', lastPrompt: 'wrong', leafUuid: 'a2', sessionId: 's1' }),
+    ];
+    writeFileSync(path, lines.join('\n') + '\n');
+
+    const result = repairJsonlLastPrompt(path);
+    expect(result).toBe(true);
+
+    const content = readFileSync(path, 'utf8');
+    const parsed = content.trim().split('\n').map(l => JSON.parse(l));
+    const lastPrompts = parsed.filter((e: any) => e.type === 'last-prompt');
+    expect(lastPrompts.length).toBe(1);
+    expect(lastPrompts[0].leafUuid).toBe('a1');
+    expect(lastPrompts[0].lastPrompt).toBe('feishu PR review reply');
+  });
 });

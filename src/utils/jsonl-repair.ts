@@ -81,8 +81,12 @@ export function repairJsonlLastPrompt(jsonlPath: string): boolean {
 
   if (userMessages.length === 0) return false;
 
-  // Prefer sdk-cli (Feishu) messages; fallback to cli messages
-  const sdkCliUsers = userMessages.filter((u) => u.entry.entrypoint === 'sdk-cli');
+  // Prefer Feishu (SDK) messages; fallback to cli messages.
+  // Note: Claude Agent SDK writes entrypoint='sdk-ts'; legacy naming used 'sdk-cli'.
+  // Both must be treated as Feishu so `claude --resume` after a Feishu turn shows
+  // the Feishu reply instead of a CLI stub.
+  const FEISHU_ENTRYPOINTS = new Set(['sdk-cli', 'sdk-ts']);
+  const sdkCliUsers = userMessages.filter((u) => FEISHU_ENTRYPOINTS.has(u.entry.entrypoint));
   const cliUsers = userMessages.filter(
     (u) => u.entry.entrypoint === 'cli' || !u.entry.entrypoint
   );
@@ -109,7 +113,7 @@ export function repairJsonlLastPrompt(jsonlPath: string): boolean {
   }
 
   const sdkCliAssistants = assistantMessages.filter(
-    (a) => a.entry.entrypoint === 'sdk-cli'
+    (a) => FEISHU_ENTRYPOINTS.has(a.entry.entrypoint)
   );
   const cliAssistants = assistantMessages.filter(
     (a) => a.entry.entrypoint === 'cli' || !a.entry.entrypoint
