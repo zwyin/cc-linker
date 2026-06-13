@@ -1034,6 +1034,68 @@ export class FeishuBot {
         const currentEntry = this.registry.get(sessionUuid);
         const cwd = msg.target.cwd || currentEntry?.cwd || process.env.HOME || '/';
 
+        // v2.4.x: 如果 entry 是 attached 的,直接走 rendezvous 路径,跳过 busy check
+        // (probe 2026-06-13 证明 done/stopped/idle bg 收到 reply 会 respawn 处理;
+        // busy 卡因 CPU 抖动误报,不再适用 attached-chat 场景)
+        const userEntry = this.userManager.getEntry(msg.openId);
+        if (userEntry?.type === 'session' && userEntry.attachedAt && userEntry.sessionUuid === sessionUuid) {
+          // attached chat: 走 runChatSDK + fromAttachedChat=true,内部会触发 tryRendezvousReply
+          const settingsPath = this.getSettingsPathForUser(msg.openId);
+          const promptText = buildPromptWithImages(msg.text, msg.imagePaths ?? []);
+          let runResult: Awaited<ReturnType<FeishuBot['runChatSDK']>> | null = null;
+          try {
+            runResult = await this.runChatSDK({
+              openId: msg.openId,
+              sessionUuid,
+              cwd,
+              settingsPath,
+              promptText,
+              serialKey: msg.serialKey,
+              isNew: false,
+              messageId: msg.messageId,
+              fromAttachedChat: true,  // 新 flag,触发 tryRendezvousReply
+            });
+          } catch (err: any) {
+            this.spoolQueue.markReplied(msg.messageId, msg.serialKey);
+            this.spoolQueue.markFailed(msg.messageId, msg.serialKey, String(err?.message ?? err));
+            this.cancelledMessageIds.delete(msg.messageId);
+            return;
+          }
+          // 跟现有路径同款 spool 收尾 (mirrors lines 1103-1122)
+          const { result, cardMessageId } = runResult;
+          this.registry.upsert(sessionUuid, {
+            cwd, last_active: new Date().toISOString(),
+            last_message_preview: preview(msg.text) || (msg.imagePaths?.length ? '[图片]' : ''),
+            last_error: result?.error ?? null,
+            status: result?.sessionStatus === 'degraded' ? 'degraded' : 'active',
+            jsonl_path: result?.jsonlPath ?? undefined,
+            pending_jsonl_resolve: result?.jsonlPath ? false : currentEntry?.pending_jsonl_resolve,
+            message_count: (currentEntry?.message_count ?? 0) + 1,
+          });
+          await this.registry.flush();
+          if (runResult.rendezvousHandled) {
+            // rendezvous 路径已在 tryRendezvousReply 内部发完 chat-text reply
+            this.spoolQueue.markReplied(msg.messageId, msg.serialKey);
+            this.spoolQueue.markDone(msg.messageId, msg.serialKey);
+          } else {
+            // fallback 到 SDK 路径,正常收尾
+            this.spoolQueue.updateProcessingMessage(msg.messageId, msg.serialKey, {
+              responseText: result?.response || '(空回复)',
+            });
+            if (cardMessageId) {
+              this.spoolQueue.recordDelivery(msg.messageId, 'sent', stableUuid(msg.messageId, 0), 0, cardMessageId, 1);
+            }
+            this.spoolQueue.markReplied(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
+            this.spoolQueue.markDone(msg.messageId, msg.serialKey, cardMessageId ?? undefined);
+            // 镜像原 runChatSDK 收尾:repairJsonlLastPrompt + cancelledMessageIds 清理
+            const jlPath = result?.jsonlPath ?? currentEntry?.jsonl_path;
+            if (jlPath) { try { repairJsonlLastPrompt(jlPath); } catch {} }
+            this.cancelledMessageIds.delete(msg.messageId);
+          }
+          return;
+        }
+
+        // 原有 busy check 块 —— 不动
         if (!msg.skipActivityCheck && currentEntry) {
           try {
             const status = await isSessionActive(
@@ -1713,6 +1775,13 @@ export class FeishuBot {
      * 普通 chat 路径(没设此 flag)行为不变,3 按钮让用户决策。
      */
     fromAgentViewReply?: boolean;
+    /**
+     * v2.4.x (Attach path): 标记这是 attached-chat 路径(用户在飞书侧 attached 到
+     * bg session 后直接发文本)。若 true 且 bg rendezvous-eligible (canUse=true),
+     * **自动** 走 tryRendezvousReply 路径(可能 respawn bg)。否则 fall through 到
+     * 原 v2.2.11 busy-check + v2.3.5/3.6 auto-stop + SDK 路径。
+     */
+    fromAttachedChat?: boolean;
   }): Promise<{
     result: SendMessageResult;
     handler: PermissionHandler;
@@ -1726,11 +1795,11 @@ export class FeishuBot {
      */
     bgAskedNewQuestion?: boolean;
   }> {
-    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId, fromAgentViewReply = false } = params;
+    const { openId, sessionUuid: inputSessionUuid, cwd, settingsPath, promptText, serialKey, isNew = false, messageId, fromAgentViewReply = false, fromAttachedChat = false } = params;
 
-    // v2.4 rendezvous-first: short-circuit for Agent View Reply
+    // v2.4 rendezvous-first: short-circuit for Agent View Reply OR Attach-chat
     if (
-      fromAgentViewReply &&
+      (fromAgentViewReply || fromAttachedChat) &&
       config.get<boolean>('agent_view.rendezvous_enabled', false)
     ) {
       const rv = await this.tryRendezvousReply({
