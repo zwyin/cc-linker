@@ -390,20 +390,27 @@ describe('RendezvousClient.pollStateJsonStreaming', () => {
   });
 
   test('blocked+needs 立即触发 onPoll kind=blocked-needs + 返 ok=true reason=new_needs', async () => {
-    writeState({ state: 'blocked', tempo: 'blocked', needs: '选哪个?', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    // v2.4.1: 真实 waiting bg 路径 — supervisor 先切 active 处理注入, 再回 blocked+needs (新问题)。
+    // 这正是 v2.4.1 sawActive gate 要保护的场景: 旧 done/blocked 状态是 stale, 必须等 active。
+    writeState({ state: 'running', tempo: 'active', needs: '', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    setTimeout(() => {
+      writeState({ state: 'blocked', tempo: 'blocked', needs: '选哪个?', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 80);
 
-    let seenKind: string | null = null;
+    const seenKinds: string[] = [];
     const r = await RendezvousClient.pollStateJsonStreaming({
       short: SHORT,
       stateJsonPath: jobsDir,
       timeoutMs: 5000,
-      pollIntervalMs: 50,
-      onPoll: (state) => { seenKind = state.kind; },
+      pollIntervalMs: 30,
+      onPoll: (state) => { seenKinds.push(state.kind); },
     });
 
     expect(r.ok).toBe(true);
     expect(r.reason).toBe('new_needs');
-    expect(seenKind).toBe('blocked-needs');
+    expect(seenKinds).toContain('blocked-needs');
+    // 证明确实经过 active 阶段
+    expect(seenKinds[0]).toBe('active');
   });
 
   test('state.json 一直 active → timeoutMs 到期返 ok=false reason=timeout', async () => {
@@ -436,5 +443,112 @@ describe('RendezvousClient.pollStateJsonStreaming', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('daemon_error');
     expect(onPollCalled).toBe(false);
+  });
+
+  /**
+   * v2.4.1 stale-done race fix:
+   *   注入 reply 时 bg 在 done/idle 状态, supervisor 通常 0-1s 内才把
+   *   state.json 改成 running。pollStateJsonStreaming 的第一次 poll 可能
+   *   仍看到旧 done,如果直接信就会立刻返 reason=done, 0s duration。
+   *
+   *   sawActive gate: 必须见过一次 active, 才信任后续 terminal state。
+   */
+  test('stale pre-inject done (前 3 次 poll 是 done) → 跳过, 等到 active, 最终 ok=done', async () => {
+    // 初始: stale done (注入前 supervisor 还来不及改)
+    writeState({ state: 'done', tempo: 'idle', needs: '', detail: 'stale', inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    // 50ms 后 supervisor 改 running (注入后正常反应)
+    setTimeout(() => {
+      writeState({ state: 'running', tempo: 'active', needs: '', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 50);
+    // 200ms 后 bg 完成
+    setTimeout(() => {
+      writeState({ state: 'done', tempo: 'idle', needs: '', detail: 'real done', inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 200);
+
+    const polls: any[] = [];
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT,
+      stateJsonPath: jobsDir,
+      timeoutMs: 3000,
+      pollIntervalMs: 30,
+      onPoll: (s) => { polls.push(s.kind); },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.reason).toBe('done');
+    // 证明等到了 active (sawActive=true)
+    expect(polls).toContain('active');
+    // 证明没在第一次 poll 时就退出
+    expect(r.durationMs).toBeGreaterThan(50);
+  });
+
+  test('daemon 不反应 (一直 stale done) → 返 ok=false reason=timeout', async () => {
+    // supervisor 永远不反应 — state.json 一直 done/idle
+    writeState({ state: 'done', tempo: 'idle', needs: '', detail: 'frozen', inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT,
+      stateJsonPath: jobsDir,
+      timeoutMs: 300,
+      pollIntervalMs: 30,
+      onPoll: () => {},
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('timeout');
+    // 证明从未见过 active (sawActive 一直是 false)
+  });
+
+  test('active 第一次 poll 就见到 (无 stale 期) → ok=done 正常', async () => {
+    writeState({ state: 'running', tempo: 'active', needs: '', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    setTimeout(() => {
+      writeState({ state: 'done', tempo: 'idle', needs: '', detail: 'done', inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 100);
+
+    const polls: any[] = [];
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT,
+      stateJsonPath: jobsDir,
+      timeoutMs: 3000,
+      pollIntervalMs: 30,
+      onPoll: (s) => { polls.push(s.kind); },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.reason).toBe('done');
+    // 第一次 poll 立即 active
+    expect(polls[0]).toBe('active');
+    // 不应 timeout
+    expect(r.reason).not.toBe('timeout');
+  });
+
+  test('starting from blocked-needs (waiting bg) → 等到 active 再接受 blocked-needs', async () => {
+    // 模拟 waiting bg: 注入前 supervisor 显示 blocked+needs (旧需求, 已注入下一条)
+    // 注入后 supervisor 短暂切 active, 然后又 blocked+needs (新需求)
+    writeState({ state: 'blocked', tempo: 'blocked', needs: 'old q?', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    setTimeout(() => {
+      writeState({ state: 'running', tempo: 'active', needs: '', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 60);
+    setTimeout(() => {
+      writeState({ state: 'running', tempo: 'active', needs: '', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 120);
+    setTimeout(() => {
+      writeState({ state: 'blocked', tempo: 'blocked', needs: 'new q?', detail: null, inFlight: null, linkScanPath: null, linkScanOffset: 0, name: null });
+    }, 180);
+
+    const polls: any[] = [];
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT,
+      stateJsonPath: jobsDir,
+      timeoutMs: 3000,
+      pollIntervalMs: 30,
+      onPoll: (s) => { polls.push(s.kind); },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.reason).toBe('new_needs');
+    // 证明了: 跳过前两次 blocked-needs, 等到 active, 再接受后续 blocked-needs
+    expect(polls).toContain('active');
+    expect(polls).toContain('blocked-needs');
   });
 });

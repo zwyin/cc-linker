@@ -263,6 +263,11 @@ export class RendezvousClient {
     const patches: StatePatch[] = [];
     let lastState: any = null;
     let stoppedByUser = false;
+    // v2.4.1: 抑制 supervisor 未反应的"假 done"
+    // 注入 reply 后, supervisor 通常 0-1s 内把 state.json 从 done/blocked → running。
+    // 第一次 poll 可能还是旧 state,误判为 terminal。
+    // 必须见过一次 active, 才信任后续的 done/stopped/blocked-needs。
+    let sawActive = false;
 
     while (Date.now() - start < timeoutMs) {
       const outcome = await pollStateJsonOnce(opts.short, opts.stateJsonPath);
@@ -279,6 +284,18 @@ export class RendezvousClient {
       patches.push(patch);
 
       const kind = streamStateKind(stateObj);
+
+      // v2.4.1: 未见过 active 之前的 terminal state 可能是 supervisor 未反应的
+      // 旧 state (注入 reply 后 supervisor 还没把 state.json 改成 running)。
+      // 跳过本次分类,继续 poll。后续见到 active 后才信任 terminal。
+      if (kind !== 'active' && !sawActive) {
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+        continue;
+      }
+      if (kind === 'active') {
+        sawActive = true;
+      }
+
       const userDecision = await opts.onPoll({ kind, raw: stateObj });
       if (userDecision === 'stop') {
         stoppedByUser = true;
@@ -289,8 +306,6 @@ export class RendezvousClient {
         // 终结: done / stopped / blocked-needs / error
         const result = classifyPatchFromState(stateObj);
         if (result.kind === 'pending') {
-          // 不该发生: streamStateKind 不是 active 时 classifyPatchFromState
-          // 一定会有 reason。这里当 timeout 兜底。
           return {
             ok: false,
             reason: 'timeout',
@@ -310,7 +325,6 @@ export class RendezvousClient {
     }
 
     if (stoppedByUser && lastState) {
-      // 主动 stop 用最后一次 poll 状态判定
       const result = classifyPatchFromState(lastState);
       if (result.kind !== 'pending') {
         return {
@@ -322,6 +336,8 @@ export class RendezvousClient {
       }
     }
 
+    // v2.4.1: timeout 但从未见过 active → supervisor 可能根本没反应
+    // (daemon down / 注入失败),返回 timeout 让上层提示用户
     return {
       ok: false,
       reason: 'timeout',
