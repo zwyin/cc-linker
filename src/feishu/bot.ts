@@ -1812,6 +1812,86 @@ export class FeishuBot {
   }
 
   /**
+   * [🔙 不等了] 按钮处理:
+   *   1) **race 守门** (review gap 2): 如果 CardUpdater 已处于终态 (complete/error/cancelled),
+   *      用户点 [🔙 不等了] 已晚于 bg 收尾, 不要覆盖终态卡 (否则会从 "✅ 处理完成"
+   *      被覆盖成 "🔙 已停止跟踪", 误导)。直接 no-op 返回。
+   *   2) abort rendezvous poll 循环
+   *   3) patch 流式卡到 "🔙 已停止跟踪" 终态 (patchAbortedTracking, 不用 cancel)
+   *   4) **条件化恢复 user-mapping**:
+   *      - from-Reply (entry.attachedAt undefined): 恢复 plain session entry
+   *      - from-Attach (entry.attachedAt 有值): 恢复时保留 attachedAt, 后续仍走 rendezvous
+   *   5) 清 maps
+   *
+   * Idempotent: 重复点 / map 没条目时 no-op
+   */
+  private async handleRendezvousAbortWait(openId: string): Promise<string | null> {
+    const entry = this.activeRendezvousWaits.get(openId);
+    if (!entry) {
+      logger.info(`handleRendezvousAbortWait: no active wait for openId=${openId}`);
+      return null;
+    }
+    // v2.x race 守门 (review gap 2): 如果 CardUpdater 已处于终态, 用户点 [🔙 不等了]
+    // 已晚于 bg 收尾, 不要覆盖终态卡。窄 race window: 用户 click 入服务端队列
+    // 之后但 runStreamingRendezvousReply 终态块跑完前的瞬间, entry 还在 map
+    // 但 updater.getState() === 'complete'/'error'/'cancelled'。
+    const earlyUpdater = this.rendezvousCardUpdaters.get(openId);
+    if (earlyUpdater) {
+      const earlyState = earlyUpdater.getState();
+      if (earlyState === 'complete' || earlyState === 'error' || earlyState === 'cancelled') {
+        logger.info(
+          `handleRendezvousAbortWait: skipped (terminal state=${earlyState}, openId=${openId}, ` +
+          `bg 已先收尾, 不覆盖终态卡)`,
+        );
+        // 不清 maps — 让 runStreamingRendezvousReply 终态块自己清 (idempotent)
+        return null;
+      }
+    }
+    entry.abort.abort();
+    const updater = this.rendezvousCardUpdaters.get(openId);
+    this.activeRendezvousWaits.delete(openId);
+    this.rendezvousCardUpdaters.delete(openId);
+
+    // 恢复 user-mapping (条件化)
+    try {
+      const current = this.userManager.getEntry(openId) ?? null;
+      const newEntry: any = {
+        type: 'session' as const,
+        sessionUuid: entry.sessionUuid,
+        cwd: entry.cwd,
+        // MappingEntry 无 createdAt 字段 (review gap 3), 不写
+      };
+      if (entry.attachedAt) {
+        // from-Attach: 保留原 attachedAt, 让用户下次发消息仍走 rendezvous
+        newEntry.attachedAt = entry.attachedAt;
+      }
+      const ok = await this.userManager.compareAndSwap(openId, current, newEntry);
+      if (!ok) {
+        logger.warn(`handleRendezvousAbortWait: user-mapping CAS failed for ${openId} (stale, harmless)`);
+      }
+    } catch (err: any) {
+      logger.warn(`handleRendezvousAbortWait: restore user-mapping failed: ${err?.message ?? err}`);
+    }
+
+    if (updater) {
+      try {
+        await updater.patchAbortedTracking({
+          headerTitle: '🔙 已停止跟踪',
+          headerTemplate: 'grey',
+          body: entry.attachedAt
+            ? 'bg 仍在 daemon 中运行 · 已保留 Attach 状态, 下条消息仍走 rendezvous · /agents 可查看'
+            : 'bg 仍在 daemon 中运行 · /agents 可查看后续 · 直接发消息会触发 bg-conflict 确认',
+        });
+        updater.cancelPending();
+      } catch (err: any) {
+        logger.warn(`handleRendezvousAbortWait: patch failed: ${err?.message ?? err}`);
+      }
+    }
+    logger.info(`handleRendezvousAbortWait: aborted (openId=${openId}, attached=${!!entry.attachedAt})`);
+    return null;
+  }
+
+  /**
    * SDK-driven chat streaming lifecycle (public, reusable from Agent View reply).
    *
    * Drives the full SDK streaming pipeline: processing card → streaming updates →
