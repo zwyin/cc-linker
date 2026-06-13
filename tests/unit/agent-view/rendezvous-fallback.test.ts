@@ -137,3 +137,147 @@ describe('checkRendezvousEligibility', () => {
     expect(r.canUse).toBe(true);
   });
 });
+
+describe('checkRendezvousEligibility - bg_resumable (Attach path, v2.4.x)', () => {
+  let ccHome: string;
+  let sockServer: net.Server | null = null;
+
+  beforeEach(() => {
+    ccHome = mkdtempSync(join(tmpdir(), 'cc-rendezvous-resumable-test-'));
+    mkdirSync(join(ccHome, 'jobs', 'dcb2ec25'), { recursive: true });
+    mkdirSync(join(ccHome, 'daemon'), { recursive: true });
+    sockServer = null;
+  });
+
+  afterEach(() => {
+    if (sockServer) {
+      sockServer.close();
+      sockServer = null;
+    }
+    if (ccHome) rmSync(ccHome, { recursive: true, force: true });
+  });
+
+  function writeState(state: any) {
+    writeFileSync(join(ccHome, 'jobs', 'dcb2ec25', 'state.json'), JSON.stringify(state));
+  }
+  function writeRoster(roster: any) {
+    writeFileSync(join(ccHome, 'daemon', 'roster.json'), JSON.stringify(roster));
+  }
+  function writeSocket() {
+    const sockPath = join(ccHome, 'daemon', 'rv-dcb2ec25.sock');
+    sockServer = net.createServer();
+    sockServer.listen(sockPath);
+  }
+
+  const testCtx = (ccHome: string) => ({
+    jobsDir: join(ccHome, 'jobs'),
+    rosterPath: join(ccHome, 'daemon', 'roster.json'),
+  });
+
+  test('bg done (settled) + socket exists → canUse, reason=bg_resumable', async () => {
+    writeState({
+      state: 'done',
+      tempo: 'idle',
+      needs: null,
+      linkScanPath: '/tmp/x.jsonl',
+    });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(true);
+    expect(r.reason).toBe('bg_resumable');
+    expect(r.rendezvousSock).toBe(join(ccHome, 'daemon', 'rv-dcb2ec25.sock'));
+    expect(r.jsonlPath).toBe('/tmp/x.jsonl');
+  });
+
+  test('bg stopped (user killed) + socket exists → canUse, reason=bg_resumable', async () => {
+    writeState({ state: 'stopped', tempo: 'idle', detail: 'killed', needs: null });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(true);
+    expect(r.reason).toBe('bg_resumable');
+  });
+
+  test('bg tempo=idle (forward-compat, not done) + socket exists → canUse, reason=bg_resumable', async () => {
+    writeState({ state: 'unknown', tempo: 'idle', needs: null });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(true);
+    expect(r.reason).toBe('bg_resumable');
+  });
+
+  test('bg running (busy, no needs) → bg_busy (still denied — concurrent turn risk)', async () => {
+    writeState({ state: 'running', tempo: 'active', needs: null });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(false);
+    expect(r.reason).toBe('bg_busy');
+  });
+
+  test('bg working (busy, no needs) → bg_busy', async () => {
+    writeState({ state: 'working', tempo: 'active', needs: null });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(false);
+    expect(r.reason).toBe('bg_busy');
+  });
+
+  test('bg waiting (existing case, baseline) → reason=bg_waiting (not bg_resumable)', async () => {
+    writeState({
+      state: 'blocked',
+      tempo: 'blocked',
+      needs: '是否继续?',
+    });
+    writeRoster({
+      workers: {
+        dcb2ec25: {
+          rendezvousSock: join(ccHome, 'daemon', 'rv-dcb2ec25.sock'),
+        },
+      },
+    });
+    writeSocket();
+
+    const r = await checkRendezvousEligibility('dcb2ec25', testCtx(ccHome));
+    expect(r.canUse).toBe(true);
+    expect(r.reason).toBe('bg_waiting');
+  });
+});

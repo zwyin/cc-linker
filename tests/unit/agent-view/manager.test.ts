@@ -1353,6 +1353,68 @@ describe('handleAttach (T22 — two-step CAS)', () => {
 
     mgr.expectedReply.clear = origClear;
   });
+
+  // v2.4.x: attachedAt lifecycle
+  test('handleAttach sets attachedAt on UserManager entry', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+
+    await mgr.handleAttach('ou_attach_att', busy.sessionId, busy.sessionId.slice(0, 8), busy.name, busy.cwd);
+
+    const entry = userManager.getEntry('ou_attach_att');
+    expect(entry).toBeDefined();
+    expect(entry?.type).toBe('session');
+    expect(entry?.sessionUuid).toBe(busy.sessionId);
+    expect(entry?.attachedAt).toBeDefined();
+    // ISO 8601 sanity check
+    expect(() => new Date(entry!.attachedAt!).toISOString()).not.toThrow();
+  });
+
+  test('handleBackToChat clears attachedAt but preserves session entry', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [waiting],
+    }));
+
+    await mgr.handleAttach('ou_attach_btc', waiting.sessionId, waiting.sessionId.slice(0, 8), waiting.name, waiting.cwd);
+    const before = userManager.getEntry('ou_attach_btc');
+    expect(before?.attachedAt).toBeDefined();
+    expect(before?.sessionUuid).toBe(waiting.sessionId);
+
+    await mgr.handleBackToChat('ou_attach_btc');
+
+    // session entry 保留(用户仍绑这个 bg),只清 attachedAt
+    const after = userManager.getEntry('ou_attach_btc');
+    expect(after).toBeDefined();
+    expect(after?.sessionUuid).toBe(waiting.sessionId);
+    expect(after?.attachedAt).toBeUndefined();
+  });
+
+  test('handleStopWatching clears attachedAt but preserves session entry', async () => {
+    const { mgr, userManager } = makeMgrWithSpies();
+    const busy = makeBusySession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [busy],
+    }));
+
+    await mgr.handleAttach('ou_attach_ssw', busy.sessionId, busy.sessionId.slice(0, 8), busy.name, busy.cwd);
+    const before = userManager.getEntry('ou_attach_ssw');
+    expect(before?.attachedAt).toBeDefined();
+
+    await mgr.handleStopWatching('ou_attach_ssw');
+
+    const after = userManager.getEntry('ou_attach_ssw');
+    expect(after).toBeDefined();
+    expect(after?.sessionUuid).toBe(busy.sessionId);
+    expect(after?.attachedAt).toBeUndefined();
+  });
 });
 
 describe('resolvePeekContent (v2.2.8 three-tier resolver)', () => {

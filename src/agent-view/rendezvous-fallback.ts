@@ -11,7 +11,7 @@ export type IneligibleReason =
 
 export interface RendezvousEligibility {
   canUse: boolean;
-  reason: 'bg_waiting' | IneligibleReason;
+  reason: 'bg_waiting' | 'bg_resumable' | IneligibleReason;
   rendezvousSock?: string;
   jsonlPath?: string;
   /**
@@ -73,14 +73,24 @@ export async function checkRendezvousEligibility(
   }
   const state = jobState.state;
 
-  // 2. bg waiting check
-  const isWaiting = (() => {
-    if (state.tempo === 'blocked' && state.needs) return true;
-    if ((state.state === 'running' || state.state === 'working') && state.needs) return true;
+  // 2. bg state check (refined for Attach path, v2.4.x)
+  // Eligible states (probe 2026-06-13 + probe 3 2026-06-11):
+  //   - blocked (waiting for user input)
+  //   - done / stopped / tempo=idle (daemon respawns worker on reply inject)
+  // Ineligible:
+  //   - running / working without needs (bg processing, concurrent turn risk)
+  //   - unknown future states (forward-compat: fail safe)
+  const isEligible = (() => {
     if (state.state === 'blocked') return true;
+    if (state.state === 'done') return true;
+    if (state.state === 'stopped') return true;
+    // 'done' already caught above (line 85); this branch handles forward-compat
+    // unknown states with tempo=idle (probe 2026-06-13 forward-compat test).
+    if (state.tempo === 'idle') return true;
+    if ((state.state === 'running' || state.state === 'working') && state.needs) return true;
     return false;
   })();
-  if (!isWaiting) {
+  if (!isEligible) {
     return { canUse: false, reason: 'bg_busy' };
   }
 
@@ -110,7 +120,7 @@ export async function checkRendezvousEligibility(
 
   return {
     canUse: true,
-    reason: 'bg_waiting',
+    reason: (state.state === 'blocked' || state.needs) ? 'bg_waiting' : 'bg_resumable',
     rendezvousSock: sock,
     jsonlPath: state.linkScanPath ?? undefined,
     stateJsonPath: jobsDir,
