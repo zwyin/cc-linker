@@ -63,8 +63,8 @@ describe('isSessionProcessing', () => {
 
 describe('LiveProgressWatcher', () => {
   it('exports DEFAULT_LIVE_PROGRESS_CONFIG with correct values', () => {
-    expect(DEFAULT_LIVE_PROGRESS_CONFIG.intervalMs).toBe(10_000);
-    expect(DEFAULT_LIVE_PROGRESS_CONFIG.maxTicks).toBe(800);
+    expect(DEFAULT_LIVE_PROGRESS_CONFIG.intervalMs).toBe(3_000);
+    expect(DEFAULT_LIVE_PROGRESS_CONFIG.maxTicks).toBe(2667);
     expect(DEFAULT_LIVE_PROGRESS_CONFIG.maxPatchFailures).toBe(3);
   });
 
