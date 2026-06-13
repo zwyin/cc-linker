@@ -60,6 +60,12 @@ export interface PollStreamingOptions {
   /** 轮询间隔 (ms). 默认 500。 */
   pollIntervalMs?: number;
   /**
+   * 可选 AbortSignal。signal.aborted 时 poll 循环立即退出, 返回
+   * { ok: false, reason: 'aborted', durationMs, patches }。Loop 头部检查覆盖
+   * pre-aborted (循环还没跑) + sleep-then-abort (上轮 sleep 期间 abort) 两种情形。
+   */
+  signal?: AbortSignal;
+  /**
    * 每次 poll 调一次。state.kind 描述当前 bg 状态:
    *   - 'active': bg 在处理中(running/working + tempo=active 且无 needs)
    *   - 'blocked-needs': bg 等用户回答(state=blocked + needs, 或
@@ -275,6 +281,11 @@ export class RendezvousClient {
     let firstState: any = null;
 
     while (Date.now() - start < timeoutMs) {
+      // Abort 优先于其他终结条件。Loop 头部检查覆盖 pre-aborted (循环还没跑) +
+      // sleep-then-abort (上轮 sleep 期间 abort) 两种情形。
+      if (opts.signal?.aborted) {
+        return { ok: false, reason: 'aborted', durationMs: Date.now() - start, patches };
+      }
       const outcome = await pollStateJsonOnce(opts.short, opts.stateJsonPath);
       if (outcome.kind === 'missing') {
         return {
