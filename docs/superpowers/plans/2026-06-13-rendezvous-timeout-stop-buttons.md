@@ -739,6 +739,79 @@ git commit -m "feat(bot): add activeRendezvousWaits (with attachedAt) + rendezvo
 
 **新关键点**：`runStreamingRendezvousReply` 需要知道**入口是 From-Reply 还是 From-Attach** — 唯一可靠的来源是从外层 `tryRendezvousReply → runChatSDK` 传进来的 `fromAttachedChat` flag，但 `runStreamingRendezvousReply` 当前不接这个 param。最干净的做法：从 user-mapping 现读 — 在 startProcessing 之前 `this.userManager.getEntry(openId)?.attachedAt`。markSent 已经在 from-Reply 路径把 entry 清成 null 了，所以 getEntry 拿到的 entry 要么 null（from-Reply）要么有 attachedAt（from-Attach）。
 
+- [ ] **Step 0: cwd 字段穿透 3 个签名 + 2 个 call site（review 缺口 1）**
+
+**Why**：`activeRendezvousWaits.set` 需要存 `cwd`（handler 恢复 user-mapping 时要用），但实测 `RendezvousEligibility` 接口（`rendezvous-fallback.ts:12-23`）**没有 `cwd` 字段**，且 `runStreamingRendezvousReply` 签名（`bot.ts:1518-1525`）也没有。需要从 `runChatSDK` 沿调用链一路把 `cwd` 传下来。
+
+**Files:** `src/feishu/bot.ts:1475-1484` (`tryRendezvousReply` 签名), `:1509-1511` (`tryRendezvousReply` → `runStreamingRendezvousReply` call site), `:1518-1525` (`runStreamingRendezvousReply` 签名), `:1827-1829` (`runChatSDK` → `tryRendezvousReply` call site)
+
+**Step 0.1**: 给 `tryRendezvousReply` 签名加 `cwd: string`，解构时一并拿出来：
+
+```typescript
+// src/feishu/bot.ts:1475-1484
+  private async tryRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
++   cwd: string;
+    messageId?: string;
+  }): Promise<{ ... }> {
+-   const { openId, sessionUuid, promptText, messageId } = params;
++   const { openId, sessionUuid, promptText, cwd, messageId } = params;
+    // ... 内部调用 runStreamingRendezvousReply 时把 cwd 传下去 (Step 0.4) ...
+  }
+```
+
+**Step 0.2**: 给 `runStreamingRendezvousReply` 签名加 `cwd: string`：
+
+```typescript
+// src/feishu/bot.ts:1518-1525
+  private async runStreamingRendezvousReply(params: {
+    openId: string;
+    sessionUuid: string;
+    promptText: string;
++   cwd: string;
+    messageId?: string;
+    eligibility: Awaited<ReturnType<typeof checkRendezvousEligibility>>;
+    timeoutMs: number;
+  }): Promise<{ ... }> {
+-   const { openId, sessionUuid, promptText, messageId, eligibility, timeoutMs } = params;
++   const { openId, sessionUuid, promptText, cwd, messageId, eligibility, timeoutMs } = params;
+    // ... 内部 activeRendezvousWaits.set 时用 cwd (Step 1) ...
+  }
+```
+
+**Step 0.3**: `runChatSDK` → `tryRendezvousReply` call site 传 cwd（cwd 已经在 runChatSDK 解构的 params 里）：
+
+```typescript
+// src/feishu/bot.ts:1827-1829
+  const rv = await this.tryRendezvousReply({
+    openId, sessionUuid: inputSessionUuid, promptText,
++   cwd,  // inputSessionUuid 解构里已含 cwd (bot.ts:1820)
+    messageId,
+  });
+```
+
+**Step 0.4**: `tryRendezvousReply` → `runStreamingRendezvousReply` call site 传 cwd：
+
+```typescript
+// src/feishu/bot.ts:1509-1511
+  return await this.runStreamingRendezvousReply({
+    openId, sessionUuid, promptText,
++   cwd,
+    messageId, eligibility, timeoutMs,
+  });
+```
+
+**Step 0.5**: typecheck + 跑相关测试 + commit：
+
+```bash
+bun run typecheck
+bun test tests/unit/feishu/bot-runsdk.test.ts
+git add src/feishu/bot.ts
+git commit -m "feat(bot): pass cwd through tryRendezvousReply → runStreamingRendezvousReply"
+```
+
 - [ ] **Step 1: 在 startProcessing 之前读 attachedAt（用作恢复来源）**
 
 ```typescript
@@ -761,18 +834,18 @@ git commit -m "feat(bot): add activeRendezvousWaits (with attachedAt) + rendezvo
 +   cardUpdater.setRendezvousShortId(short);
     await cardUpdater.startProcessing(openId);
 
-+   // 注册 abort + cardUpdater + 原 session 上下文 (cwd 来自 eligibility / params, 按实际代码读)
++   // 注册 abort + cardUpdater + 原 session 上下文 (cwd 由 Step 0 沿调用链传下来)
 +   const ac = new AbortController();
 +   this.activeRendezvousWaits.set(openId, {
 +     abort: ac,
 +     sessionUuid,                                // 从 runStreamingRendezvousReply params
-+     cwd: eligibility.cwd ?? '',                 // 来自 eligibility (按实际代码确认字段名)
++     cwd,                                        // 来自 runStreamingRendezvousReply params (Step 0 穿透)
 +     attachedAt: sourceAttachedAt,
 +   });
 +   this.rendezvousCardUpdaters.set(openId, cardUpdater);
 ```
 
-> 注：`eligibility.cwd` 字段名按 `bot.ts` 实际代码确认；若不存在，从 `runStreamingRendezvousReply` 的 `params` 里拿（函数签名 ~`bot.ts:1518` 已含 sessionUuid，cwd 也应在 params 里）。
+> 注：cwd 字段穿透在 Step 0 已完成。`activeRendezvousWaits.set` 直接用 Step 0 透传下来的 `cwd`，不再走 `eligibility.cwd`（`RendezvousEligibility` 接口无此字段）。
 
 - [ ] **Step 2: 更新旁注释（`bot.ts:1571-1572` 消除"5s 节流"过时说法）**
 
@@ -851,15 +924,16 @@ git commit -m "feat(bot): wire AbortController into runStreamingRendezvousReply 
 
 **Files:** `src/feishu/bot.ts` (新方法 在 `runStreamingRendezvousReply` 附近); Test: `tests/unit/feishu/bot-cardaction.test.ts`
 
-**关键：handler 必须做 4 件事**
-1. 调 `controller.abort()` 打断 poll loop
-2. patch 卡到 `🔙 已停止跟踪` 终态（用新 `patchAbortedTracking`）
-3. **条件化恢复 user-mapping**：
-   - 如果 `attachedAt` undefined（from-Reply）：`{type: 'session', sessionUuid, cwd, createdAt}` 不带 attachedAt
-   - 如果 `attachedAt` 有值（from-Attach）：`{type: 'session', sessionUuid, cwd, createdAt, attachedAt}` 保留原 attachedAt
-4. 清两个 maps
+**关键：handler 必须做 5 件事**
+1. **race 守门**：先查 `updater.getState()`，若已是 `complete`/`error`/`cancelled`，说明 bg 已先收尾，用户点 [🔙 不等了] 晚了 → 直接 no-op return，不覆盖终态卡
+2. 调 `controller.abort()` 打断 poll loop
+3. patch 卡到 `🔙 已停止跟踪` 终态（用新 `patchAbortedTracking`）
+4. **条件化恢复 user-mapping**：
+   - 如果 `attachedAt` undefined（from-Reply）：`{type: 'session', sessionUuid, cwd}` 不带 attachedAt
+   - 如果 `attachedAt` 有值（from-Attach）：`{type: 'session', sessionUuid, cwd, attachedAt}` 保留原 attachedAt
+5. 清两个 maps
 
-- [ ] **Step 1: 写失败测试（同时覆盖 from-Reply 和 from-Attach 两条路径）**
+- [ ] **Step 1: 写失败测试（同时覆盖 from-Reply / from-Attach / race 守门三条路径）**
 
 ```typescript
 import { mock } from 'bun:test';
@@ -871,6 +945,8 @@ describe('handleRendezvousAbortWait', () => {
     let aborted = false;
     ac.signal.addEventListener('abort', () => { aborted = true; });
     const mockUpdater: any = {
+      // 守门要求 getState() 返回非终态, 默认 'processing' (CardUpdater initial)
+      getState: mock(() => 'processing'),
       patchAbortedTracking: mock(async () => {}),
       cancelPending: mock(() => {}),
     };
@@ -893,12 +969,14 @@ describe('handleRendezvousAbortWait', () => {
       type: 'session', sessionUuid: 'u-aaa', cwd: '/p',
     }));
     expect(cas[0].nv.attachedAt).toBeUndefined();  // ← 不带 attachedAt
+    expect(cas[0].nv.createdAt).toBeUndefined();  // ← review 缺口 3: 不写 createdAt
   });
 
   test('from-Attach: aborts, restores user-mapping WITH attachedAt preserved', async () => {
     const bot = makeBot();
     const ac = new AbortController();
     const mockUpdater: any = {
+      getState: mock(() => 'processing'),
       patchAbortedTracking: mock(async () => {}),
       cancelPending: mock(() => {}),
     };
@@ -915,6 +993,37 @@ describe('handleRendezvousAbortWait', () => {
     await (bot as any).handleRendezvousAbortWait('o1');
 
     expect(cas[0].attachedAt).toBe('2026-06-13T10:00:00.000Z');  // ← 保留 attachedAt
+  });
+
+  test('race guard: bg already complete (updater.getState()===complete) → no-op', async () => {
+    // review 缺口 2: bg 恰好在用户点 [🔙 不等了] 之前完成, 终态卡已 patch 成 "✅ 处理完成"。
+    // handler 必须识别这个 race, 不能 abort + patch 覆盖成 "🔙 已停止跟踪"。
+    const bot = makeBot();
+    const ac = new AbortController();
+    let aborted = false;
+    ac.signal.addEventListener('abort', () => { aborted = true; });
+    const mockUpdater: any = {
+      // 关键: getState() 返回 'complete', 模拟 bg 已收尾
+      getState: mock(() => 'complete'),
+      patchAbortedTracking: mock(async () => {}),
+      cancelPending: mock(() => {}),
+    };
+    (bot as any).activeRendezvousWaits.set('o1', {
+      abort: ac, sessionUuid: 'u-aaa', cwd: '/p', attachedAt: undefined,
+    });
+    (bot as any).rendezvousCardUpdaters.set('o1', mockUpdater);
+    const cas: any[] = [];
+    (bot as any).userManager.compareAndSwap = mock(async (oid: string, _old: any, nv: any) => {
+      cas.push(nv); return true;
+    });
+
+    const r = await (bot as any).handleRendezvousAbortWait('o1');
+
+    expect(r).toBeNull();
+    expect(aborted).toBe(false);  // ← 不 abort (bg 已走完)
+    expect(mockUpdater.patchAbortedTracking.mock.calls).toHaveLength(0);  // ← 不覆盖终态卡
+    expect(cas).toHaveLength(0);  // ← 不动 user-mapping
+    expect((bot as any).activeRendezvousWaits.has('o1')).toBe(true);  // ← 让终态块自己清
   });
 
   test('idempotent: no-op when openId not in map', async () => {
@@ -937,12 +1046,15 @@ bun test tests/unit/feishu/bot-cardaction.test.ts -t "handleRendezvousAbortWait"
 // src/feishu/bot.ts — 在 runStreamingRendezvousReply 附近
 /**
  * [🔙 不等了] 按钮处理：
- *   1) abort rendezvous poll 循环
- *   2) patch 流式卡到 "🔙 已停止跟踪" 终态 (patchAbortedTracking, 不用 cancel)
- *   3) **条件化恢复 user-mapping**:
+ *   1) **race 守门**: 如果 CardUpdater 已处于终态 (complete/error/cancelled),
+ *      用户点 [🔙 不等了] 已晚于 bg 收尾, 不要覆盖终态卡(否则会从 "✅ 处理完成"
+ *      被覆盖成 "🔙 已停止跟踪", 误导)。直接 no-op 返回。
+ *   2) abort rendezvous poll 循环
+ *   3) patch 流式卡到 "🔙 已停止跟踪" 终态 (patchAbortedTracking, 不用 cancel)
+ *   4) **条件化恢复 user-mapping**:
  *      - from-Reply (entry.attachedAt undefined): 恢复 plain session entry
  *      - from-Attach (entry.attachedAt 有值): 恢复时保留 attachedAt, 后续仍走 rendezvous
- *   4) 清 maps
+ *   5) 清 maps
  *
  * Idempotent: 重复点 / map 没条目时 no-op
  */
@@ -951,6 +1063,25 @@ private async handleRendezvousAbortWait(openId: string): Promise<string | null> 
   if (!entry) {
     logger.info(`handleRendezvousAbortWait: no active wait for openId=${openId}`);
     return null;
+  }
+  // v2.x race 守门 (review 缺口 2): 如果 CardUpdater 已处于终态, 用户点 [🔙 不等了]
+  // 已晚于 bg 收尾, 不要覆盖终态卡。"活 < 1.5s (throttle 窗口)" race:
+  //   - 用户点 → 飞书 click 入服务端队列
+  //   - bg 恰好完成 → 终态 patch 已把 "✅ 处理完成" 写上去
+  //   - 旧 buttons 已下卡, 但 click event 还在服务端队列
+  //   - handler 跑 → 看到 entry 还在 map (终态块还没清), updater.getState() === 'complete'
+  //   - 不 abort, 不 patch, 直接 return null
+  const earlyUpdater = this.rendezvousCardUpdaters.get(openId);
+  if (earlyUpdater) {
+    const earlyState = earlyUpdater.getState();
+    if (earlyState === 'complete' || earlyState === 'error' || earlyState === 'cancelled') {
+      logger.info(
+        `handleRendezvousAbortWait: skipped (terminal state=${earlyState}, openId=${openId}, ` +
+        `bg 已先收尾, 不覆盖终态卡)`,
+      );
+      // 不清 maps — 让 runStreamingRendezvousReply 终态块自己清 (idempotent)
+      return null;
+    }
   }
   entry.abort.abort();
   const updater = this.rendezvousCardUpdaters.get(openId);
@@ -964,7 +1095,7 @@ private async handleRendezvousAbortWait(openId: string): Promise<string | null> 
       type: 'session' as const,
       sessionUuid: entry.sessionUuid,
       cwd: entry.cwd,
-      createdAt: new Date().toISOString(),
+      // MappingEntry 无 createdAt 字段 (review 缺口 3), 不写
     };
     if (entry.attachedAt) {
       // from-Attach: 保留原 attachedAt, 让用户下次发消息仍走 rendezvous
@@ -1070,9 +1201,9 @@ git commit -m "feat(bot): handle rendezvous stop-bg request (Step A confirm card
 
 **Files:** `src/feishu/bot.ts` (新方法); Test: `tests/unit/feishu/bot-cardaction.test.ts`
 
-**关键**：与 Task 4.3 一样，**必须条件化保留 attachedAt**。三个 race 场景全覆盖。
+**关键**：与 Task 4.3 一样，**必须条件化保留 attachedAt**。4 个 race 场景全覆盖（包括 review 缺口 2 的窄 race window）。
 
-- [ ] **Step 1: 写失败测试（3 场景 + from-Attach 保留 attachedAt 覆盖）**
+- [ ] **Step 1: 写失败测试（4 场景 + from-Attach 保留 attachedAt 覆盖）**
 
 ```typescript
 describe('handleRendezvousStopBgConfirm', () => {
@@ -1082,6 +1213,7 @@ describe('handleRendezvousStopBgConfirm', () => {
     let aborted = false;
     ac.signal.addEventListener('abort', () => { aborted = true; });
     const mockUpdater: any = {
+      getState: mock(() => 'processing'),  // 守门要求: 非终态
       patchAbortedTracking: mock(async () => {}),
       cancelPending: mock(() => {}),
     };
@@ -1109,6 +1241,7 @@ describe('handleRendezvousStopBgConfirm', () => {
       type: 'session', sessionUuid: 'u-aaa', cwd: '/p',
       attachedAt: '2026-06-13T10:00:00.000Z',  // ← 保留
     }));
+    expect(cas[0].createdAt).toBeUndefined();  // ← review 缺口 3: 不写 createdAt
   });
 
   test('from-Reply: restores user-mapping WITHOUT attachedAt', async () => {
@@ -1139,6 +1272,39 @@ describe('handleRendezvousStopBgConfirm', () => {
     expect(replies[0]).toContain('已自然完成');
   });
 
+  test('race guard 2 (review 缺口 2): entry 还在 map 但 updater.getState()===complete → 不调 claude stop, 走"已自然完成"', async () => {
+    // 窄 race window: bg 恰好在用户点 [✅ 确认] 之前的瞬间刚完成, 终态块还没清 maps
+    // (activeRendezvousWaits 仍有 entry, 但 updater 已 patch 成 "✅ 处理完成")。
+    // handler 必须识别这个 race, 不能调 claude stop 也不覆盖终态卡。
+    const bot = makeBot();
+    const ac = new AbortController();
+    let aborted = false;
+    ac.signal.addEventListener('abort', () => { aborted = true; });
+    const mockUpdater: any = {
+      getState: mock(() => 'complete'),  // 关键: 终态已设
+      patchAbortedTracking: mock(async () => {}),
+      cancelPending: mock(() => {}),
+    };
+    (bot as any).activeRendezvousWaits.set('o1', {
+      abort: ac, sessionUuid: 'u-aaa', cwd: '/p', attachedAt: undefined,
+    });
+    (bot as any).rendezvousCardUpdaters.set('o1', mockUpdater);
+    const replies: string[] = [];
+    (bot as any).replyFn = mock(async (t: string) => { replies.push(t); });
+    const cas: any[] = [];
+    (bot as any).userManager.compareAndSwap = mock(async (_oid: string, _old: any, nv: any) => {
+      cas.push(nv); return true;
+    });
+
+    await (bot as any).handleRendezvousStopBgConfirm('o1', 'abc12345');
+
+    expect(aborted).toBe(false);  // ← 不 abort
+    expect(mockUpdater.patchAbortedTracking.mock.calls).toHaveLength(0);  // ← 不覆盖终态卡
+    expect(cas).toHaveLength(0);  // ← 不动 user-mapping
+    expect(replies[0]).toContain('已自然完成');  // ← 走"已自然完成"分支
+    expect((bot as any).activeRendezvousWaits.has('o1')).toBe(false);  // ← 还是要清 maps
+  });
+
   test('graceful: "No job matching" stderr treated as success', async () => {
     // mock execFile 抛 stderr 含 "No job matching"
     // 断言 replyFn 文案非 "失败"
@@ -1153,9 +1319,13 @@ describe('handleRendezvousStopBgConfirm', () => {
 /**
  * [🛑 停 bg] Step B: 真执行 claude stop + abort wait + 条件化恢复 user-mapping。
  *
- * Race: 用户点 [停 bg] → 确认卡发出 → 期间 bg 自然完成 (state=done) → poll 退出 →
+ * Race 1: 用户点 [停 bg] → 确认卡发出 → 期间 bg 自然完成 (state=done) → poll 退出 →
  * runStreamingRendezvousReply 终态块已清 activeRendezvousWaits → 用户再点
  * [✅ 确认] 进入此函数时 get() 返 undefined → 走"已自然完成"分支, 不杀 bg。
+ *
+ * Race 2 (review 缺口 2): bg 在用户点 [✅ 确认] 之前的瞬间刚完成 → handler 进入时
+ * entry 还在 map (终态块还没清), 但 updater.getState() === 'complete'。此时不调
+ * claude stop (bg 已死了, 调了也是 "No job matching" 兜底), 走"已自然完成"分支。
  *
  * "No job matching" stderr 同 manager.ts:handleStopConfirm — 视为成功。
  */
@@ -1167,6 +1337,22 @@ private async handleRendezvousStopBgConfirm(
   if (!entry) {
     await this.replyFn(`✅ \`${shortId}\` 已自然完成，无需停止`, { openId });
     return null;
+  }
+  // v2.x race 守门 2 (review 缺口 2): bg 在用户点 [✅ 确认] 之前已收尾,
+  // 但终态块还没清 maps。检查 CardUpdater 状态避免重复 stop + 覆盖终态卡。
+  const earlyUpdater = this.rendezvousCardUpdaters.get(openId);
+  if (earlyUpdater) {
+    const earlyState = earlyUpdater.getState();
+    if (earlyState === 'complete' || earlyState === 'error' || earlyState === 'cancelled') {
+      logger.info(
+        `handleRendezvousStopBgConfirm: skipped claude stop (terminal state=${earlyState}, ` +
+        `openId=${openId}, bg 已先收尾)`,
+      );
+      this.activeRendezvousWaits.delete(openId);
+      this.rendezvousCardUpdaters.delete(openId);
+      await this.replyFn(`✅ \`${shortId}\` 已自然完成，无需停止`, { openId });
+      return null;
+    }
   }
   entry.abort.abort();
   const updater = this.rendezvousCardUpdaters.get(openId);
@@ -1192,7 +1378,7 @@ private async handleRendezvousStopBgConfirm(
         type: 'session' as const,
         sessionUuid: entry.sessionUuid,
         cwd: entry.cwd,
-        createdAt: new Date().toISOString(),
+        // MappingEntry 无 createdAt 字段 (review 缺口 3), 不写
       };
       if (entry.attachedAt) newEntry.attachedAt = entry.attachedAt;
       await this.userManager.compareAndSwap(openId, current, newEntry);
@@ -1481,7 +1667,7 @@ PR 描述写明：(1) 60s→2h 动机；(2) 双按钮设计 + 两条路径条件
 
 9. **spool double-finalize 已验证 benign**：`spool.ts:582-617` `moveMessage` 源文件不存在时 silent return null。attached-chat 外层 + 内层各 markReplied/markDone 一次安全。
 
-10. **`eligibility.cwd` 字段名确认**：Task 4.2 Step 1 假设 cwd 在 `eligibility` 上，实际按 `bot.ts:1518` 函数签名 + checkRendezvousEligibility 返回值确认。若 cwd 不在 eligibility，从 `runStreamingRendezvousReply` 的 params 拿。
+10. **cwd 字段穿透（已通过 Task 4.2 Step 0 解决）**：`RendezvousEligibility` 接口（`rendezvous-fallback.ts:12-23`）**没有 `cwd` 字段**，`runStreamingRendezvousReply` 签名（`bot.ts:1518-1525`）也没有。Task 4.2 Step 0 已显式把 `cwd` 沿调用链（`runChatSDK` → `tryRendezvousReply` → `runStreamingRendezvousReply`）穿透 3 个签名 + 2 个 call site。Task 4.2 Step 1 的 `activeRendezvousWaits.set` 直接用 params 透传下来的 `cwd`。**review 缺口 1 已闭环**。
 
 ---
 
@@ -1497,7 +1683,10 @@ PR 描述写明：(1) 60s→2h 动机；(2) 双按钮设计 + 两条路径条件
 - ✓ 3 个 action tag + guard → Task 3.1
 - ✓ 确认卡 builder → Task 3.2
 - ✓ Map 含 attachedAt → Task 4.1
+- ✓ **cwd 字段穿透**（review 缺口 1）→ Task 4.2 Step 0
 - ✓ 3 个 handler **含条件化 user-mapping 恢复** → Cluster 4 (4.3, 4.5)
+- ✓ **race 守门**（review 缺口 2：bg 已收尾时不覆盖终态卡）→ Cluster 4 (4.3, 4.5)
+- ✓ **不写 createdAt**（review 缺口 3：MappingEntry 无此字段）→ Cluster 4 (4.3, 4.5)
 - ✓ Race 处理 → Task 4.5
 - ✓ Shutdown 清理 → Task 4.1 + Task 5.3 测试
 - ✓ Dispatch routing test → Task 5.1
