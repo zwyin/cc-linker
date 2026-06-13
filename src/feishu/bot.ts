@@ -1504,13 +1504,14 @@ export class FeishuBot {
     openId: string;
     sessionUuid: string;
     promptText: string;
+    cwd: string;
     messageId?: string;
   }): Promise<{
     handled: boolean;
     bgAskedNewQuestion: boolean;
     cardMessageId: string | null;
   }> {
-    const { openId, sessionUuid, promptText, messageId } = params;
+    const { openId, sessionUuid, promptText, cwd, messageId } = params;
     const short = sessionUuid.slice(0, 8);
     const eligibility = await checkRendezvousEligibility(short);
     if (!eligibility.canUse || !eligibility.rendezvousSock) {
@@ -1535,7 +1536,7 @@ export class FeishuBot {
     //   4. 失败 fallback (socket_closed/daemon_error): 走 v2.3.5 SDK
     //      (Phase 1 已经做了 ECONNREFUSED 检测, 这里 catch Phase 2 的 daemon_error)
     return await this.runStreamingRendezvousReply({
-      openId, sessionUuid, promptText, messageId, eligibility, timeoutMs,
+      openId, sessionUuid, promptText, cwd, messageId, eligibility, timeoutMs,
     });
   }
 
@@ -1547,6 +1548,7 @@ export class FeishuBot {
     openId: string;
     sessionUuid: string;
     promptText: string;
+    cwd: string;
     messageId?: string;
     eligibility: Awaited<ReturnType<typeof checkRendezvousEligibility>>;
     timeoutMs: number;
@@ -1555,7 +1557,7 @@ export class FeishuBot {
     bgAskedNewQuestion: boolean;
     cardMessageId: string | null;
   }> {
-    const { openId, sessionUuid, promptText, messageId, eligibility, timeoutMs } = params;
+    const { openId, sessionUuid, promptText, cwd, messageId, eligibility, timeoutMs } = params;
     const short = sessionUuid.slice(0, 8);
 
     // v2.4.1: Capture pre-injection baseline. Reading JSONL BEFORE submit ensures
@@ -1853,7 +1855,9 @@ export class FeishuBot {
       config.get<boolean>('agent_view.rendezvous_enabled', false)
     ) {
       const rv = await this.tryRendezvousReply({
-        openId, sessionUuid: inputSessionUuid, promptText, messageId,
+        openId, sessionUuid: inputSessionUuid, promptText,
+        cwd,  // inputSessionUuid 解构里已含 cwd (bot.ts:1820)
+        messageId,
       });
       if (rv.handled) {
         // Reply already sent, spool already finalized. Return sentinel.
