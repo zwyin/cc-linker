@@ -316,7 +316,7 @@ interface ProbeRecord {
 function makeVerdict(r: Omit<ProbeRecord, 'verdict'>): string {
   if (!r.sockExists) return 'SOCKET_MISSING';
   if (!r.connected) return 'CONNECT_FAIL: ' + r.error;
-  if (r.injectDurationMs >= 200) return 'INJECT_TIMEOUT (daemon 无应答)';
+  if (r.injectDurationMs >= 200 && !r.acked) return 'INJECT_TIMEOUT (daemon 无应答)';
   if (!r.acked) return 'DAEMON_IGNORED (写成功但无 state patch)';
   if (r.error) return 'DAEMON_ERROR: ' + r.error;
   // 真注入才看 respawn
