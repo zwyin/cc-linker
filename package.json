@@ -27,13 +27,15 @@
   },
   "files": [
     "dist/cli.js",
-    "dist/cli.js.map"
+    "dist/cli.js.map",
+    "scripts/postinstall.js"
   ],
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --compile --outfile dist/cc-linker",
     "build:npm": "bun build src/index.ts --outdir dist --target bun --sourcemap && mv dist/index.js dist/cli.js && mv dist/index.js.map dist/cli.js.map 2>/dev/null; chmod +x dist/cli.js",
     "prepublishOnly": "bun run build:npm",
+    "postinstall": "node scripts/postinstall.js",
     "link:local": "bun run build:npm && bun link",
     "unlink:local": "bun unlink cc-linker",
     "pack:test": "bun run build:npm && npm pack && mkdir -p /tmp/test-cc-linker && npm install --prefix /tmp/test-cc-linker ./cc-linker-$(node -p \"require('./package.json').version\").tgz",

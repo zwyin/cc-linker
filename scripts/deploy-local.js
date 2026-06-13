@@ -157,8 +157,9 @@ function installGlobal(tgz) {
   }
 
   log('📦 Installing globally:', tgz);
-  // npm install -g (同步执行, 等完成)
-  execFileSync('npm', ['install', '-g', join(PROJECT_ROOT, tgz)], {
+  // --ignore-scripts: 避免触发 package.json postinstall (它会调 cc-linker restart),
+  // 跟我们 deploy script 自己的 restart 逻辑竞争导致双重 restart
+  execFileSync('npm', ['install', '-g', '--ignore-scripts', join(PROJECT_ROOT, tgz)], {
     stdio: 'inherit',
     cwd: PROJECT_ROOT,
   });
