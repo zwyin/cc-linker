@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { JSONLScanner } from '../../../src/scanner/jsonl';
 import { RegistryManager } from '../../../src/registry';
-import { mkdtempSync, rmSync, mkdirSync, copyFileSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, copyFileSync, writeFileSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -220,5 +220,51 @@ describe('JSONLScanner', () => {
     const entry = registry.get(sessionId);
     // 字段不存在 = 老 entry 的语义,等同于 false(/list filter 用 !== true 比较)
     expect(entry?.is_subagent).toBeUndefined();
+  });
+
+  // 修复：stub session（JSONL 只有 marker 行，无 user/assistant 消息）的
+  // last_active fallback 不应该是 scanner 扫描时刻，而应该是 JSONL 文件本身的 mtime。
+  // 之前 `new Date().toISOString()` fallback 导致生产环境 7 个 stub session 全部
+  // 显示 "19 分钟前"（scanner 刚启动那一秒），用户报 bug：实际活跃时间是几天前。
+  it('uses file mtime as last_active fallback for stub sessions with only marker lines', async () => {
+    const sessionId = 'stub-marker-only-session-aaaa-bbbb-cccc-dddddddddddd';
+    const projectDir = join(tmpDir, '.claude', 'projects', '-Users-test-stub');
+    mkdirSync(projectDir, { recursive: true });
+    const jsonlPath = join(projectDir, `${sessionId}.jsonl`);
+
+    // 模拟生产环境真实 stub session：只有 ai-title + agent-name marker，没有 user/assistant。
+    writeFileSync(
+      jsonlPath,
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Review scan performance design', sessionId }) +
+        '\n' +
+        JSON.stringify({ type: 'agent-name', agentName: 'Review scan performance design', sessionId }) +
+        '\n',
+    );
+
+    // 把文件 mtime 设到 2 天前（用 UTC 字符串保持测试稳定）
+    const twoDaysAgo = new Date('2026-06-10T11:00:00Z');
+    utimesSync(jsonlPath, twoDaysAgo, twoDaysAgo);
+
+    const beforeScan = Date.now();
+    const scanner = new JSONLScanner(
+      registry,
+      new Map(),
+      join(tmpDir, '.claude'),
+    );
+    await scanner.scan();
+    const afterScan = Date.now();
+
+    const entry = registry.get(sessionId);
+    expect(entry).toBeDefined();
+    // 关键断言：last_active 必须等于文件 mtime，而不是 scanner 扫描时刻
+    expect(entry?.last_active).toBe(twoDaysAgo.toISOString());
+    // 显式反断言：绝不能用 scanner 当前时间作为 fallback
+    const lastActiveMs = new Date(entry!.last_active!).getTime();
+    expect(lastActiveMs).toBeLessThan(beforeScan);
+    expect(lastActiveMs).toBeLessThan(afterScan);
+    // created_at 同样应该 fallback 到文件 mtime（marker 行没有 timestamp）
+    expect(entry?.created_at).toBe(twoDaysAgo.toISOString());
+    // message_count 应为 0（marker 都被过滤）
+    expect(entry?.message_count).toBe(0);
   });
 });

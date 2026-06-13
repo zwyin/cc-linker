@@ -224,6 +224,9 @@ export class JSONLScanner {
   private parseFull(filePath: string, sessionId: string): Partial<SessionEntry> {
     const content = readFileSync(filePath, 'utf8');
     const lines = content.split('\n').filter(Boolean);
+    // 取文件 mtime 作为 created_at/last_active 的 fallback —— 避免把 scanner
+    // 扫描时刻误当成 session 真实活跃时刻（飞书 /list "19 分钟前" 集体误报 bug）。
+    const fileMtime = statSync(filePath).mtimeMs;
 
     let cwd: string | null = null;
     let aiTitle: string | null = null;
@@ -337,8 +340,13 @@ export class JSONLScanner {
       project_dir,
       title,
       message_count: messageLines.length,
-      created_at: createdAt ?? new Date().toISOString(),
-      last_active: lastActive ?? new Date().toISOString(),
+      // Fallback: JSONL 文件本身的 mtime (stat.mtimeMs 在函数顶部已 statSync)。
+      // 旧实现用 `new Date().toISOString()` 会把 scanner 扫描时刻误当成 session
+      // 活跃时刻,导致 stub session (只有 marker 无消息) 显示 "X 分钟前" ——
+      // 但 X 实际是 scanner 启动时刻,不是 session 真实活跃时间。
+      // 详见: 飞书 /list "19 分钟前" 集体误报 bug。
+      created_at: createdAt ?? new Date(fileMtime).toISOString(),
+      last_active: lastActive ?? new Date(fileMtime).toISOString(),
       // 三字段并存：last_message_preview 保留 100 字符（向后兼容 CLI/bot 多处复用）
       last_message_preview: preview ? preview.slice(0, 100) : (lastPrompt?.slice(0, 100) || '[无内容]'),
       // 新增 80 字符版（bot overview 卡片用）
