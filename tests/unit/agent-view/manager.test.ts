@@ -817,7 +817,7 @@ describe('handleReply (Step B)', () => {
     expect(errMsg).toContain('runChatSDK boom');
   });
 
-  test('v2.4: reply 完成后 cleared, 不再发旧完成消息 (bot.ts 负责 chat-text reply)', async () => {
+  test('v2.5: reply 完成后 user-mapping 恢复 plain session entry, 不再发旧完成消息 (bot.ts 负责 chat-text reply)', async () => {
     const { mgr, userManager, replyFn } = makeMgrWithSpies();
     const waiting = makeWaitingSession();
     (AgentSnapshotFetcher as any).fetch = mock(async () => ({
@@ -896,7 +896,7 @@ describe('handleReply (Step B)', () => {
   /**
    * v2.4.x: bg 跑完不回头 (done) → expectedReply stays cleared, 用户需 /agents
    */
-  test('v2.4.x: bg done → expectedReply stays cleared (用户需 /agents 重选)', async () => {
+  test('v2.5: bg done → expectedReply cleared, user-mapping 恢复 plain session entry (用户能继续对话, 不必 /agents 重选)', async () => {
     const { mgr, userManager } = makeMgrWithSpies();
     const waiting = makeWaitingSession();
     (AgentSnapshotFetcher as any).fetch = mock(async () => ({
