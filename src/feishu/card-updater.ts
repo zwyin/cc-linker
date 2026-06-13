@@ -185,6 +185,25 @@ export class CardUpdater {
     this.state = 'cancelled';
   }
 
+  /**
+   * v2.x: rendezvous abort/stop 专用终态 patch。比 cancel() 灵活:
+   * - 自定义 header title + template (不再硬编码 "🛑 已取消" grey)
+   * - body 完全可控 (不再硬加 "你可以随时发送新消息继续对话" 后缀)
+   */
+  async patchAbortedTracking(opts: {
+    headerTitle: string;
+    headerTemplate: 'grey' | 'blue' | 'red' | 'green' | 'yellow';
+    body: string;
+  }): Promise<void> {
+    await this.flushPending();
+    await this.patchCard({
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { title: { tag: 'plain_text', content: opts.headerTitle }, template: opts.headerTemplate },
+      elements: [{ tag: 'markdown', content: opts.body }],
+    });
+    this.state = 'cancelled';
+  }
+
   shouldFallbackToText(content: string): boolean {
     return new TextEncoder().encode(content).length > this.maxCardBytes;
   }

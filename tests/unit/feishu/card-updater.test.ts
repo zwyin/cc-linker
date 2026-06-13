@@ -193,3 +193,73 @@ test('cancelPending cancels scheduled timer — 终态 patch 不会被回退', a
 
   expect(m.patchFn).not.toHaveBeenCalled();
 });
+
+/**
+ * v2.x: rendezvous 模式 button 渲染 — [🔙 不等了] + [🛑 停 bg] 双按钮,
+ * [🛑 停 bg] 按钮 value 注入 shortId。default 模式保持原单按钮 [🛑 停止处理]。
+ * 原因: rendezvous 等待 bg 跟单 turn 处理不同 — 多了"不等了"(abort wait,
+ * bg 继续)和"停 bg"(真停 daemon)两个动作。
+ */
+describe('CardUpdater — streaming card button mode', () => {
+  const mockClient: any = {
+    im: { v1: { message: {
+      create: mock(async () => ({ data: { message_id: 'mid-1' } })),
+      patch: mock(async () => ({ code: 0 })),
+    } } },
+  };
+
+  test('default mode renders single [🛑 停止处理] with value.tag="stop"', () => {
+    const u = new CardUpdater(mockClient);
+    const card: any = (u as any).buildStreamingCard('', '', 0, []);
+    const a = card.elements.find((e: any) => e.tag === 'action');
+    expect(a.actions).toHaveLength(1);
+    expect(a.actions[0].text.content).toBe('🛑 停止处理');
+    expect(a.actions[0].value).toEqual({ tag: 'stop' });
+  });
+
+  test('rendezvous mode renders two buttons with shortId', () => {
+    const u = new CardUpdater(mockClient, { buttons: 'rendezvous' });
+    (u as any).setRendezvousShortId('abcd1234');
+    const card: any = (u as any).buildStreamingCard('', '', 0, []);
+    const a = card.elements.find((e: any) => e.tag === 'action');
+    expect(a.actions).toHaveLength(2);
+    expect(a.actions[0].text.content).toBe('🔙 不等了');
+    expect(a.actions[0].value).toEqual({ tag: 'agent_view_rendezvous_abort_wait' });
+    expect(a.actions[1].text.content).toBe('🛑 停 bg');
+    expect(a.actions[1].value).toEqual({
+      tag: 'agent_view_rendezvous_stop_bg_request', shortId: 'abcd1234',
+    });
+  });
+});
+
+/**
+ * v2.x: rendezvous abort/stop 专用终态 patch — 自定义 header + body,
+ * 不复用 cancel() (硬编码 "🛑 已取消" + "随时发送新消息" 后缀, 跟 abort
+ * 语义"bg 仍在 daemon"冲突)。
+ */
+describe('CardUpdater.patchAbortedTracking', () => {
+  test('emits custom header + body without "随时发送新消息" suffix', async () => {
+    const patches: any[] = [];
+    const mockClient: any = {
+      im: { v1: { message: {
+        create: mock(async () => ({ data: { message_id: 'mid-x' } })),
+        patch: mock(async (p: any) => { patches.push(JSON.parse(p.data.content)); return { code: 0 }; }),
+      } } },
+    };
+    const u = new CardUpdater(mockClient);
+    (u as any).cardMessageId = 'mid-x';
+
+    await u.patchAbortedTracking({
+      headerTitle: '🔙 已停止跟踪',
+      headerTemplate: 'grey',
+      body: 'bg 仍在 daemon 中运行 · /agents 可查看后续',
+    });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0].header.title.content).toBe('🔙 已停止跟踪');
+    expect(patches[0].header.template).toBe('grey');
+    const md = patches[0].elements.find((e: any) => e.tag === 'markdown');
+    expect(md.content).toBe('bg 仍在 daemon 中运行 · /agents 可查看后续');
+    expect(md.content).not.toContain('随时发送新消息');
+  });
+});
