@@ -546,6 +546,8 @@ export class AgentViewManager {
       createdAt: new Date().toISOString(),
       // 保留用户级 defaultProvider,不要因 attach 丢失
       defaultProvider: oldEntry?.defaultProvider,
+      // v2.4.x: 标记 attached entry,后续 chat 走 rendezvous 路径
+      attachedAt: new Date().toISOString(),
     };
     const ok2 = await this.deps.userManager.compareAndSwap(openId, null, newEntry);
     if (!ok2) {
@@ -994,9 +996,17 @@ export class AgentViewManager {
   /** Drop the user out of Agent View — pure text reply, no state mutation.
    *  v2.2: clear any pending expectedReply so the next chat message doesn't
    *  get re-routed as a reply (the user wants to chat, not reply to a
-   *  background session). */
+   *  background session).
+   *  v2.4.x: clear attachedAt but preserve session entry,后续 chat 走原 busy-check 路径。 */
   async handleBackToChat(openId: string): Promise<void> {
     await this.expectedReply.clear(openId, 'overwrite');
+    // v2.4.x: 清 attachedAt 但保留 session entry,后续 chat 走原 busy-check 路径
+    const entry = this.deps.userManager.getEntry(openId);
+    if (entry?.attachedAt) {
+      const cleared: MappingEntry = { ...entry };
+      delete cleared.attachedAt;
+      await this.deps.userManager.compareAndSwap(openId, entry, cleared);
+    }
     await this.deps.replyFn(
       '已退出 Agent View,继续发送消息或 / 命令即可。下次进 /agents 视图重新打 /agents。',
       { openId },
@@ -1006,6 +1016,14 @@ export class AgentViewManager {
   /** [Stop Watching] 按钮 handler */
   async handleStopWatching(openId: string): Promise<null> {
     await this.attachedWatchers.stop(openId, 'user_stop', { patchFinal: true });
+    // v2.4.x: 停止 watching 后,清 attachedAt 但保留 session entry
+    // (跟 handleBackToChat 一致逻辑 — 用户没说要离开 session,只是不想再 watch)
+    const entry = this.deps.userManager.getEntry(openId);
+    if (entry?.attachedAt) {
+      const cleared: MappingEntry = { ...entry };
+      delete cleared.attachedAt;
+      await this.deps.userManager.compareAndSwap(openId, entry, cleared);
+    }
     return null;
   }
 
