@@ -835,9 +835,15 @@ describe('handleReply (Step B)', () => {
 
     await mgr.handleReply('ou_reply_cont', '第一条');
 
-    // v2.4 行为: reply 完成后 user-mapping + in-memory 都清空
+    // v2.5 行为: reply 完成后 user-mapping 恢复成 plain session entry (让用户
+    // 继续对话, 不必 /agents 重选)。expectedReply in-memory 仍 cleared。
     expect(mgr.expectedReply.get('ou_reply_cont')).toBeUndefined();
-    expect(userManager.getEntry('ou_reply_cont')).toBeUndefined();
+    // user-mapping 应被恢复成 plain session entry
+    const restored = userManager.getEntry('ou_reply_cont');
+    expect(restored).not.toBeNull();
+    expect(restored).toEqual(expect.objectContaining({
+      type: 'session', sessionUuid: waiting.sessionId, cwd: waiting.cwd,
+    }));
     // v2.4: handleReply 不再发旧完成消息 — bot.ts 的 tryRendezvousReply 或 SDK P1-4 已发
     // 所以 replyFn 不应被调用 (no error, no fallback)
     const replyCalls = replyFn.mock.calls.filter(c => (c[0] as string).includes('已处理完'));
@@ -913,9 +919,14 @@ describe('handleReply (Step B)', () => {
 
     await mgr.handleReply('ou_reply_done', '继续');
 
-    // expectedReply 应该是 cleared (默认行为, 跟 v2.4 一致)
+    // expectedReply 应该是 cleared
     expect(mgr.expectedReply.get('ou_reply_done')).toBeUndefined();
-    expect(userManager.getEntry('ou_reply_done')).toBeUndefined();
+    // v2.5: user-mapping 恢复成 plain session entry (no new_needs 时)
+    const restoredDone = userManager.getEntry('ou_reply_done');
+    expect(restoredDone).not.toBeNull();
+    expect(restoredDone).toEqual(expect.objectContaining({
+      type: 'session',
+    }));
   });
 
   /**
@@ -942,6 +953,73 @@ describe('handleReply (Step B)', () => {
 
     expect(mgr.expectedReply.get('ou_reply_throw')).toBeUndefined();
     expect(userManager.getEntry('ou_reply_throw')).toBeUndefined();
+  });
+
+  test('v2.5 fix: normal completion (bg done, no new question) → restores user-mapping to session entry', async () => {
+    // 之前: markSent 把 user-mapping 清成 null, 没有任何逻辑恢复 → 用户再发消息
+    // 会被 resolveChatTarget 判 no_target 报 "当前没有活跃会话"
+    // 现在: 正常完成后 CAS 回 {type:'session', sessionUuid, cwd}
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [{
+        sessionId: waiting.sessionId, status: 'waiting' as const,
+        name: 'test', waitingFor: '?', cwd: '/p', pid: 0, startedAt: 0,
+      }],
+    }));
+    await mgr.expectedReply.set('ou_restore', {
+      shortId: waiting.shortId, sessionId: waiting.sessionId, cwd: '/p', messageId: 'mid-1',
+    });
+    expect(userManager.getEntry('ou_restore')?.type).toBe('pending_agent_reply');
+
+    // runChatSDK 返回 bgAskedNewQuestion=false (bg 答完就结束)
+    mgr.deps.runChatSDK = (async () => ({
+      result: {}, handler: {}, cardMessageId: 'mid-done',
+      rendezvousHandled: true, bgAskedNewQuestion: false,
+    })) as any;
+
+    await mgr.handleReply('ou_restore', '继续');
+
+    // expectedReply 已清
+    expect(mgr.expectedReply.get('ou_restore')).toBeUndefined();
+    // ⚠️ 关键: user-mapping 恢复成 plain session entry (没有 attachedAt)
+    const restored = userManager.getEntry('ou_restore');
+    expect(restored).not.toBeNull();
+    expect(restored).toEqual(expect.objectContaining({
+      type: 'session', sessionUuid: waiting.sessionId, cwd: '/p',
+    }));
+    expect(restored?.attachedAt).toBeUndefined();
+  });
+
+  test('v2.5 fix: bg asked new question → re-sets expectedReply (NOT plain session restore)', async () => {
+    // 确认现有 new_needs 行为没被破坏: re-set expectedReply, 不恢复 plain session
+    const { mgr, userManager } = makeMgrWithSpies();
+    const waiting = makeWaitingSession();
+    (AgentSnapshotFetcher as any).fetch = mock(async () => ({
+      ok: true,
+      sessions: [{
+        sessionId: waiting.sessionId, status: 'waiting' as const,
+        name: 'test', waitingFor: '?', cwd: '/p', pid: 0, startedAt: 0,
+      }],
+    }));
+    await mgr.expectedReply.set('ou_newneeds', {
+      shortId: waiting.shortId, sessionId: waiting.sessionId, cwd: '/p', messageId: 'mid-old',
+    });
+
+    mgr.deps.runChatSDK = (async () => ({
+      result: {}, handler: {}, cardMessageId: 'mid-new',
+      rendezvousHandled: true, bgAskedNewQuestion: true,
+    })) as any;
+
+    await mgr.handleReply('ou_newneeds', '继续');
+
+    // expectedReply 重新 set (新 messageId)
+    const re = mgr.expectedReply.get('ou_newneeds');
+    expect(re).toBeDefined();
+    expect(re?.messageId).toBe('mid-new');
+    // user-mapping 仍是 pending_agent_reply (不是 plain session)
+    expect(userManager.getEntry('ou_newneeds')?.type).toBe('pending_agent_reply');
   });
 });
 

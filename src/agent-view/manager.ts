@@ -972,6 +972,32 @@ export class AgentViewManager {
         // re-set 失败不阻塞 reply 已完成, 记日志即可
         logger.warn(`handleReply: re-set expectedReply 失败: ${err?.message ?? err}`);
       }
+    } else {
+      // v2.5 fix: 正常完成 (bg 答完没问新问题) 时, markSent 已经把 user-mapping
+      // 从 pending_agent_reply 清成 null, 没有任何逻辑把它恢复成 plain session
+      // entry, 用户再发消息会被 resolveChatTarget 判 no_target → "当前没有
+      // 活跃会话" 错误 (pre-existing bug, v2.4.x 引入 rendezvous 后才暴露出来)。
+      //
+      // 修复: 这里把 user-mapping CAS 回 {type:'session', sessionUuid, cwd}
+      // 让用户能继续对话 (走 busy-check / 正常 chat 路径)。
+      // 不带 attachedAt — 这是 from-Reply 路径,不是 from-Attach 路径。
+      try {
+        const current = this.deps.userManager.getEntry(openId) ?? null;
+        const restored: MappingEntry = {
+          type: 'session' as const,
+          sessionUuid: info.sessionId,
+          cwd: info.cwd,
+          createdAt: new Date().toISOString(),
+        };
+        const ok = await this.deps.userManager.compareAndSwap(openId, current, restored);
+        if (ok) {
+          logger.info(`handleReply: 回复完成 (no new_needs), 恢复 user-mapping 为 session entry`);
+        } else {
+          logger.warn(`handleReply: restore user-mapping CAS 失败 (stale, 无害)`);
+        }
+      } catch (e: any) {
+        logger.warn(`handleReply: restore user-mapping 异常: ${e?.message ?? e}`);
+      }
     }
 
     // v2.4: bot.ts 的 tryRendezvousReply 或 SDK P1-4 已发送 chat-text 回复,

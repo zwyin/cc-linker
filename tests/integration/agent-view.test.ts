@@ -220,7 +220,14 @@ describe('Agent View end-to-end', () => {
 
     // expectedReply 已被清除(try/finally 保证)
     expect(mgr.expectedReply.get('ou_e2e_reply')).toBeUndefined();
-    expect(userManager.getEntry('ou_e2e_reply')).toBeUndefined();
+    // v2.5 fix: user-mapping 恢复成 plain session entry (无 new_needs 时),
+    // 让用户能继续对话。test 中 runChatSDK mock 没设 bgAskedNewQuestion (默认 undefined)
+    // → falsy → 走 plain session restore 分支。
+    const e2eRestored = userManager.getEntry('ou_e2e_reply');
+    expect(e2eRestored).not.toBeNull();
+    expect(e2eRestored).toEqual(expect.objectContaining({
+      type: 'session',
+    }));
   });
 
   test('reply rejected when status changed to busy (Step B re-guard)', async () => {
