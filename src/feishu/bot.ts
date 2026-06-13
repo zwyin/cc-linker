@@ -148,6 +148,30 @@ export class FeishuBot {
   /** Live progress watchers, keyed by openId. One watcher per user. */
   private liveWatchers = new Map<string, LiveProgressWatcher>();
 
+  /**
+   * Active rendezvous reply waits keyed by openId.
+   *
+   * 存 AbortController + 原 session 上下文 (sessionUuid + cwd + attachedAt):
+   *   - abort: handler 用来打断 poll 循环
+   *   - sessionUuid / cwd: 恢复 user-mapping (markSent 在 from-Reply 路径清了)
+   *   - attachedAt: from-Attach 入口时 ≠ undefined; handler 恢复时保留, 让用户后续
+   *     消息仍走 rendezvous 路径 (不保留则降级到 busy-check, Attach 语义丢)
+   *
+   * Serialized per-user by spool's serialKey lock, 同 openId 最多 1 个在飞 wait。
+   */
+  private activeRendezvousWaits = new Map<string, {
+    abort: AbortController;
+    sessionUuid: string;
+    cwd: string;
+    attachedAt: string | undefined;  // from-Attach 路径时填, from-Reply 时 undefined
+  }>();
+
+  /**
+   * CardUpdater instances for active rendezvous waits, keyed by openId.
+   * Handler 用它 patch 流式卡到 abort 终态。
+   */
+  private rendezvousCardUpdaters = new Map<string, CardUpdater>();
+
   /** Maximum time to wait for user to click "force-send" on busy card before
    *  auto-processing the message as force-send. Prevents infinite accumulation
    *  of orphan messages in processing/ that would be re-cycled on daemon restart.
@@ -416,6 +440,10 @@ export class FeishuBot {
     if (this.agentView) {
       await this.agentView.attachedWatchers.stopAll();
     }
+    // Abort 所有在飞 rendezvous waits, 让 poll 循环干净退出
+    for (const entry of this.activeRendezvousWaits.values()) entry.abort.abort();
+    this.activeRendezvousWaits.clear();
+    this.rendezvousCardUpdaters.clear();
     await Promise.all(watchers.map(w => w.stop('bot_shutdown')));
   }
 
