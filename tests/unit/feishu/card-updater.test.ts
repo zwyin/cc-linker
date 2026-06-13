@@ -193,3 +193,145 @@ test('cancelPending cancels scheduled timer — 终态 patch 不会被回退', a
 
   expect(m.patchFn).not.toHaveBeenCalled();
 });
+
+/**
+ * v2.x: rendezvous 模式 button 渲染 — [🔙 不等了] + [🛑 停 bg] 双按钮,
+ * [🛑 停 bg] 按钮 value 注入 shortId。default 模式保持原单按钮 [🛑 停止处理]。
+ * 原因: rendezvous 等待 bg 跟单 turn 处理不同 — 多了"不等了"(abort wait,
+ * bg 继续)和"停 bg"(真停 daemon)两个动作。
+ */
+describe('CardUpdater — streaming card button mode', () => {
+  const mockClient: any = {
+    im: { v1: { message: {
+      create: mock(async () => ({ data: { message_id: 'mid-1' } })),
+      patch: mock(async () => ({ code: 0 })),
+    } } },
+  };
+
+  test('default mode renders single [🛑 停止处理] with value.tag="stop"', () => {
+    const u = new CardUpdater(mockClient);
+    const card: any = (u as any).buildStreamingCard('', '', 0, []);
+    const a = card.elements.find((e: any) => e.tag === 'action');
+    expect(a.actions).toHaveLength(1);
+    expect(a.actions[0].text.content).toBe('🛑 停止处理');
+    expect(a.actions[0].value).toEqual({ tag: 'stop' });
+  });
+
+  test('rendezvous mode renders two buttons with shortId', () => {
+    const u = new CardUpdater(mockClient, { buttons: 'rendezvous' });
+    (u as any).setRendezvousShortId('abcd1234');
+    const card: any = (u as any).buildStreamingCard('', '', 0, []);
+    const a = card.elements.find((e: any) => e.tag === 'action');
+    expect(a.actions).toHaveLength(2);
+    expect(a.actions[0].text.content).toBe('🔙 不等了');
+    expect(a.actions[0].value).toEqual({ tag: 'agent_view_rendezvous_abort_wait' });
+    expect(a.actions[1].text.content).toBe('🛑 停 bg');
+    expect(a.actions[1].value).toEqual({
+      tag: 'agent_view_rendezvous_stop_bg_request', shortId: 'abcd1234',
+    });
+  });
+});
+
+/**
+ * v2.x: rendezvous abort/stop 专用终态 patch — 自定义 header + body,
+ * 不复用 cancel() (硬编码 "🛑 已取消" + "随时发送新消息" 后缀, 跟 abort
+ * 语义"bg 仍在 daemon"冲突)。
+ */
+describe('CardUpdater.patchAbortedTracking', () => {
+  test('emits custom header + body without "随时发送新消息" suffix', async () => {
+    const patches: any[] = [];
+    const mockClient: any = {
+      im: { v1: { message: {
+        create: mock(async () => ({ data: { message_id: 'mid-x' } })),
+        patch: mock(async (p: any) => { patches.push(JSON.parse(p.data.content)); return { code: 0 }; }),
+      } } },
+    };
+    const u = new CardUpdater(mockClient);
+    (u as any).cardMessageId = 'mid-x';
+
+    await u.patchAbortedTracking({
+      headerTitle: '🔙 已停止跟踪',
+      headerTemplate: 'grey',
+      body: 'bg 仍在 daemon 中运行 · /agents 可查看后续',
+    });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0].header.title.content).toBe('🔙 已停止跟踪');
+    expect(patches[0].header.template).toBe('grey');
+    const md = patches[0].elements.find((e: any) => e.tag === 'markdown');
+    expect(md.content).toBe('bg 仍在 daemon 中运行 · /agents 可查看后续');
+    expect(md.content).not.toContain('随时发送新消息');
+  });
+});
+
+/**
+ * 时序契约: setRendezvousShortId 必须在 startProcessing 之前调, 否则
+ * 首次渲染的"处理中"卡的 [🛑 停 bg] 按钮 value.shortId 为空串 (按钮可点
+ * 但点了也无效, handler 收到 empty shortId 调 claude stop 会失败)。
+ * 后续 updateStream → flushPending 的 patch 会用最新 shortId 覆盖, 所以
+ * 用户看到的是"第一张卡按钮坏,后续卡片按钮好" — 这种半工作状态最差。
+ * 本 describe 锁定"首次渲染"这个最关键时点的不变量。
+ */
+describe('CardUpdater.setRendezvousShortId — timing contract (first-render invariant)', () => {
+  function makeClient() {
+    return {
+      im: { v1: { message: {
+        create: mock(async () => ({ data: { message_id: 'om_timing' } })),
+        patch: mock(async () => ({})),
+      } } },
+    };
+  }
+
+  /** 解析 createFn 收到的首次渲染卡内容, 找 [🛑 停 bg] 按钮的 shortId。 */
+  function firstRenderStopBtnShortId(client: any): string {
+    const createCall = client.im.v1.message.create.mock.calls[0];
+    const card = JSON.parse(createCall[0].data.content);
+    const action = card.elements.find((e: any) => e.tag === 'action');
+    const stopBtn = action.actions.find((a: any) => a.value.tag === 'agent_view_rendezvous_stop_bg_request');
+    return stopBtn.value.shortId;
+  }
+
+  test('correct order: setRendezvousShortId BEFORE startProcessing → first render has shortId', async () => {
+    const client = makeClient();
+    const u = new CardUpdater(client, { buttons: 'rendezvous' });
+    u.setRendezvousShortId('abc12345');
+    await u.startProcessing('ou_user1');
+    expect(firstRenderStopBtnShortId(client)).toBe('abc12345');
+  });
+
+  test('wrong order: setRendezvousShortId AFTER startProcessing → first render has empty shortId', async () => {
+    const client = makeClient();
+    const u = new CardUpdater(client, { buttons: 'rendezvous' });
+    await u.startProcessing('ou_user1');  // 首次渲染发生在 set 之前
+    u.setRendezvousShortId('abc12345');   // 太晚, 下次 patch 才会用到
+    expect(firstRenderStopBtnShortId(client)).toBe('');
+  });
+
+  test('forgot to set: first render shortId is empty (graceful degrade, button is broken)', async () => {
+    const client = makeClient();
+    const u = new CardUpdater(client, { buttons: 'rendezvous' });
+    await u.startProcessing('ou_user1');
+    // 完全没调 setRendezvousShortId
+    expect(firstRenderStopBtnShortId(client)).toBe('');
+  });
+
+  test('documented production call site in bot.ts:setRendezvousShortId is before startProcessing', () => {
+    // 静态契约: bot.ts:1606 必须有"setRendezvousShortId 在 startProcessing 之前"的注释
+    // 这是防 regression 的最小保障 — 如果未来谁删了注释, 这个测试会失败提醒。
+    // 测试本身只 verify 注释存在 + 顺序对, 不依赖运行时行为。
+    const fs = require('fs');
+    const botTs = fs.readFileSync('src/feishu/bot.ts', 'utf8');
+    // 找 runStreamingRendezvousReply 内的 setRendezvousShortId 上下文
+    const setIdx = botTs.indexOf('cardUpdater.setRendezvousShortId(short);');
+    expect(setIdx).toBeGreaterThan(-1);
+    // 紧跟的 startProcessing 调用
+    const startIdx = botTs.indexOf('cardUpdater.startProcessing(openId);', setIdx);
+    expect(startIdx).toBeGreaterThan(-1);
+    // 在 setIdx 之前 (注释在调用之前) 找"必须在 startProcessing 之前"的提示语
+    const warnBeforeSet = botTs.lastIndexOf('必须在 startProcessing 之前', setIdx);
+    expect(warnBeforeSet).toBeGreaterThan(-1);
+    // 顺序: 注释 → setRendezvousShortId → startProcessing
+    expect(warnBeforeSet).toBeLessThan(setIdx);
+    expect(setIdx).toBeLessThan(startIdx);
+  });
+});

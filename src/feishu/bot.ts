@@ -16,7 +16,7 @@ import { readLastAssistantTurn, waitForNewAssistantTurn, type LastAssistantTurn 
 import { readJobState } from '../agent-view/job-state';
 import { formatTokenCount } from './card-updater';
 import { StreamChunk } from '../proxy/stream-parser';
-import { CardUpdater } from './card-updater';
+import { CardUpdater, type CardState } from './card-updater';
 import { LiveProgressWatcher, isSessionProcessing, DEFAULT_LIVE_PROGRESS_CONFIG, type LiveProgressConfig } from './live-progress';
 import { PermissionHandler, type PermissionPrompt } from '../proxy/permission-handler';
 import { esc } from './markdown-escape';
@@ -148,11 +148,48 @@ export class FeishuBot {
   /** Live progress watchers, keyed by openId. One watcher per user. */
   private liveWatchers = new Map<string, LiveProgressWatcher>();
 
+  /**
+   * Active rendezvous reply waits keyed by openId.
+   *
+   * 存 AbortController + 原 session 上下文 (sessionUuid + cwd + attachedAt):
+   *   - abort: handler 用来打断 poll 循环
+   *   - sessionUuid / cwd: 恢复 user-mapping (markSent 在 from-Reply 路径清了)
+   *   - attachedAt: from-Attach 入口时 ≠ undefined; handler 恢复时保留, 让用户后续
+   *     消息仍走 rendezvous 路径 (不保留则降级到 busy-check, Attach 语义丢)
+   *
+   * Serialized per-user by spool's serialKey lock, 同 openId 最多 1 个在飞 wait。
+   */
+  private activeRendezvousWaits = new Map<string, {
+    abort: AbortController;
+    sessionUuid: string;
+    cwd: string;
+    attachedAt: string | undefined;  // from-Attach 路径时填, from-Reply 时 undefined
+  }>();
+
+  /**
+   * CardUpdater instances for active rendezvous waits, keyed by openId.
+   * Handler 用它 patch 流式卡到 abort 终态。
+   */
+  private rendezvousCardUpdaters = new Map<string, CardUpdater>();
+
   /** Maximum time to wait for user to click "force-send" on busy card before
    *  auto-processing the message as force-send. Prevents infinite accumulation
    *  of orphan messages in processing/ that would be re-cycled on daemon restart.
    *  Default: 60 seconds. */
   private static readonly BUSY_TIMEOUT_MS = 60_000;
+
+  /**
+   * v2.x: CardUpdater 终态集合, 在 race-guard 守门 (review gap 2) 时检查
+   *   - complete: bg 已成功完成, 卡已显示 ✅ 处理完成
+   *   - error: bg 报失败, 卡已显示 ❌ 错误
+   *   - cancelled: 用户主动取消 (走 patchAbortedTracking)
+   * 用户点 [🔙 不等了] 或 [✅ 确认停止 bg] 时若 CardUpdater 已是这些状态
+   * 之一, 跳过 abort / 不覆盖终态卡 (避免从 "✅ 处理完成" 被覆盖成
+   * "🔙 已停止跟踪" 的 UX bug)。
+   */
+  private static readonly TERMINAL_CARD_STATES: ReadonlySet<CardState> = new Set<CardState>([
+    'complete', 'error', 'cancelled',
+  ]);
 
   constructor(opts: {
     userManager: UserManager;
@@ -416,6 +453,10 @@ export class FeishuBot {
     if (this.agentView) {
       await this.agentView.attachedWatchers.stopAll();
     }
+    // Abort 所有在飞 rendezvous waits, 让 poll 循环干净退出
+    for (const entry of this.activeRendezvousWaits.values()) entry.abort.abort();
+    this.activeRendezvousWaits.clear();
+    this.rendezvousCardUpdaters.clear();
     await Promise.all(watchers.map(w => w.stop('bot_shutdown')));
   }
 
@@ -588,6 +629,14 @@ export class FeishuBot {
         case 'agent_view_stop_watching':
           await this.agentView.handleStopWatching(openId);
           return null;
+        // v2.x: rendezvous abort/stop-bg 双按钮。tag 命名空间在 agent_view_ 下,
+        // 但 handler 在 FeishuBot 上 (需访问 activeRendezvousWaits/userManager)。
+        case 'agent_view_rendezvous_abort_wait':
+          return await this.handleRendezvousAbortWait(openId);
+        case 'agent_view_rendezvous_stop_bg_request':
+          return await this.handleRendezvousStopBgRequest(openId, valueObj.shortId);
+        case 'agent_view_rendezvous_stop_bg_confirm':
+          return await this.handleRendezvousStopBgConfirm(openId, valueObj.shortId);
         default:
           return null;
       }
@@ -1476,13 +1525,14 @@ export class FeishuBot {
     openId: string;
     sessionUuid: string;
     promptText: string;
+    cwd: string;
     messageId?: string;
   }): Promise<{
     handled: boolean;
     bgAskedNewQuestion: boolean;
     cardMessageId: string | null;
   }> {
-    const { openId, sessionUuid, promptText, messageId } = params;
+    const { openId, sessionUuid, promptText, cwd, messageId } = params;
     const short = sessionUuid.slice(0, 8);
     const eligibility = await checkRendezvousEligibility(short);
     if (!eligibility.canUse || !eligibility.rendezvousSock) {
@@ -1507,7 +1557,7 @@ export class FeishuBot {
     //   4. 失败 fallback (socket_closed/daemon_error): 走 v2.3.5 SDK
     //      (Phase 1 已经做了 ECONNREFUSED 检测, 这里 catch Phase 2 的 daemon_error)
     return await this.runStreamingRendezvousReply({
-      openId, sessionUuid, promptText, messageId, eligibility, timeoutMs,
+      openId, sessionUuid, promptText, cwd, messageId, eligibility, timeoutMs,
     });
   }
 
@@ -1519,6 +1569,7 @@ export class FeishuBot {
     openId: string;
     sessionUuid: string;
     promptText: string;
+    cwd: string;
     messageId?: string;
     eligibility: Awaited<ReturnType<typeof checkRendezvousEligibility>>;
     timeoutMs: number;
@@ -1527,7 +1578,7 @@ export class FeishuBot {
     bgAskedNewQuestion: boolean;
     cardMessageId: string | null;
   }> {
-    const { openId, sessionUuid, promptText, messageId, eligibility, timeoutMs } = params;
+    const { openId, sessionUuid, promptText, cwd, messageId, eligibility, timeoutMs } = params;
     const short = sessionUuid.slice(0, 8);
 
     // v2.4.1: Capture pre-injection baseline. Reading JSONL BEFORE submit ensures
@@ -1552,16 +1603,36 @@ export class FeishuBot {
       return { handled: false, bgAskedNewQuestion: false, cardMessageId: null };
     }
 
+    // 在 startProcessing 之前读 user-mapping 的 attachedAt:
+    //  - from-Reply 路径: markSent 已清, entry 为 null → attachedAt undefined
+    //  - from-Attach 路径: entry = {type:'session', sessionUuid, attachedAt, ...} → attachedAt 有值
+    // handler abort 后用这个值条件化恢复 user-mapping
+    const entryAtStart = this.userManager.getEntry(openId);
+    const sourceAttachedAt = entryAtStart?.type === 'session' ? entryAtStart.attachedAt : undefined;
+
     // v2.4.x 分层卡片: 总是新发"处理中"卡。原"↩️ 回复"等待卡保留为
     // 历史不动, 不会被 transition。这样 chat 列表保留完整上下文:
     //   [旧等待卡(黄)] → 继续 → [新处理中卡(蓝)] → 终结 → [完成/新等待(绿/黄)]
     // 旧设计 "接管等待卡" 会丢掉 waiting reason / cwd / recent output,
     // 而且 transition 过程用户看不清卡在切换。
     const cardUpdater = new CardUpdater(this.feishuClient!, {
-      throttle_ms: 5000,  // v2.4.x: 流式 patch 5s 节流
+      throttle_ms: config.get<number>('stream.throttle_ms', 1500),
+      buttons: 'rendezvous',  // 渲染 [🔙 不等了] + [🛑 停 bg] 双按钮
     });
+    // ⚠️ 必须在 startProcessing 之前 — 否则首帧渲染时 [停 bg] 按钮 value.shortId 为空串
+    cardUpdater.setRendezvousShortId(short);
     // 总是新发"处理中"卡。原"↩️ 回复"等待卡保留为历史, 不动。
     await cardUpdater.startProcessing(openId);
+
+    // 注册 abort + cardUpdater + 原 session 上下文 (cwd 由 Step 0 沿调用链传下来)
+    const ac = new AbortController();
+    this.activeRendezvousWaits.set(openId, {
+      abort: ac,
+      sessionUuid,                                // 从 runStreamingRendezvousReply params
+      cwd,                                        // 来自 runStreamingRendezvousReply params (Step 0 穿透)
+      attachedAt: sourceAttachedAt,
+    });
+    this.rendezvousCardUpdaters.set(openId, cardUpdater);
 
     // Phase 2: 边 poll 边流式 patch
     const startTime = Date.now();
@@ -1579,8 +1650,9 @@ export class FeishuBot {
       short,
       stateJsonPath: eligibility.stateJsonPath!,
       timeoutMs,
-      // poll 间隔: 默认 500ms (RendezvousClient 内部), 配合 5s 卡片节流
-      // 形成 1Hz 卡片刷新节奏
+      signal: ac.signal,
+      // poll 间隔: 默认 500ms (RendezvousClient 内部), 配合 stream.throttle_ms
+      // (默认 1.5s) 卡片节流, 形成 ~3 polls/patch (≈1.5s/patch) 节奏
       onPoll: async (state) => {
         if (state.kind === 'active' && eligibility.jsonlPath) {
           // bg 在跑: 读 JSONL 末次 turn (含 thinking + tool_uses + text)
@@ -1713,25 +1785,36 @@ export class FeishuBot {
         // 不发错误消息, 让 v2.3.5 路径发"处理中"卡 + SDK 完成回复
         // 这里没有"撤掉处理中卡", v2.3.5 会在原卡上覆盖 (也合理:
         // 跟 chat-text "Claude daemon 已停止" 误报对比, 这是过渡版, 下次大改再做)
+        this.activeRendezvousWaits.delete(openId);
+        this.rendezvousCardUpdaters.delete(openId);
         return { handled: false, bgAskedNewQuestion: false, cardMessageId: null };
       }
-      try {
-        const errMsg = rendezvousResult.reason === 'timeout'
-          ? `⏱ bg 处理超时（${Math.round(timeoutMs / 1000)}s 内未完成）`
-          : `❌ Reply 失败：${rendezvousResult.reason}`;
-        await cardUpdater.error(errMsg);
-      } catch (err: any) {
-        logger.warn(`rendezvous: cardUpdater.error 失败: ${err?.message ?? err}`);
+      if (rendezvousResult.reason === 'aborted') {
+        // 用户点 [🔙 不等了] 或 [🛑 停 bg] 触发的 abort。终态卡 + user-mapping
+        // 恢复已由 handler 完成, 这里 log + 走收尾, 不发额外的 error 卡覆盖 handler 内容。
+        logger.info(`rendezvous: aborted by user action (openId=${openId})`);
+      } else {
+        try {
+          const errMsg = rendezvousResult.reason === 'timeout'
+            ? `⏱ bg 处理超时（${Math.round(timeoutMs / 1000)}s 内未完成）`
+            : `❌ Reply 失败：${rendezvousResult.reason}`;
+          await cardUpdater.error(errMsg);
+        } catch (err: any) {
+          logger.warn(`rendezvous: cardUpdater.error 失败: ${err?.message ?? err}`);
+        }
+        logger.error(
+          `rendezvous: inject failed reason=${rendezvousResult.reason} (no fallback)`,
+        );
       }
-      logger.error(
-        `rendezvous: inject failed reason=${rendezvousResult.reason} (no fallback)`,
-      );
     }
 
     // v2.4.x: 终态 patch 完必须 cancelPending, 否则 5s 节流的 pending timer
     // 会在终态后 fire, 把卡片从"↩️ 回复"/"✅ 完成"/"❌ 错误" revert 回
     // "💭 处理中"。用户就看到卡片卡在 3s 不刷新 (因为 revert 时刻的
     // elapsed 正是 3s 左右)。
+    // 清 rendezvous tracking maps (idempotent — handler 可能已清, deleted-twice 安全)
+    this.activeRendezvousWaits.delete(openId);
+    this.rendezvousCardUpdaters.delete(openId);
     cardUpdater.cancelPending();
 
     // 不发 chat-text, 卡片已经是反馈
@@ -1747,6 +1830,218 @@ export class FeishuBot {
       bgAskedNewQuestion,
       cardMessageId: cardUpdater.getCardMessageId(),
     };
+  }
+
+  /**
+   * [🔙 不等了] 按钮处理:
+   *   1) **race 守门** (review gap 2): 如果 CardUpdater 已处于终态 (complete/error/cancelled),
+   *      用户点 [🔙 不等了] 已晚于 bg 收尾, 不要覆盖终态卡 (否则会从 "✅ 处理完成"
+   *      被覆盖成 "🔙 已停止跟踪", 误导)。直接 no-op 返回。
+   *   2) abort rendezvous poll 循环
+   *   3) patch 流式卡到 "🔙 已停止跟踪" 终态 (patchAbortedTracking, 不用 cancel)
+   *   4) **条件化恢复 user-mapping**:
+   *      - from-Reply (entry.attachedAt undefined): 恢复 plain session entry
+   *      - from-Attach (entry.attachedAt 有值): 恢复时保留 attachedAt, 后续仍走 rendezvous
+   *   5) 清 maps
+   *
+   * Idempotent: 重复点 / map 没条目时 no-op
+   */
+  private async handleRendezvousAbortWait(openId: string): Promise<string | null> {
+    const entry = this.activeRendezvousWaits.get(openId);
+    if (!entry) {
+      logger.info(`handleRendezvousAbortWait: no active wait for openId=${openId}`);
+      return null;
+    }
+    // v2.x race 守门 (review gap 2): 如果 CardUpdater 已处于终态, 用户点 [🔙 不等了]
+    // 已晚于 bg 收尾, 不要覆盖终态卡。窄 race window: 用户 click 入服务端队列
+    // 之后但 runStreamingRendezvousReply 终态块跑完前的瞬间, entry 还在 map
+    // 但 updater.getState() === 'complete'/'error'/'cancelled'。
+    const earlyUpdater = this.rendezvousCardUpdaters.get(openId);
+    if (earlyUpdater) {
+      const earlyState = earlyUpdater.getState();
+      if (FeishuBot.TERMINAL_CARD_STATES.has(earlyState as CardState)) {
+        logger.info(
+          `handleRendezvousAbortWait: skipped (terminal state=${earlyState}, openId=${openId}, ` +
+          `bg 已先收尾, 不覆盖终态卡)`,
+        );
+        // 不清 maps — 让 runStreamingRendezvousReply 终态块自己清 (idempotent)
+        return null;
+      }
+    }
+    entry.abort.abort();
+    const updater = this.rendezvousCardUpdaters.get(openId);
+    this.activeRendezvousWaits.delete(openId);
+    this.rendezvousCardUpdaters.delete(openId);
+
+    // 恢复 user-mapping (条件化)
+    try {
+      const current = this.userManager.getEntry(openId) ?? null;
+      const newEntry: any = {
+        type: 'session' as const,
+        sessionUuid: entry.sessionUuid,
+        cwd: entry.cwd,
+        // MappingEntry 无 createdAt 字段 (review gap 3), 不写
+      };
+      if (entry.attachedAt) {
+        // from-Attach: 保留原 attachedAt, 让用户下次发消息仍走 rendezvous
+        newEntry.attachedAt = entry.attachedAt;
+      }
+      const ok = await this.userManager.compareAndSwap(openId, current, newEntry);
+      if (!ok) {
+        logger.warn(`handleRendezvousAbortWait: user-mapping CAS failed for ${openId} (stale, harmless)`);
+      }
+    } catch (err: any) {
+      logger.warn(`handleRendezvousAbortWait: restore user-mapping failed: ${err?.message ?? err}`);
+    }
+
+    if (updater) {
+      try {
+        await updater.patchAbortedTracking({
+          headerTitle: '🔙 已停止跟踪',
+          headerTemplate: 'grey',
+          body: entry.attachedAt
+            ? 'bg 仍在 daemon 中运行 · 已保留 Attach 状态, 下条消息仍走 rendezvous · /agents 可查看'
+            : 'bg 仍在 daemon 中运行 · /agents 可查看后续 · 直接发消息会触发 bg-conflict 确认',
+        });
+        updater.cancelPending();
+      } catch (err: any) {
+        logger.warn(`handleRendezvousAbortWait: patch failed: ${err?.message ?? err}`);
+      }
+    }
+    logger.info(`handleRendezvousAbortWait: aborted (openId=${openId}, attached=${!!entry.attachedAt})`);
+    return null;
+  }
+
+  /**
+   * [🛑 停 bg] 按钮 Step A: 弹二次确认卡。
+   * 不 abort、不杀 bg、不动 maps、不动 user-mapping —— 用户在确认卡上点
+   * [✅ 确认停止 bg] 才真执行 (handleRendezvousStopBgConfirm)。
+   */
+  private async handleRendezvousStopBgRequest(
+    openId: string,
+    shortId: string,
+  ): Promise<string | null> {
+    if (!this.cardReplyFn) {
+      logger.warn(`handleRendezvousStopBgRequest: no cardReplyFn wired (openId=${openId})`);
+      return null;
+    }
+    const { buildRendezvousStopConfirmCard } = await import('../agent-view/card');
+    const cardStr = buildRendezvousStopConfirmCard(shortId);
+    const card = JSON.parse(cardStr);
+    await this.cardReplyFn(card, { openId });
+    return null;
+  }
+
+  /**
+   * [🛑 停 bg] Step B: 真执行 claude stop + abort wait + 条件化恢复 user-mapping。
+   *
+   * Race 1: 用户点 [停 bg] → 确认卡发出 → 期间 bg 自然完成 (state=done) → poll 退出 →
+   * runStreamingRendezvousReply 终态块已清 activeRendezvousWaits → 用户再点
+   * [✅ 确认] 进入此函数时 get() 返 undefined → 走"已自然完成"分支, 不杀 bg。
+   *
+   * Race 2 (review gap 2): bg 在用户点 [✅ 确认] 之前的瞬间刚完成 → handler 进入时
+   * entry 还在 map (终态块还没清), 但 updater.getState() === 'complete'。此时不调
+   * claude stop (bg 已死了, 调了也是 "No job matching" 兜底), 走"已自然完成"分支。
+   *
+   * "No job matching" stderr 同 manager.ts:handleStopConfirm — 视为成功。
+   */
+  private async handleRendezvousStopBgConfirm(
+    openId: string,
+    shortId: string,
+  ): Promise<string | null> {
+    const entry = this.activeRendezvousWaits.get(openId);
+    if (!entry) {
+      await this.replyFn(`✅ \`${shortId}\` 已自然完成，无需停止`, { openId });
+      return null;
+    }
+    // v2.x race 守门 2 (review gap 2): bg 在用户点 [✅ 确认] 之前已收尾,
+    // 但终态块还没清 maps。检查 CardUpdater 状态避免重复 stop + 覆盖终态卡。
+    // 注: 此分支提前 return null, 不会进下面的 try/catch, 所以这里的 replyFn
+    // 调用单独 try/catch 防 reply 通道失败时整函数 throw。
+    const earlyUpdater = this.rendezvousCardUpdaters.get(openId);
+    if (earlyUpdater) {
+      const earlyState = earlyUpdater.getState();
+      if (FeishuBot.TERMINAL_CARD_STATES.has(earlyState as CardState)) {
+        logger.info(
+          `handleRendezvousStopBgConfirm: skipped claude stop (terminal state=${earlyState}, ` +
+          `openId=${openId}, bg 已先收尾)`,
+        );
+        this.activeRendezvousWaits.delete(openId);
+        this.rendezvousCardUpdaters.delete(openId);
+        try {
+          await this.replyFn(`✅ \`${shortId}\` 已自然完成，无需停止`, { openId });
+        } catch (e: any) {
+          logger.warn(`handleRendezvousStopBgConfirm: reply failed in race-guard: ${e?.message ?? e}`);
+        }
+        return null;
+      }
+    }
+    entry.abort.abort();
+    const updater = this.rendezvousCardUpdaters.get(openId);
+    this.activeRendezvousWaits.delete(openId);
+    this.rendezvousCardUpdaters.delete(openId);
+
+    try {
+      const cp = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileP = promisify(cp.execFile);
+      try {
+        await execFileP('claude', ['stop', shortId], { timeout: 5000 });
+      } catch (err: any) {
+        const msg = err?.stderr || err?.message || String(err);
+        if (!/No job matching/i.test(msg)) throw err;
+      }
+      await new Promise(r => setTimeout(r, 1000));  // 等 supervisor cleanup
+
+      // 条件化恢复 user-mapping
+      try {
+        const current = this.userManager.getEntry(openId) ?? null;
+        const newEntry: any = {
+          type: 'session' as const,
+          sessionUuid: entry.sessionUuid,
+          cwd: entry.cwd,
+          // MappingEntry 无 createdAt 字段 (review gap 3), 不写
+        };
+        if (entry.attachedAt) newEntry.attachedAt = entry.attachedAt;
+        await this.userManager.compareAndSwap(openId, current, newEntry);
+      } catch (e: any) {
+        logger.warn(`handleRendezvousStopBgConfirm: restore user-mapping failed: ${e?.message ?? e}`);
+      }
+    } catch (err: any) {
+      // 上面 try 只包 claude stop + supervisor wait + user-mapping restore。
+      // 这层 catch 是给 claude stop 失败的; replyFn / patchAbortedTracking 在 try
+      // 块外, 它们的失败不会触发"二次 replyFn 报失败"的双重调用。
+      logger.error(`handleRendezvousStopBgConfirm: claude stop failed: ${err?.message ?? err}`);
+      try {
+        await this.replyFn(`❌ Stop bg 失败: ${err?.message ?? err}`, { openId });
+      } catch (e: any) {
+        logger.warn(`handleRendezvousStopBgConfirm: failure reply also failed: ${e?.message ?? e}`);
+      }
+      if (updater) {
+        try { await updater.error(`❌ Stop bg 失败: ${err?.message ?? err}`); } catch { /* swallow */ }
+      }
+      return null;
+    }
+
+    // claude stop 成功路径: 回复 + patch 卡 (各自 try/catch 避免互相影响)
+    try {
+      await this.replyFn(`✅ 已停止 ${shortId}`, { openId });
+    } catch (e: any) {
+      logger.warn(`handleRendezvousStopBgConfirm: success reply failed: ${e?.message ?? e}`);
+    }
+    if (updater) {
+      try {
+        await updater.patchAbortedTracking({
+          headerTitle: '🛑 bg 已被终止',
+          headerTemplate: 'grey',
+          body: `\`${shortId}\` 已停止 · /agents 查看 session 状态`,
+        });
+        updater.cancelPending();
+      } catch (e: any) {
+        logger.warn(`handleRendezvousStopBgConfirm: patch failed: ${e?.message ?? e}`);
+      }
+    }
+    return null;
   }
 
   /**
@@ -1825,7 +2120,9 @@ export class FeishuBot {
       config.get<boolean>('agent_view.rendezvous_enabled', false)
     ) {
       const rv = await this.tryRendezvousReply({
-        openId, sessionUuid: inputSessionUuid, promptText, messageId,
+        openId, sessionUuid: inputSessionUuid, promptText,
+        cwd,  // inputSessionUuid 解构里已含 cwd (bot.ts:1820)
+        messageId,
       });
       if (rv.handled) {
         // Reply already sent, spool already finalized. Return sentinel.

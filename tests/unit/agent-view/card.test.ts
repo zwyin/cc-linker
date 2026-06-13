@@ -9,6 +9,7 @@ import {
   buildStopConfirmCard,
   buildBgConflictCard,
   buildAttachedCard,  // 新增
+  buildRendezvousStopConfirmCard,  // v2.4: rendezvous stop-bg 确认卡
 } from '../../../src/agent-view/card';
 import { groupByStatus, type AgentSession, type AgentSessionGroup } from '../../../src/agent-view/types';
 import { parseAgentsJson } from '../../../src/agent-view/snapshot';
@@ -358,6 +359,27 @@ describe('buildStopConfirmCard', () => {
     const actions = card.elements.find((e: any) => e.tag === 'action');
     const tags = actions?.actions?.map((a: any) => a.value?.tag) || [];
     expect(tags).toContain('agent_view_stop_confirm');
+  });
+});
+
+describe('buildRendezvousStopConfirmCard', () => {
+  test('renders red header with shortId + [确认] + [取消] buttons', () => {
+    const card = JSON.parse(buildRendezvousStopConfirmCard('abc12345'));
+    expect(card.header.template).toBe('red');
+    expect(card.header.title.content).toContain('abc12345');
+    const a = card.elements.find((e: any) => e.tag === 'action');
+    expect(a.actions).toHaveLength(2);
+    expect(a.actions[0].text.content).toMatch(/确认/);
+    expect(a.actions[0].type).toBe('danger');
+    expect(a.actions[0].value).toEqual({
+      tag: 'agent_view_rendezvous_stop_bg_confirm', shortId: 'abc12345',
+    });
+    expect(a.actions[1].text.content).toMatch(/取消/);
+  });
+
+  test('has update_multi: true (avoid Feishu merge-revert bug)', () => {
+    const card = JSON.parse(buildRendezvousStopConfirmCard('abc12345'));
+    expect(card.config?.update_multi).toBe(true);
   });
 });
 

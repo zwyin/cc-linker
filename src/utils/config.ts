@@ -188,7 +188,7 @@ const DEFAULTS: ConfigData = {
     reply_throttle_ms: 500,
     // v2.4 defaults
     rendezvous_enabled: true,        // v2.4 GA
-    rendezvous_timeout_ms: 60_000,
+    rendezvous_timeout_ms: 7_200_000,  // 2h — 覆盖复杂长 bg turn; bg 仍由 runtime.hard_timeout_ms (3h) 兜底
   },
 };
 

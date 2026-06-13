@@ -727,3 +727,61 @@ describe('RendezvousClient.pollStateJsonStreaming - sawStateChange gate (v2.4.1 
     expect(seenKinds).toContain('blocked-needs');
   });
 });
+
+/**
+ * v2.4.x AbortSignal 支持: pollStateJsonStreaming 接受可选 signal,
+ * signal.aborted 时立即退出并返回 { ok: false, reason: 'aborted' }。
+ * 覆盖 pre-aborted (signal 已 abort, 循环没跑) + mid-poll abort (sleep 期间 abort)。
+ */
+describe('RendezvousClient.pollStateJsonStreaming — AbortSignal', () => {
+  let jobsDir: string;
+  const SHORT = 'abcd1234';
+
+  beforeEach(() => {
+    jobsDir = mkdtempSync(join(tmpdir(), 'rndzv-abort-'));
+    mkdirSync(join(jobsDir, SHORT), { recursive: true });
+    writeFileSync(join(jobsDir, SHORT, 'state.json'), JSON.stringify({
+      state: 'running',
+      tempo: 'active',
+      detail: null,
+      needs: '',
+      inFlight: null,
+      linkScanPath: null,
+      linkScanOffset: 0,
+      name: 'x',
+      cwd: '/',
+    }));
+  });
+
+  afterEach(() => {
+    try { rmSync(jobsDir, { recursive: true, force: true }); } catch {}
+  });
+
+  test('pre-aborted signal returns reason="aborted" without polling', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    let polled = 0;
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT, stateJsonPath: jobsDir, timeoutMs: 5_000, pollIntervalMs: 10,
+      signal: ac.signal,
+      onPoll: async () => { polled++; },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('aborted');
+    expect(polled).toBe(0);
+  });
+
+  test('signal aborted mid-poll exits within one tick', async () => {
+    const ac = new AbortController();
+    let polled = 0;
+    const r = await RendezvousClient.pollStateJsonStreaming({
+      short: SHORT, stateJsonPath: jobsDir, timeoutMs: 5_000, pollIntervalMs: 10,
+      signal: ac.signal,
+      onPoll: async () => { polled++; if (polled === 2) ac.abort(); },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('aborted');
+    expect(polled).toBeGreaterThanOrEqual(2);
+    expect(polled).toBeLessThan(5);
+  });
+});

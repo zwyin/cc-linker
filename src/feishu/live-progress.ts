@@ -21,8 +21,8 @@ export interface LiveProgressConfig {
 }
 
 export const DEFAULT_LIVE_PROGRESS_CONFIG: LiveProgressConfig = {
-  intervalMs: 10_000,
-  maxTicks: 800,
+  intervalMs: 3_000,
+  maxTicks: 2667,  // 维持 ~133min wall-clock 寿命 (2667 × 3s ≈ 8001s)
   maxPatchFailures: 3,
 };
 

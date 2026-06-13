@@ -40,7 +40,14 @@ export type AgentViewValue =
     }
   | { tag: 'agent_view_new_and_send'; cwd: string; text: string }
   | { tag: 'agent_view_bg_conflict_cancel' }
-  | { tag: 'agent_view_stop_watching' };
+  | { tag: 'agent_view_stop_watching' }
+  // v2.4 rendezvous: abort-wait / stop-bg 卡按钮
+  // - abort_wait: 卡上的"不等了"按钮,handler abort poll 循环
+  // - stop_bg_request: 卡上的"停止 bg"按钮,弹确认卡
+  // - stop_bg_confirm: 确认卡上的"确认停止 bg"按钮,handler 跑 claude stop
+  | { tag: 'agent_view_rendezvous_abort_wait' }
+  | { tag: 'agent_view_rendezvous_stop_bg_request'; shortId: string }
+  | { tag: 'agent_view_rendezvous_stop_bg_confirm'; shortId: string };
 
 export function isAgentViewValue(v: any): v is AgentViewValue {
   if (!v || typeof v !== 'object' || typeof v.tag !== 'string') return false;
@@ -55,12 +62,18 @@ export function isAgentViewValue(v: any): v is AgentViewValue {
     case 'agent_view_cancel_reply':
     case 'agent_view_back_to_chat':
     case 'agent_view_bg_conflict_cancel':
+    case 'agent_view_rendezvous_abort_wait':
       return true;
 
     // shortId + sessionId
     case 'agent_view_refresh_peek':
     case 'agent_view_stop_confirm':
       return str('shortId') && str('sessionId');
+
+    // shortId only (rendezvous 确认卡:只 stop bg,不需要 sessionId)
+    case 'agent_view_rendezvous_stop_bg_request':
+    case 'agent_view_rendezvous_stop_bg_confirm':
+      return str('shortId');
 
     // shortId + sessionId + cwd
     case 'agent_view_peek':

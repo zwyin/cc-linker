@@ -11,6 +11,8 @@ interface CardUpdaterOptions {
   throttle_ms?: number;
   max_card_bytes?: number;
   show_thinking?: boolean;
+  /** 流式卡按钮模式。'default' = [🛑 停止处理]; 'rendezvous' = [🔙 不等了] + [🛑 停 bg]. */
+  buttons?: 'default' | 'rendezvous';
 }
 
 interface FeishuClient {
@@ -38,6 +40,10 @@ export class CardUpdater {
   private readonly throttleMs: number;
   private readonly maxCardBytes: number;
   private readonly showThinking: boolean;
+  /** v2.x: rendezvous 模式下 [🛑 停 bg] 按钮 value 里塞的 shortId。
+   *  必须在 startProcessing 之前 set, 否则首次渲染时按钮 value.shortId 为空。 */
+  private rendezvousShortId: string | null = null;
+  private readonly buttonsMode: 'default' | 'rendezvous';
   private state: CardState = 'processing';
 
   constructor(client: FeishuClient, options: CardUpdaterOptions = {}) {
@@ -45,6 +51,7 @@ export class CardUpdater {
     this.throttleMs = options.throttle_ms ?? config.get<number>('stream.throttle_ms', 1500);
     this.maxCardBytes = options.max_card_bytes ?? config.get<number>('stream.max_card_bytes', 25000);
     this.showThinking = options.show_thinking ?? config.get<boolean>('stream.show_thinking', true);
+    this.buttonsMode = options.buttons ?? 'default';
   }
 
   getCardMessageId(): string | null { return this.cardMessageId; }
@@ -178,6 +185,25 @@ export class CardUpdater {
     this.state = 'cancelled';
   }
 
+  /**
+   * v2.x: rendezvous abort/stop 专用终态 patch。比 cancel() 灵活:
+   * - 自定义 header title + template (不再硬编码 "🛑 已取消" grey)
+   * - body 完全可控 (不再硬加 "你可以随时发送新消息继续对话" 后缀)
+   */
+  async patchAbortedTracking(opts: {
+    headerTitle: string;
+    headerTemplate: 'grey' | 'blue' | 'red' | 'green' | 'yellow';
+    body: string;
+  }): Promise<void> {
+    await this.flushPending();
+    await this.patchCard({
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { title: { tag: 'plain_text', content: opts.headerTitle }, template: opts.headerTemplate },
+      elements: [{ tag: 'markdown', content: opts.body }],
+    });
+    this.state = 'cancelled';
+  }
+
   shouldFallbackToText(content: string): boolean {
     return new TextEncoder().encode(content).length > this.maxCardBytes;
   }
@@ -267,6 +293,12 @@ export class CardUpdater {
   /** Allow external code to set cardMessageId for permission card patching */
   setCardMessageId(messageId: string): void {
     this.cardMessageId = messageId;
+  }
+
+  /** v2.x: rendezvous 模式按钮 value.shortId 注入。**必须在 startProcessing 之前调** —
+   *  startProcessing → buildProcessingCard → buildStreamingCard, 首次渲染就读 shortId。 */
+  setRendezvousShortId(short: string): void {
+    this.rendezvousShortId = short;
   }
 
   private buildPermissionCard(
@@ -524,17 +556,35 @@ export class CardUpdater {
       });
     }
     elements.push({ tag: 'markdown', content: `⏱ 已用时 ${elapsedSec}s` });
-    elements.push({
-      tag: 'action',
-      actions: [
-        {
+    if (this.buttonsMode === 'rendezvous') {
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔙 不等了' },
+            type: 'default',
+            value: { tag: 'agent_view_rendezvous_abort_wait' },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🛑 停 bg' },
+            type: 'danger',
+            value: { tag: 'agent_view_rendezvous_stop_bg_request', shortId: this.rendezvousShortId ?? '' },
+          },
+        ],
+      });
+    } else {
+      elements.push({
+        tag: 'action',
+        actions: [{
           tag: 'button',
           text: { tag: 'plain_text', content: '🛑 停止处理' },
           type: 'danger',
           value: { tag: 'stop' },
-        },
-      ],
-    });
+        }],
+      });
+    }
     return {
       config: { wide_screen_mode: true, update_multi: true },
       header: { title: { tag: 'plain_text', content: '💭 处理中' }, template: 'blue' },
