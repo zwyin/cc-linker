@@ -160,6 +160,18 @@ describe('AgentSnapshotFetcher.fetch — state.json mapping', () => {
     expect(r.sessions[0].name).toBe('🛑 bash loop');
   });
 
+  // 回归:Claude CLI 把 settled-with-error 标为 'failed',前 v2.3 落到 unknown 被 drop。
+  // 修法:跟 done/stopped 并列映射,UI 加 ❌ prefix 跟 TUI 视觉一致。
+  test('failed → idle + completed=true + ❌ prefix (not silently dropped)', async () => {
+    mockJobs([makeEnv({ state: 'failed', name: 'network timeout task' })]);
+    const r = await AgentSnapshotFetcher.fetch();
+    expect(r.ok).toBe(true); if (!r.ok) return;
+    expect(r.sessions.length).toBe(1);
+    expect(r.sessions[0].status).toBe('idle');
+    expect(r.sessions[0].completed).toBe(true);
+    expect(r.sessions[0].name).toBe('❌ network timeout task');
+  });
+
   test('unknown state → filtered out + warn logged once (v2.3.1)', async () => {
     // Spy on logger.warn
     const { logger } = require('../../../src/utils/logger');
@@ -220,6 +232,22 @@ describe('AgentSnapshotFetcher.fetch — state.json mapping', () => {
     expect(byShort['aaaaaaa4'].status).toBe('idle');
     expect(byShort['aaaaaaa4'].name).toBe('🛑 s');
   });
+
+  // 三种终态(done/stopped/failed)在同一快照里共存,prefix 各不冲突
+  test('three terminal states (done/stopped/failed) coexist with distinct prefixes', async () => {
+    mockJobs([
+      makeEnv({ state: 'done', name: 'success', resumeSessionId: 'aaaaaaa1-1111-1111-1111-111111111111' }),
+      makeEnv({ state: 'stopped', name: 'killed', resumeSessionId: 'aaaaaaa2-2222-2222-2222-222222222222' }),
+      makeEnv({ state: 'failed', name: 'errored', resumeSessionId: 'aaaaaaa3-3333-3333-3333-333333333333' }),
+    ]);
+    const r = await AgentSnapshotFetcher.fetch();
+    expect(r.ok).toBe(true); if (!r.ok) return;
+    expect(r.sessions.length).toBe(3);
+    const byShort = Object.fromEntries(r.sessions.map(s => [s.sessionId.slice(0, 8), s]));
+    expect(byShort['aaaaaaa1'].name).toBe('✅ success');
+    expect(byShort['aaaaaaa2'].name).toBe('🛑 killed');
+    expect(byShort['aaaaaaa3'].name).toBe('❌ errored');
+  });
 });
 
 // ── Source attribution (roster + daemon.log claimedSources tail) ──
@@ -264,6 +292,22 @@ describe('AgentSnapshotFetcher.fetch — cold-path name fallback', () => {
     expect(r.ok).toBe(true); if (!r.ok) return;
     // ✅ prefix preserved + derived name
     expect(r.sessions[0].name).toBe('✅ derived from jsonl');
+  });
+
+  // 冷路径 + failed 状态:state.json.name 为空 + state=failed 时,
+  // 仍要保留 ❌ prefix 不能被吃成派生裸名
+  test('cold-path name fallback preserves ❌ prefix for failed state', async () => {
+    mockJobs([makeEnv({
+      state: 'failed', name: null,
+      resumeSessionId: 'aaaaaaaa-1111-1111-1111-111111111111',
+    })]);
+    _jobStateHooks.deriveNameFromJsonl = mock(() => ({
+      name: 'derived failure',
+      sessionId: 'aaaaaaaa-1111-1111-1111-111111111111',
+    }));
+    const r = await AgentSnapshotFetcher.fetch();
+    expect(r.ok).toBe(true); if (!r.ok) return;
+    expect(r.sessions[0].name).toBe('❌ derived failure');
   });
 
   test('state.json.name present → no fallback invocation', async () => {

@@ -147,6 +147,17 @@ describe('jobStateToSession mapping', () => {
     // 名字前缀 🛑 在 card.ts / snapshot-fetcher 渲染时加,这里只确保 mapping 不丢 session
   });
 
+  // 回归测试:Claude CLI 把 settled-with-error 标为 'failed'(实测 ~/.claude/jobs/*/state.json),
+  // v2.3 重构时漏了 — 'failed' 落 default → status='unknown' → snapshot-fetcher 静默 drop。
+  // 修法:跟 done/stopped 并列,映射到 idle + completed=true,UI 层加 ❌ prefix。
+  test('failed → idle + completed=true (parallel to done/stopped, TUI 也显示 Completed)', () => {
+    const s = jobStateToSession(makeEnv({ state: 'failed', detail: '任务失败:网络超时' }));
+    expect(s!.status).toBe('idle');
+    expect(s!.completed).toBe(true);
+    // detail 透传,让列表卡副标题有内容
+    expect(s!.detail).toBe('任务失败:网络超时');
+  });
+
   test('unknown state → unknown', () => {
     const s = jobStateToSession(makeEnv({ state: 'hypothetical_future' }));
     expect(s!.status).toBe('unknown');

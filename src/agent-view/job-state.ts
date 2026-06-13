@@ -19,7 +19,7 @@ import { logger } from '../utils/logger';
 import type { AgentSession, AgentSessionStatus } from './types';
 
 /** CLI 在 state.json 里写出的所有已知 state 值(forward-compat:未知值透传)。 */
-export type JobStateValue = 'running' | 'working' | 'blocked' | 'done' | 'stopped';
+export type JobStateValue = 'running' | 'working' | 'blocked' | 'done' | 'stopped' | 'failed';
 export type JobStateTempo = 'idle' | 'active' | 'blocked';
 
 export interface JobStateFile {
@@ -186,7 +186,9 @@ export async function readAllJobStates(
  *   blocked            → waiting (waitingFor = needs)
  *   done               → idle + completed=true
  *   stopped            → idle + completed=true  (UI 层在 name 前加 🛑 区分)
- *   unknown / 其他      → 'unknown' status (UI 渲染为"未知"组)
+ *   failed             → idle + completed=true  (UI 层在 name 前加 ❌ 区分 — settled-with-error,
+ *                                              跟 done/stopped 并列的终态,TUI 同样显示 Completed)
+ *   unknown / 其他      → 'unknown' status (UI 渲染为"未知"组,snapshot-fetcher 静默 drop)
  *
  * source 字段:state.json 没有 dispatch.source,统一标 'unknown';
  *   后续 attachRosterSources 会从 roster.json / daemon.log 补上。
@@ -223,6 +225,16 @@ export function jobStateToSession(env: JobStateEnvelope): AgentSession | null {
       completed = true;
       break;
     case 'stopped':
+      status = 'idle';
+      completed = true;
+      break;
+    // 2026-06-13 回归修复:Claude CLI 把 settled-with-error 标为 'failed'(实测
+    // ~/.claude/jobs/*/state.json),v2.3 重构时漏了这个 case → 落 default →
+    // status='unknown' → snapshot-fetcher 静默 drop,用户 Agent View 看不到
+    // completed session(TUI 知道 'failed' 是 settled 状态,会显示)。
+    // 修法:跟 done/stopped 并列映射到 idle+completed=true,UI 层加 ❌ prefix
+    // 区分 ✅ (done) / 🛑 (stopped) / ❌ (failed)。
+    case 'failed':
       status = 'idle';
       completed = true;
       break;

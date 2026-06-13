@@ -84,6 +84,7 @@ export const AgentSnapshotFetcher = {
       let name = s.name;
       if (env.state.state === 'stopped' && !name.startsWith('🛑')) name = `🛑 ${name}`;
       else if (env.state.state === 'done' && !name.startsWith('✅')) name = `✅ ${name}`;
+      else if (env.state.state === 'failed' && !name.startsWith('❌')) name = `❌ ${name}`;
       sessions.push(name === s.name ? s : { ...s, name });
     }
     if (droppedUnknown > 0) {
@@ -108,14 +109,17 @@ export const AgentSnapshotFetcher = {
 
     // 冷路径 name fallback:state.json.name 为空(罕见)时走 JSONL first-prompt
     sessions = sessions.map(s => {
-      // 跳过前缀 emoji 检查 (✅ 🛑 等占位时)
-      const stripped = s.name.replace(/^[✅🛑]\s*/, '');
+      // 跳过前缀 emoji 检查 (✅ 🛑 ❌ 等占位时)
+      const stripped = s.name.replace(/^[✅🛑❌]\s*/, '');
       if (stripped && !/^[0-9a-f]{8}$/.test(stripped)) return s;  // 已有真名
       const short = s.sessionId.slice(0, 8);
       const derived = _jobStateHooks.deriveNameFromJsonl(short);
       if (derived) {
         // 保留 prefix(如果原 name 有 emoji)
-        const prefix = s.name.startsWith('✅') ? '✅ ' : s.name.startsWith('🛑') ? '🛑 ' : '';
+        const prefix = s.name.startsWith('✅') ? '✅ '
+          : s.name.startsWith('🛑') ? '🛑 '
+          : s.name.startsWith('❌') ? '❌ '
+          : '';
         return { ...s, name: `${prefix}${derived.name}`, sessionId: derived.sessionId };
       }
       return s;

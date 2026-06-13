@@ -184,4 +184,104 @@ describe('Agent View canary: waiting session shows Reply button', () => {
     expect(flat).toContain('正在打包 npm');
     expect(flat).toContain('task completed');
   });
+
+  // 回归测试:Claude CLI 把 settled-with-error 标为 state='failed',TUI 显示为 Completed
+  // 但 v2.3 的 jobStateToSession 没这个 case → 落到 default → status='unknown' →
+  // snapshot-fetcher 静默 drop。修法:加 case 'failed' → idle+completed=true,
+  // 列表卡前加 ❌ prefix 区分 ✅ (done) 和 🛑 (stopped)。
+  test('failed state: appears in completed group with ❌ prefix (not silently dropped)', async () => {
+    _jobStateHooks.readAllJobStates = mock(() => [
+      {
+        short: '3f36dac1', path: '/x', mtimeMs: Date.now() - 3 * 86400_000, readAt: Date.now(),
+        state: {
+          state: 'failed',
+          tempo: 'idle',
+          detail: '任务失败:网络超时',
+          needs: null,
+          inFlight: null,
+          linkScanPath: '/p.jsonl',
+          linkScanOffset: 0,
+          name: 'AI Coding Lines统计方法讨论',
+          nameSource: 'auto',
+          intent: '统计 AI 编辑代码行数',
+          resumeSessionId: '3f36dac1-fd1e-4c12-b952-08aec0db636b',
+          daemonShort: '3f36dac1',
+          template: 'bg',
+          respawnFlags: [],
+          cliVersion: '2.1.163',
+          cwd: '/Users/x',
+        },
+      },
+    ]);
+
+    const captured: { card?: string } = {};
+    const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
+    const mgr = new AgentViewManager({
+      userManager,
+      replyFn: async () => null,
+      cardReplyFn: async (card: string) => { captured.card = card; return 'om_failed'; },
+      patchFn: async () => null,
+      runChatSDK: async () => ({ result: {}, handler: {}, cardMessageId: '' }),
+    });
+
+    await mgr.handleList('ou_failed');
+
+    const flat = captured.card!;
+    // 关键断言 1: session 名字带 ❌ prefix(用户能区分 done/failed)
+    expect(flat).toContain('❌ AI Coding Lines统计方法讨论');
+    // 关键断言 2: 进 "已完成" 组(不丢)
+    expect(flat).toContain('已完成');
+    // 关键断言 3: detail 副标题出现
+    expect(flat).toContain('任务失败:网络超时');
+  });
+
+  // 三种终态(done/stopped/failed)视觉区分,跟 TUI 一致
+  test('three terminal states get distinct emoji prefixes (✅ 🛑 ❌)', async () => {
+    _jobStateHooks.readAllJobStates = mock(() => [
+      {
+        short: 'a1a1a1a1', path: '/x', mtimeMs: Date.now(), readAt: Date.now(),
+        state: {
+          state: 'done', detail: 'ok', needs: null, inFlight: null,
+          linkScanPath: null, linkScanOffset: 0,
+          name: 'success task', nameSource: 'auto',
+          resumeSessionId: 'a1a1a1a1-1111-1111-1111-111111111111',
+        },
+      },
+      {
+        short: 'b2b2b2b2', path: '/x', mtimeMs: Date.now(), readAt: Date.now(),
+        state: {
+          state: 'stopped', detail: 'killed', needs: null, inFlight: null,
+          linkScanPath: null, linkScanOffset: 0,
+          name: 'killed task', nameSource: 'auto',
+          resumeSessionId: 'b2b2b2b2-2222-2222-2222-222222222222',
+        },
+      },
+      {
+        short: 'c3c3c3c3', path: '/x', mtimeMs: Date.now(), readAt: Date.now(),
+        state: {
+          state: 'failed', detail: 'err', needs: null, inFlight: null,
+          linkScanPath: null, linkScanOffset: 0,
+          name: 'errored task', nameSource: 'auto',
+          resumeSessionId: 'c3c3c3c3-3333-3333-3333-333333333333',
+        },
+      },
+    ]);
+
+    const captured: { card?: string } = {};
+    const userManager = new UserManager(join(tmpDir, 'user-mapping.json'));
+    const mgr = new AgentViewManager({
+      userManager,
+      replyFn: async () => null,
+      cardReplyFn: async (card: string) => { captured.card = card; return 'om_terminal'; },
+      patchFn: async () => null,
+      runChatSDK: async () => ({ result: {}, handler: {}, cardMessageId: '' }),
+    });
+
+    await mgr.handleList('ou_terminal');
+
+    const flat = captured.card!;
+    expect(flat).toContain('✅ success task');
+    expect(flat).toContain('🛑 killed task');
+    expect(flat).toContain('❌ errored task');
+  });
 });
