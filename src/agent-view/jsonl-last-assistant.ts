@@ -128,6 +128,45 @@ export async function readLastAssistantTurn(jsonlPath: string): Promise<LastAssi
   return null;
 }
 
+/**
+ * v2.4.1: Poll JSONL until a new assistant turn appears (text differs from baseline).
+ *
+ * Race condition fix: claude-code CLI supervisor may update state.json (signaling
+ * bg's turn done) BEFORE the bg worker finishes flushing the assistant turn to
+ * JSONL. Reading JSONL immediately after state transition returns stale data.
+ * This helper polls every `pollIntervalMs` until the last assistant turn text
+ * differs from `baselineText` (the pre-injection baseline), with a `maxWaitMs`
+ * timeout.
+ *
+ * @param jsonlPath Path to bg's JSONL file
+ * @param baselineText Last assistant turn text BEFORE bg processed new input.
+ *                     null means no prior turn was read.
+ * @param maxWaitMs Maximum time to wait for a new turn (default 3000ms)
+ * @param pollIntervalMs How often to poll JSONL (default 150ms)
+ * @returns `turn` = the new turn (or baseline if timeout), `foundNew` = true if
+ *          a turn with different text from baseline was found within timeout
+ */
+export async function waitForNewAssistantTurn(
+  jsonlPath: string,
+  baselineText: string | null,
+  maxWaitMs: number = 3000,
+  pollIntervalMs: number = 150,
+): Promise<{ turn: LastAssistantTurn | null; foundNew: boolean }> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const turn = await readLastAssistantTurn(jsonlPath);
+    const text = turn?.text ?? '';
+    // Found a new turn (different from baseline, non-empty)
+    if (text && text !== baselineText) {
+      return { turn, foundNew: true };
+    }
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+  }
+  // Timeout: 退而求其次, 用任何现有 turn (可能是 baseline 或 null)
+  const turn = await readLastAssistantTurn(jsonlPath);
+  return { turn, foundNew: false };
+}
+
 function extractTurn(line: JsonlLine): LastAssistantTurn | null {
   const msg = line.message!;
   const content = msg.content;

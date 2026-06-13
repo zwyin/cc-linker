@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { readLastAssistantTurn } from '../../../src/agent-view/jsonl-last-assistant';
+import { readLastAssistantTurn, waitForNewAssistantTurn } from '../../../src/agent-view/jsonl-last-assistant';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -224,5 +224,90 @@ describe('readLastAssistantTurn', () => {
     expect(r!.text).toBe('纯文本');
     expect(r!.thinking).toBe('');
     expect(r!.toolUses).toEqual([]);
+  });
+});
+
+describe('waitForNewAssistantTurn (v2.4.1 race condition fix)', () => {
+  let tmpDir: string;
+  let jsonlPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'wait-new-turn-test-'));
+    jsonlPath = join(tmpDir, 'session.jsonl');
+  });
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Write a single assistant turn to JSONL */
+  function writeAssistantTurn(text: string, uuid: string = 'u1') {
+    writeFileSync(jsonlPath, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      uuid,
+    }) + '\n');
+  }
+
+  /** Append a new assistant turn (simulates bg writing a new turn) */
+  function appendAssistantTurn(text: string, uuid: string = 'u2') {
+    const fs = require('fs');
+    fs.appendFileSync(jsonlPath, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      uuid,
+    }) + '\n');
+  }
+
+  test('polls until text differs from baseline (found after 2 polls)', async () => {
+    writeAssistantTurn('Previous turn text');
+    const baseline = 'Previous turn text';
+
+    // Append new turn after 250ms (simulates bg finishing write)
+    setTimeout(() => appendAssistantTurn('New turn text'), 250);
+
+    const result = await waitForNewAssistantTurn(
+      jsonlPath, baseline, 3000, 150,
+    );
+    expect(result.foundNew).toBe(true);
+    expect(result.turn?.text).toBe('New turn text');
+  });
+
+  test('times out when text never differs from baseline', async () => {
+    writeAssistantTurn('Same text');
+
+    const result = await waitForNewAssistantTurn(
+      jsonlPath, 'Same text', 500, 100,  // short timeout for test
+    );
+    expect(result.foundNew).toBe(false);
+    expect(result.turn?.text).toBe('Same text');  // fallback to whatever's in JSONL
+  });
+
+  test('null baseline matches any non-empty text', async () => {
+    writeAssistantTurn('First turn');
+
+    const result = await waitForNewAssistantTurn(
+      jsonlPath, null, 3000, 150,
+    );
+    expect(result.foundNew).toBe(true);
+    expect(result.turn?.text).toBe('First turn');
+  });
+
+  test('empty baseline ("") matches any non-empty text', async () => {
+    writeAssistantTurn('Some text');
+
+    const result = await waitForNewAssistantTurn(
+      jsonlPath, '', 3000, 150,
+    );
+    expect(result.foundNew).toBe(true);
+    expect(result.turn?.text).toBe('Some text');
+  });
+
+  test('returns null turn when JSONL file does not exist', async () => {
+    const result = await waitForNewAssistantTurn(
+      join(tmpDir, 'nope.jsonl'), 'baseline', 500, 100,
+    );
+    expect(result.foundNew).toBe(false);
+    expect(result.turn).toBeNull();
   });
 });

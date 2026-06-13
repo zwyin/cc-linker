@@ -12,7 +12,7 @@ import { isAgentViewValue } from '../agent-view/action';
 import { buildBgConflictCard } from '../agent-view/card';
 import { checkRendezvousEligibility } from '../agent-view/rendezvous-fallback';
 import { RendezvousClient, type StatePatch } from '../agent-view/rendezvous-client';
-import { readLastAssistantTurn, type LastAssistantTurn } from '../agent-view/jsonl-last-assistant';
+import { readLastAssistantTurn, waitForNewAssistantTurn, type LastAssistantTurn } from '../agent-view/jsonl-last-assistant';
 import { readJobState } from '../agent-view/job-state';
 import { formatTokenCount } from './card-updater';
 import { StreamChunk } from '../proxy/stream-parser';
@@ -1530,6 +1530,17 @@ export class FeishuBot {
     const { openId, sessionUuid, promptText, messageId, eligibility, timeoutMs } = params;
     const short = sessionUuid.slice(0, 8);
 
+    // v2.4.1: Capture pre-injection baseline. Reading JSONL BEFORE submit ensures
+    // we have the truly previous turn (bg hasn't been woken up yet, can't have
+    // started writing). This baseline is used by:
+    //   - onPoll: detect when bg writes a new turn (compare currentText !== baselineText)
+    //   - terminal 'done'/'new_needs' branches: poll for new turn to avoid race
+    //     between state.json update and JSONL flush
+    const preBaselineTurn = eligibility.jsonlPath
+      ? await readLastAssistantTurn(eligibility.jsonlPath)
+      : null;
+    const preBaselineText: string | null = preBaselineTurn?.text ?? null;
+
     // Phase 1: 提交
     const submit = await RendezvousClient.submitReplyOnly(
       eligibility.rendezvousSock!, promptText,
@@ -1556,11 +1567,11 @@ export class FeishuBot {
     const startTime = Date.now();
     let lastText = '';
     let streamCount = 0;
-    // v2.4.x: 首次 poll 时记下"基线" — bg 启动前 JSONL 已有的末次 assistant
-    // turn(通常就是 bg 上一轮的"等待问题")。只 patch 相对基线**新增**的内容,
-    // 避免把旧 waiting 文本误显示为"回复:"。
-    let baselineText: string | null = null;
+    // v2.4.1: 使用 preBaselineText (submit 前捕获) 而非首次 poll 捕获的 baseline。
+    // 首次 poll 捕获太晚 —— bg 可能已经写完新 turn,baseline 变成新 turn,
+    // 永远检测不到"新 turn"。
     let isNewTurn = false;
+    // baselineText 闭包捕获 preBaselineText (因为 onPoll 是 async 闭包)
     // v2.4.x: bg 跑了并问新问题 (new_needs) → 告诉 caller re-set expectedReply
     let bgAskedNewQuestion = false;
 
@@ -1578,14 +1589,11 @@ export class FeishuBot {
           const currentThinking = lastTurn?.thinking ?? '';
           const currentToolUses = lastTurn?.toolUses ?? [];
 
-          // 第一次 poll: 记基线, 不 patch (initial patch 已由 adoptExistingCard 完成)
-          if (baselineText === null) {
-            baselineText = currentText;
-            return;
-          }
+          // v2.4.1: 使用 submit 前捕获的 preBaselineText (而不是首次 poll 的 baseline)。
+          // 这让"新 turn 检测"在 bg 写盘时序与 poll 时序错位时也正确。
 
           // 检测是否进入新 turn: text 完全不同于基线
-          if (currentText !== baselineText && !isNewTurn) {
+          if (currentText !== preBaselineText && !isNewTurn) {
             isNewTurn = true;
           }
 
@@ -1622,16 +1630,15 @@ export class FeishuBot {
 
     // 终态 patch
     if (rendezvousResult.ok && rendezvousResult.reason === 'done') {
-      // Wait briefly for bg to flush JSONL after completion.
-      // The rendezvous socket signals completion (state.json transition) before
-      // the bg worker necessarily finishes writing the assistant turn to JSONL.
-      // Without this delay, readLastAssistantTurn may return a stale previous turn.
-      await new Promise(r => setTimeout(r, 500));
-
-      const lastTurn = eligibility.jsonlPath
-        ? await readLastAssistantTurn(eligibility.jsonlPath)
-        : null;
-      const responseText = lastTurn?.text ?? '(bg 完成，请在 Agent View 查看完整回复)';
+      // v2.4.1: 用 polling 替代固定 500ms delay + 立即 read。
+      // poll JSONL 直到 text 与 preBaselineText 不同 (即 bg 写完新 turn),
+      // 否则 timeout 兜底。处理 state.json → JSONL flush 的 race condition。
+      const waitResult = eligibility.jsonlPath
+        ? await waitForNewAssistantTurn(eligibility.jsonlPath, preBaselineText)
+        : { turn: null, foundNew: false };
+      const lastTurn = waitResult.turn;
+      // 优先级: poll 拿到的新 turn → 流式已捕获的 lastText → fallback
+      const responseText = lastTurn?.text ?? lastText ?? '(bg 完成，请在 Agent View 查看完整回复)';
       const tokens = lastTurn?.usage ?? {
         input_tokens: 0, output_tokens: 0,
         cache_creation_input_tokens: null, cache_read_input_tokens: null,
@@ -1651,26 +1658,29 @@ export class FeishuBot {
         `rendezvous: ok reason=done ` +
         `duration=${Date.now() - startTime}ms ` +
         `tokens_out=${tokens.output_tokens ?? 0} ` +
-        `stream_patches=${streamCount}`,
+        `stream_patches=${streamCount} ` +
+        `found_new=${waitResult.foundNew}`,
       );
     } else if (rendezvousResult.ok && rendezvousResult.reason === 'new_needs') {
       // bg 又问新问题 — patch 卡回"等待输入" 状态(黄色 header + [取消等待]
       // 按钮)。语义: bg 没死没被停, 只是发完一个 turn 后又问下一个。
       // 之前 v2.4.x 简化版用 cardUpdater.cancel() 会显示 "🛑 已取消" 灰色卡,
       // 让用户误以为 bg 没了, UX 错乱。
+      // v2.4.1: 同样用 waitForNewAssistantTurn poll JSONL, 避免 state.json → JSONL
+      // flush race 拿到旧 turn 文本显示在"等待输入"卡的 recentOutput 里。
       try {
-        // 从 state.json 读最新 needs + name, 从 JSONL 读 recent output
+        // 从 state.json 读最新 needs + name
         const stateObj = await readJobState(short, eligibility.stateJsonPath!);
-        const lastTurn = eligibility.jsonlPath
-          ? await readLastAssistantTurn(eligibility.jsonlPath)
-          : null;
+        const waitResult = eligibility.jsonlPath
+          ? await waitForNewAssistantTurn(eligibility.jsonlPath, preBaselineText)
+          : { turn: null, foundNew: false };
         if (stateObj) {
           await cardUpdater.patchWaitingCard({
             name: stateObj.state.name ?? short,
             status: 'waiting',
             waitingFor: stateObj.state.needs ?? undefined,
             cwd: stateObj.state.cwd ?? '',
-            recentOutput: lastTurn?.text,
+            recentOutput: waitResult.turn?.text,
             outputFormat: 'markdown',
           });
         } else {
