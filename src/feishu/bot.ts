@@ -616,6 +616,14 @@ export class FeishuBot {
         case 'agent_view_stop_watching':
           await this.agentView.handleStopWatching(openId);
           return null;
+        // v2.x: rendezvous abort/stop-bg 双按钮。tag 命名空间在 agent_view_ 下,
+        // 但 handler 在 FeishuBot 上 (需访问 activeRendezvousWaits/userManager)。
+        case 'agent_view_rendezvous_abort_wait':
+          return await this.handleRendezvousAbortWait(openId);
+        case 'agent_view_rendezvous_stop_bg_request':
+          return await this.handleRendezvousStopBgRequest(openId, valueObj.shortId);
+        case 'agent_view_rendezvous_stop_bg_confirm':
+          return await this.handleRendezvousStopBgConfirm(openId, valueObj.shortId);
         default:
           return null;
       }
