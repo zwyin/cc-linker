@@ -1892,6 +1892,22 @@ export class FeishuBot {
   }
 
   /**
+   * [🛑 停 bg] 按钮 Step A: 弹二次确认卡。
+   * 不 abort、不杀 bg、不动 maps、不动 user-mapping —— 用户在确认卡上点
+   * [✅ 确认停止 bg] 才真执行 (handleRendezvousStopBgConfirm)。
+   */
+  private async handleRendezvousStopBgRequest(
+    openId: string,
+    shortId: string,
+  ): Promise<string | null> {
+    const { buildRendezvousStopConfirmCard } = await import('../agent-view/card');
+    const cardStr = buildRendezvousStopConfirmCard(shortId);
+    const card = JSON.parse(cardStr);
+    await this.cardReplyFn(card, { openId });
+    return null;
+  }
+
+  /**
    * SDK-driven chat streaming lifecycle (public, reusable from Agent View reply).
    *
    * Drives the full SDK streaming pipeline: processing card → streaming updates →
