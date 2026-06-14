@@ -44,3 +44,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # security reports (cso)
 .gstack
+
+# safe-publish report files (contain desensitization findings)
+safe-publish-report-*.md
